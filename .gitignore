@@ -1,0 +1,24 @@
+# Local OpenSandbox checkout used only as architecture reference.
+/OpenSandbox/
+
+# Build output.
+/bin/
+/dist/
+/coverage.out
+
+# Generated embedded Linux binaries.
+/internal/embedded/artifacts/linux_amd64/runnerd
+/internal/embedded/artifacts/linux_amd64/sandbox-init
+
+# Runtime state.
+*.db
+*.db-shm
+*.db-wal
+/var/
+
+# Editor and operating-system files.
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+

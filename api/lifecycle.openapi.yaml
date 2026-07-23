@@ -1,0 +1,125 @@
+openapi: 3.1.0
+info:
+  title: MiniSandbox Lifecycle API
+  version: 0.1.0
+servers:
+  - url: http://127.0.0.1:8080
+paths:
+  /healthz:
+    get:
+      operationId: health
+      responses:
+        "200":
+          description: Control plane is healthy
+  /v1/sandboxes:
+    post:
+      operationId: createSandbox
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: false
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/CreateSandboxRequest"
+      responses:
+        "202":
+          description: Sandbox creation was accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+  /v1/sandboxes/{sandbox_id}:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    get:
+      operationId: getSandbox
+      responses:
+        "200":
+          description: Current sandbox state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+    delete:
+      operationId: deleteSandbox
+      responses:
+        "202":
+          description: Sandbox deletion was accepted
+        "204":
+          description: Sandbox is already absent
+  /v1/sandboxes/{sandbox_id}/renew:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    post:
+      operationId: renewSandbox
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [ttl_seconds]
+              properties:
+                ttl_seconds:
+                  type: integer
+                  format: int64
+                  minimum: 1
+      responses:
+        "200":
+          description: Sandbox expiration was updated
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Sandbox"
+components:
+  parameters:
+    SandboxID:
+      name: sandbox_id
+      in: path
+      required: true
+      schema:
+        type: string
+  schemas:
+    CreateSandboxRequest:
+      type: object
+      required: [image]
+      properties:
+        image:
+          type: string
+        command:
+          type: array
+          items:
+            type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 1
+    Sandbox:
+      type: object
+      required: [id, state, image, created_at]
+      properties:
+        id:
+          type: string
+        state:
+          type: string
+          enum: [Pending, Creating, Running, Stopping, Terminated, Failed]
+        image:
+          type: string
+        created_at:
+          type: string
+          format: date-time
+        expires_at:
+          type: string
+          format: date-time
+        failure_reason:
+          type: string
+

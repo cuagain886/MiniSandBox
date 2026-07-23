@@ -1,0 +1,68 @@
+openapi: 3.1.0
+info:
+  title: MiniSandbox Runner API
+  version: 0.1.0
+servers:
+  - url: http://runner
+paths:
+  /healthz:
+    get:
+      operationId: runnerHealth
+      responses:
+        "200":
+          description: Runner is healthy
+  /v1/executions:
+    post:
+      operationId: execute
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteRequest"
+      responses:
+        "200":
+          description: Execution events
+          content:
+            text/event-stream:
+              schema:
+                type: string
+  /v1/executions/{execution_id}:
+    parameters:
+      - name: execution_id
+        in: path
+        required: true
+        schema:
+          type: string
+    delete:
+      operationId: cancelExecution
+      responses:
+        "202":
+          description: Cancellation was accepted
+        "204":
+          description: Execution is already complete
+components:
+  schemas:
+    ExecuteRequest:
+      type: object
+      properties:
+        argv:
+          type: array
+          items:
+            type: string
+        shell:
+          type: string
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        working_dir:
+          type: string
+        timeout:
+          type: integer
+          format: int64
+          description: Timeout in nanoseconds
+      oneOf:
+        - required: [argv]
+        - required: [shell]
+
