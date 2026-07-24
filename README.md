@@ -15,6 +15,10 @@ stubs, and build configuration. Docker reconciliation, SQLite persistence, and
 command execution intentionally return `not implemented` until their respective
 milestones are completed.
 
+The detailed, review-sized implementation sequence for the first development
+stage is in
+[`docs/phase-1-docker-lifecycle-development-plan.md`](docs/phase-1-docker-lifecycle-development-plan.md).
+
 ## Quick start
 
 ```bash
@@ -52,4 +56,3 @@ no configured remote. Change it before publishing:
 ```bash
 go mod edit -module example.com/your-org/mini-sandbox
 ```
-
