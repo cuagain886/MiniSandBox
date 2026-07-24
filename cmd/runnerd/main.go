@@ -1,3 +1,8 @@
+// Package main 提供 runnerd 容器内执行数据面可执行程序。
+//
+// 本模块只服务当前 sandbox 的 Unix Socket；当前初始化骨架已实现 HTTP 服务启动、
+// 鉴权和退出信号接收，命令执行仍待实现。它不能访问 Docker socket，也不能管理
+// 其他 sandbox。
 package main
 
 import (
@@ -34,6 +39,8 @@ func main() {
 		slog.Error("create socket directory", "error", err)
 		os.Exit(1)
 	}
+	// socket 路径由 sandboxd 为当前 sandbox 独立挂载。这里只清理同一路径上的
+	// 失效 socket，不扫描也不影响其他 sandbox 的运行目录。
 	if err := os.Remove(*socketPath); err != nil && !os.IsNotExist(err) {
 		slog.Error("remove stale socket", "error", err)
 		os.Exit(1)

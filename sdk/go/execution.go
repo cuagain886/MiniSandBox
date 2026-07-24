@@ -8,6 +8,9 @@ import (
 	"minisandbox/pkg/protocol"
 )
 
+// Execute 向指定 sandbox 提交命令并返回执行 ID。
+//
+// 当前初始化骨架只覆盖普通 JSON 响应，后续流式实现应继续通过协议层解码 SSE。
 func (c *Client) Execute(
 	ctx context.Context,
 	sandboxID string,

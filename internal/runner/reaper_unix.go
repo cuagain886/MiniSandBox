@@ -2,5 +2,5 @@
 
 package runner
 
-// Orphan reaping belongs to sandbox-init. runnerd only waits for processes it
-// starts directly, which avoids racing exec.Cmd.Wait.
+// 孤儿进程由 sandbox-init 统一回收。runnerd 只等待自己直接启动的命令，
+// 避免通用 wait4(-1) 与 exec.Cmd.Wait 竞争同一个子进程。

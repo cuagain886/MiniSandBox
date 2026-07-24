@@ -1,5 +1,6 @@
 package sqlite
 
+// initialSchema 定义第一版 sandbox 状态与幂等键的持久化表结构。
 const initialSchema = `
 CREATE TABLE IF NOT EXISTS sandboxes (
     id TEXT PRIMARY KEY,

@@ -8,6 +8,7 @@ import (
 	"net/http"
 )
 
+// unixTransport 创建只允许连接指定 Unix Socket 的 HTTP transport。
 func unixTransport(socketPath string) http.RoundTripper {
 	return &http.Transport{
 		DialContext: func(

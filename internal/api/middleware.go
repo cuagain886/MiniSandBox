@@ -8,6 +8,7 @@ import (
 
 const requestIDHeader = "X-Request-ID"
 
+// requestIDMiddleware 复用调用方请求 ID，缺失时生成随机 ID 并写回响应头。
 func requestIDMiddleware(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestID := r.Header.Get(requestIDHeader)

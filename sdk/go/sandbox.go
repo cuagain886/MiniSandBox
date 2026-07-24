@@ -8,6 +8,7 @@ import (
 	"minisandbox/pkg/protocol"
 )
 
+// CreateSandbox 提交幂等的 sandbox 创建请求。
 func (c *Client) CreateSandbox(
 	ctx context.Context,
 	request protocol.CreateSandboxRequest,
@@ -17,6 +18,7 @@ func (c *Client) CreateSandbox(
 	return sandbox, err
 }
 
+// GetSandbox 返回指定 sandbox 的当前生命周期状态。
 func (c *Client) GetSandbox(
 	ctx context.Context,
 	id string,
@@ -32,6 +34,7 @@ func (c *Client) GetSandbox(
 	return sandbox, err
 }
 
+// DeleteSandbox 提交 sandbox 删除意图；重复删除应由服务端按幂等语义处理。
 func (c *Client) DeleteSandbox(ctx context.Context, id string) error {
 	return c.doJSON(
 		ctx,

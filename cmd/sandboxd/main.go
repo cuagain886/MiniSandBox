@@ -1,3 +1,7 @@
+// Package main 提供 sandboxd 宿主机控制面可执行程序。
+//
+// 本模块设计上负责装配 HTTP API、生命周期服务、持久化和 runtime adapter；
+// 当前初始化骨架只装配健康检查与占位路由。它不能在宿主机直接执行用户命令。
 package main
 
 import (

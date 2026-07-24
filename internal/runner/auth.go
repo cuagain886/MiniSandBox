@@ -5,6 +5,9 @@ import (
 	"net/http"
 )
 
+// TokenAuth 使用常量时间比较校验内部 Bearer token。
+//
+// 空 token 只用于显式关闭第二层鉴权；生产环境仍应同时依赖 Unix Socket 权限。
 func TokenAuth(expected string, next http.Handler) http.Handler {
 	if expected == "" {
 		return next
