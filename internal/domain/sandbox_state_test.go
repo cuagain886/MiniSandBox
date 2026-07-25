@@ -2,12 +2,31 @@ package domain
 
 import "testing"
 
-// TestSandboxStateTerminal 验证终态判断不会把运行态误判为终态。
+// TestSandboxStateTerminal 验证 Phase 1 只有 Terminated 和 Failed 被视为终态。
 func TestSandboxStateTerminal(t *testing.T) {
-	if !StateTerminated.Terminal() {
-		t.Fatal("Terminated must be terminal")
+	tests := []struct {
+		name     string
+		state    SandboxState
+		terminal bool
+	}{
+		{name: "pending", state: StatePending},
+		{name: "creating", state: StateCreating},
+		{name: "running", state: StateRunning},
+		{name: "stopping", state: StateStopping},
+		{name: "terminated", state: StateTerminated, terminal: true},
+		{name: "failed", state: StateFailed, terminal: true},
 	}
-	if StateRunning.Terminal() {
-		t.Fatal("Running must not be terminal")
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if got := test.state.Terminal(); got != test.terminal {
+				t.Fatalf(
+					"unexpected terminal result for %s: got %t, want %t",
+					test.state,
+					got,
+					test.terminal,
+				)
+			}
+		})
 	}
 }
