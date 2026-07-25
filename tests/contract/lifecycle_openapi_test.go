@@ -106,6 +106,45 @@ func TestPhase1SandboxResponseSchema(t *testing.T) {
 	}
 }
 
+// TestPhase1ErrorResponseSchema 验证常用错误状态全部复用同一个公共 envelope。
+func TestPhase1ErrorResponseSchema(t *testing.T) {
+	document := readLifecycleOpenAPI(t)
+
+	responses := []string{
+		"    BadRequest:",
+		"    NotFound:",
+		"    Conflict:",
+		"    InternalError:",
+		"    ServiceUnavailable:",
+	}
+	for _, response := range responses {
+		if !strings.Contains(document, response) {
+			t.Errorf("lifecycle OpenAPI is missing response component %q", response)
+		}
+	}
+	if got, want := strings.Count(
+		document,
+		`$ref: "#/components/schemas/ErrorResponse"`,
+	), len(responses); got != want {
+		t.Fatalf("unexpected ErrorResponse reference count: got %d, want %d", got, want)
+	}
+
+	required := []string{
+		"    ErrorResponse:",
+		"    ErrorDetail:",
+		"      required: [code, message, request_id, retryable]",
+		"          code: INVALID_REQUEST",
+		"          message: Request is invalid.",
+		"          request_id: req-01",
+		"          retryable: false",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(document, fragment) {
+			t.Errorf("error response schema is missing %q", fragment)
+		}
+	}
+}
+
 // readLifecycleOpenAPI 读取当前仓库中的生命周期契约，失败时立即终止测试。
 func readLifecycleOpenAPI(t *testing.T) string {
 	t.Helper()

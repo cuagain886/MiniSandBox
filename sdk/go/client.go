@@ -1,4 +1,4 @@
-// Package sdk 提供面向 MiniSandbox 生命周期与执行 API 的 Go 客户端。
+// Package sdk 提供面向 MiniSandbox 生命周期 API 的 Go 客户端。
 //
 // 本模块向调用方暴露 Go 原生类型和稳定方法，负责 HTTP 映射但不重复实现控制面
 // 业务规则。
@@ -11,12 +11,32 @@ import (
 	"fmt"
 	"net/http"
 	"strings"
+
+	"minisandbox/pkg/protocol"
 )
 
 // Client 是 MiniSandbox 生命周期 API 的 Go 客户端。
 type Client struct {
 	baseURL    string
 	httpClient *http.Client
+}
+
+// ResponseError 表示服务端返回了符合公共协议的非成功 HTTP 响应。
+type ResponseError struct {
+	// StatusCode 是服务端返回的 HTTP 状态码。
+	StatusCode int
+	// Detail 是服务端返回的稳定公共错误详情。
+	Detail protocol.ErrorDetail
+}
+
+// Error 返回包含公共错误码和安全消息的诊断文本。
+func (e *ResponseError) Error() string {
+	return fmt.Sprintf(
+		"minisandbox: HTTP status %d: %s: %s",
+		e.StatusCode,
+		e.Detail.Code,
+		e.Detail.Message,
+	)
 }
 
 // NewClient 使用控制面地址和可选 HTTP client 创建 SDK 客户端。
@@ -63,7 +83,18 @@ func (c *Client) doJSON(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return fmt.Errorf("minisandbox: unexpected HTTP status %d", response.StatusCode)
+		var envelope protocol.ErrorResponse
+		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+			return fmt.Errorf(
+				"minisandbox: HTTP status %d with invalid error response: %w",
+				response.StatusCode,
+				err,
+			)
+		}
+		return &ResponseError{
+			StatusCode: response.StatusCode,
+			Detail:     envelope.Error,
+		}
 	}
 	if responseBody == nil {
 		return nil
