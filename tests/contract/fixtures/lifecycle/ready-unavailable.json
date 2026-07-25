@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "RUNTIME_UNAVAILABLE",
+    "message": "Control plane is not ready.",
+    "request_id": "req-ready",
+    "retryable": true
+  }
+}
