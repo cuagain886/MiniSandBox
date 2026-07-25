@@ -14,6 +14,7 @@ import (
 // TestCreateSandboxRequestMapping 验证 SDK 只发送 Phase 1 支持的创建字段和路径。
 func TestCreateSandboxRequestMapping(t *testing.T) {
 	createdAt := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Second)
 	server := httptest.NewServer(http.HandlerFunc(func(
 		response http.ResponseWriter,
 		request *http.Request,
@@ -48,8 +49,11 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 		_ = json.NewEncoder(response).Encode(protocol.Sandbox{
 			ID:        "sbx-test",
 			State:     protocol.SandboxStatePending,
+			Reason:    protocol.SandboxReasonCreateAccepted,
+			Message:   "Sandbox creation has been accepted.",
 			Image:     "alpine:3.22",
 			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
 		})
 	}))
 	defer server.Close()
@@ -67,5 +71,58 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 	}
 	if !sandbox.CreatedAt.Equal(createdAt) {
 		t.Fatalf("unexpected created time: got %s, want %s", sandbox.CreatedAt, createdAt)
+	}
+	if got, want := sandbox.Reason, protocol.SandboxReasonCreateAccepted; got != want {
+		t.Fatalf("unexpected sandbox reason: got %s, want %s", got, want)
+	}
+	if got, want := sandbox.Message, "Sandbox creation has been accepted."; got != want {
+		t.Fatalf("unexpected sandbox message: got %q, want %q", got, want)
+	}
+	if !sandbox.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("unexpected updated time: got %s, want %s", sandbox.UpdatedAt, updatedAt)
+	}
+}
+
+// TestGetSandboxResponseMapping 验证查询接口复用与创建接口相同的 Sandbox 响应模型。
+func TestGetSandboxResponseMapping(t *testing.T) {
+	createdAt := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Minute)
+	server := httptest.NewServer(http.HandlerFunc(func(
+		response http.ResponseWriter,
+		request *http.Request,
+	) {
+		if got, want := request.Method, http.MethodGet; got != want {
+			t.Errorf("unexpected method: got %s, want %s", got, want)
+		}
+		if got, want := request.URL.Path, "/v1/sandboxes/sbx-test"; got != want {
+			t.Errorf("unexpected path: got %s, want %s", got, want)
+		}
+
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(protocol.Sandbox{
+			ID:        "sbx-test",
+			State:     protocol.SandboxStateRunning,
+			Reason:    protocol.SandboxReasonRunning,
+			Message:   "Sandbox is running.",
+			Image:     "alpine:3.22",
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	sandbox, err := client.GetSandbox(context.Background(), "sbx-test")
+	if err != nil {
+		t.Fatalf("get sandbox: %v", err)
+	}
+	if got, want := sandbox.State, protocol.SandboxStateRunning; got != want {
+		t.Fatalf("unexpected sandbox state: got %s, want %s", got, want)
+	}
+	if got, want := sandbox.Reason, protocol.SandboxReasonRunning; got != want {
+		t.Fatalf("unexpected sandbox reason: got %s, want %s", got, want)
+	}
+	if !sandbox.UpdatedAt.Equal(updatedAt) {
+		t.Fatalf("unexpected updated time: got %s, want %s", sandbox.UpdatedAt, updatedAt)
 	}
 }

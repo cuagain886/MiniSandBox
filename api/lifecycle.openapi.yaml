@@ -70,22 +70,62 @@ components:
       properties:
         image:
           type: string
+    SandboxState:
+      type: string
+      enum:
+        - Pending
+        - Creating
+        - Running
+        - Stopping
+        - Terminated
+        - Failed
+    SandboxReason:
+      type: string
+      enum:
+        - CREATE_ACCEPTED
+        - CREATING_RUNTIME
+        - WAITING_RUNNER
+        - RUNNING
+        - DELETE_ACCEPTED
+        - DELETING_RUNTIME
+        - TERMINATED
+        - IMAGE_PULL_FAILED
+        - ARTIFACT_INVALID
+        - CONTAINER_CREATE_FAILED
+        - ARTIFACT_INJECTION_FAILED
+        - CONTAINER_START_FAILED
+        - RUNNER_UNHEALTHY
+        - SPEC_DRIFT
+        - CLEANUP_PENDING
+        - RUNTIME_UNAVAILABLE
+        - INTERNAL_ERROR
     Sandbox:
       type: object
-      required: [id, state, image, created_at]
+      additionalProperties: false
+      required: [id, state, reason, message, image, created_at, updated_at]
       properties:
         id:
           type: string
         state:
+          $ref: "#/components/schemas/SandboxState"
+        reason:
+          $ref: "#/components/schemas/SandboxReason"
+        message:
           type: string
-          enum: [Pending, Creating, Running, Stopping, Terminated, Failed]
+          description: Safe lifecycle detail without secrets or host paths
         image:
           type: string
         created_at:
           type: string
           format: date-time
-        expires_at:
+        updated_at:
           type: string
           format: date-time
-        failure_reason:
-          type: string
+      example:
+        id: sbx-01
+        state: Pending
+        reason: CREATE_ACCEPTED
+        message: Sandbox creation has been accepted.
+        image: alpine:3.22
+        created_at: "2026-07-25T10:30:00Z"
+        updated_at: "2026-07-25T10:30:00Z"
