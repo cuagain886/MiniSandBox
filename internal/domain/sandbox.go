@@ -9,7 +9,7 @@ import "time"
 // Sandbox 保存生命周期收敛所需的期望状态、观测状态和恢复元数据。
 type Sandbox struct {
 	ID            string
-	Image         string
+	Spec          SandboxSpec
 	DesiredState  DesiredState
 	ObservedState SandboxState
 	Workspace     string
