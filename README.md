@@ -18,6 +18,10 @@ milestones are completed.
 The detailed, review-sized implementation sequence for the first development
 stage is in
 [`docs/phase-1-docker-lifecycle-development-plan.md`](docs/phase-1-docker-lifecycle-development-plan.md).
+The matching second-stage plan for PID 1 behavior, non-root runner execution,
+HTTP/SSE protocols, process-group cancellation, background tasks, and the
+controlled outbound network is in
+[`docs/phase-2-runner-execution-development-plan.md`](docs/phase-2-runner-execution-development-plan.md).
 
 ## Quick start
 
