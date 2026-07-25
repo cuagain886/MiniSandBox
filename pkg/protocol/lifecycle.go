@@ -28,12 +28,6 @@ const (
 type CreateSandboxRequest struct {
 	// Image 是 sandbox 使用的容器镜像引用。
 	Image string `json:"image"`
-	// Command 是可选的容器启动命令 argv，不经过 shell 解释。
-	Command []string `json:"command,omitempty"`
-	// Env 是传入 sandbox 的用户环境变量，不得包含控制面内部秘密。
-	Env map[string]string `json:"env,omitempty"`
-	// TTLSeconds 是 sandbox 自创建起的存活秒数，零表示使用服务端默认值。
-	TTLSeconds int64 `json:"ttl_seconds,omitempty"`
 }
 
 // Sandbox 是生命周期 API 返回的公共资源描述。

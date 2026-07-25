@@ -8,7 +8,7 @@ import (
 	"minisandbox/pkg/protocol"
 )
 
-// CreateSandbox 提交幂等的 sandbox 创建请求。
+// CreateSandbox 提交 sandbox 创建请求。
 func (c *Client) CreateSandbox(
 	ctx context.Context,
 	request protocol.CreateSandboxRequest,

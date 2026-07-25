@@ -11,15 +11,17 @@ paths:
       responses:
         "200":
           description: Control plane is healthy
+  /readyz:
+    get:
+      operationId: ready
+      responses:
+        "200":
+          description: Control plane is ready
+        "503":
+          description: Control plane is not ready
   /v1/sandboxes:
     post:
       operationId: createSandbox
-      parameters:
-        - name: Idempotency-Key
-          in: header
-          required: false
-          schema:
-            type: string
       requestBody:
         required: true
         content:
@@ -52,30 +54,6 @@ paths:
           description: Sandbox deletion was accepted
         "204":
           description: Sandbox is already absent
-  /v1/sandboxes/{sandbox_id}/renew:
-    parameters:
-      - $ref: "#/components/parameters/SandboxID"
-    post:
-      operationId: renewSandbox
-      requestBody:
-        required: true
-        content:
-          application/json:
-            schema:
-              type: object
-              required: [ttl_seconds]
-              properties:
-                ttl_seconds:
-                  type: integer
-                  format: int64
-                  minimum: 1
-      responses:
-        "200":
-          description: Sandbox expiration was updated
-          content:
-            application/json:
-              schema:
-                $ref: "#/components/schemas/Sandbox"
 components:
   parameters:
     SandboxID:
@@ -87,22 +65,11 @@ components:
   schemas:
     CreateSandboxRequest:
       type: object
+      additionalProperties: false
       required: [image]
       properties:
         image:
           type: string
-        command:
-          type: array
-          items:
-            type: string
-        env:
-          type: object
-          additionalProperties:
-            type: string
-        ttl_seconds:
-          type: integer
-          format: int64
-          minimum: 1
     Sandbox:
       type: object
       required: [id, state, image, created_at]
@@ -122,4 +89,3 @@ components:
           format: date-time
         failure_reason:
           type: string
-
