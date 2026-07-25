@@ -26,6 +26,9 @@ The third-stage reliability plan for TTL and renewal, idempotent creation,
 periodic reconciliation, persistent retry, crash recovery, orphan handling,
 metrics, and diagnostics is in
 [`docs/phase-3-reliability-development-plan.md`](docs/phase-3-reliability-development-plan.md).
+The fourth-stage agent-experience plan for workspace files, PTY sessions,
+HTTP port proxying, Go/TypeScript/Python SDKs, and image pre-pulling is in
+[`docs/phase-4-agent-experience-development-plan.md`](docs/phase-4-agent-experience-development-plan.md).
 
 ## Quick start
 
