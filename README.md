@@ -22,6 +22,10 @@ The matching second-stage plan for PID 1 behavior, non-root runner execution,
 HTTP/SSE protocols, process-group cancellation, background tasks, and the
 controlled outbound network is in
 [`docs/phase-2-runner-execution-development-plan.md`](docs/phase-2-runner-execution-development-plan.md).
+The third-stage reliability plan for TTL and renewal, idempotent creation,
+periodic reconciliation, persistent retry, crash recovery, orphan handling,
+metrics, and diagnostics is in
+[`docs/phase-3-reliability-development-plan.md`](docs/phase-3-reliability-development-plan.md).
 
 ## Quick start
 
