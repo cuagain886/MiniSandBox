@@ -23,8 +23,8 @@ func Open(path string) (*Store, error) {
 	return &Store{path: path}, nil
 }
 
-// Save 原子写入 sandbox 记录。
-func (s *Store) Save(context.Context, domain.Sandbox) error {
+// Create 持久化一条新 sandbox 记录。
+func (s *Store) Create(context.Context, domain.Sandbox) error {
 	return domain.ErrNotImplemented
 }
 
@@ -33,14 +33,35 @@ func (s *Store) Get(context.Context, string) (domain.Sandbox, error) {
 	return domain.Sandbox{}, domain.ErrNotImplemented
 }
 
-// List 返回需要生命周期恢复的全部 sandbox 记录。
-func (s *Store) List(context.Context) ([]domain.Sandbox, error) {
+// UpdateDesired 以 CAS 方式更新期望状态。
+func (s *Store) UpdateDesired(
+	context.Context,
+	string,
+	domain.DesiredState,
+	uint64,
+) (domain.Sandbox, error) {
+	return domain.Sandbox{}, domain.ErrNotImplemented
+}
+
+// UpdateObserved 以 CAS 方式更新观测状态。
+func (s *Store) UpdateObserved(
+	context.Context,
+	storeport.ObservedUpdate,
+) (domain.Sandbox, error) {
+	return domain.Sandbox{}, domain.ErrNotImplemented
+}
+
+// ListReconcileCandidates 返回仍需收敛的记录。
+func (s *Store) ListReconcileCandidates(
+	context.Context,
+	int,
+) ([]domain.Sandbox, error) {
 	return nil, domain.ErrNotImplemented
 }
 
-// Delete 幂等删除已经完成资源清理的 sandbox 记录。
-func (s *Store) Delete(context.Context, string) error {
-	return domain.ErrNotImplemented
+// ListAll 返回全部持久化记录。
+func (s *Store) ListAll(context.Context) ([]domain.Sandbox, error) {
+	return nil, domain.ErrNotImplemented
 }
 
 var _ storeport.Store = (*Store)(nil)
