@@ -141,8 +141,8 @@ func TestOpenMissingParentDirectory(t *testing.T) {
 	}
 }
 
-// TestCRUDStillNotImplemented 验证业务方法仍显式返回未实现错误。
-func TestCRUDStillNotImplemented(t *testing.T) {
+// TestRemainingCRUDStillNotImplemented 验证 P1-016 范围外的方法仍显式返回未实现错误。
+func TestRemainingCRUDStillNotImplemented(t *testing.T) {
 	store, err := Open(testDatabasePath(t))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -151,9 +151,6 @@ func TestCRUDStillNotImplemented(t *testing.T) {
 
 	ctx := context.Background()
 	calls := map[string]func() error{
-		"Create": func() error {
-			return store.Create(ctx, domain.Sandbox{})
-		},
 		"Get": func() error {
 			_, err := store.Get(ctx, "sb-1")
 			return err

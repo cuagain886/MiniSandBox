@@ -8,11 +8,15 @@ package sqlite
 import (
 	"context"
 	"database/sql"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
+	"time"
 
-	// 注册 CGo-free 的 "sqlite" database/sql driver（ADR-0001）。
-	_ "modernc.org/sqlite"
+	// 注册 CGo-free 的 "sqlite" database/sql driver（ADR-0001），并用于识别结构化错误码。
+	sqliteDriver "modernc.org/sqlite"
+	sqlite3 "modernc.org/sqlite/lib"
 
 	"minisandbox/internal/domain"
 	storeport "minisandbox/internal/store"
@@ -24,6 +28,42 @@ const busyTimeoutMillis = 5000
 // Store 是 store 端口的 SQLite 实现。
 type Store struct {
 	db *sql.DB
+}
+
+// storedSandboxSpec 是 SQLite 中 resolved spec 的稳定 JSON 表示。
+//
+// 持久化结构与领域结构显式转换，避免 Go 字段重命名或默认 JSON 字段名变化
+// 破坏已存在数据库的重启恢复能力。
+type storedSandboxSpec struct {
+	Image     string               `json:"image"`
+	Resources storedResourceLimits `json:"resources"`
+	Workspace storedWorkspaceSpec  `json:"workspace"`
+	Network   storedNetworkSpec    `json:"network"`
+	Platform  storedPlatform       `json:"platform"`
+}
+
+// storedResourceLimits 保存资源限制及其稳定字段名。
+type storedResourceLimits struct {
+	CPUQuotaMillis int64 `json:"cpu_quota_millis"`
+	MemoryMiB      int64 `json:"memory_mib"`
+	PIDs           int64 `json:"pids"`
+}
+
+// storedWorkspaceSpec 保存 workspace 的容器内语义。
+type storedWorkspaceSpec struct {
+	MountPath  string `json:"mount_path"`
+	Persistent bool   `json:"persistent"`
+}
+
+// storedNetworkSpec 保存 sandbox 的出站网络能力。
+type storedNetworkSpec struct {
+	Outbound bool `json:"outbound"`
+}
+
+// storedPlatform 保存嵌入式产物必须匹配的目标平台。
+type storedPlatform struct {
+	OS   string `json:"os"`
+	Arch string `json:"arch"`
 }
 
 // Open 打开指定路径的 SQLite 数据库并验证连接可用。
@@ -112,9 +152,89 @@ func (s *Store) verifyConnection() error {
 	return nil
 }
 
-// Create 持久化一条新 sandbox 记录。
-func (s *Store) Create(context.Context, domain.Sandbox) error {
-	return domain.ErrNotImplemented
+// Create 原子持久化一条新的 Pending/DesiredRunning sandbox 记录。
+//
+// 调用方负责提供已经校验的 resolved spec 和初始状态；Create 把首个持久化
+// revision 固定为 1。ID 已存在时返回 domain.ErrConflict，调用被取消时保留
+// context 的错误语义，便于上层区分冲突与未完成写入。
+func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
+	specJSON, err := json.Marshal(storedSpecFromDomain(sandbox.Spec))
+	if err != nil {
+		return fmt.Errorf("encode sandbox spec: %w", err)
+	}
+
+	_, err = s.db.ExecContext(
+		ctx,
+		`INSERT INTO sandboxes (
+			id,
+			spec_json,
+			desired_state,
+			observed_state,
+			reason,
+			message,
+			runtime_id,
+			spec_hash,
+			revision,
+			created_at,
+			updated_at,
+			last_transition_at
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sandbox.ID,
+		specJSON,
+		sandbox.DesiredState,
+		sandbox.ObservedState,
+		sandbox.Reason,
+		sandbox.Message,
+		sandbox.RuntimeID,
+		sandbox.SpecHash,
+		uint64(1),
+		sandbox.CreatedAt.UTC().Format(time.RFC3339Nano),
+		sandbox.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		sandbox.LastTransitionAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err == nil {
+		return nil
+	}
+	if isDuplicateConstraint(err) {
+		return fmt.Errorf("create sandbox: %w", domain.ErrConflict)
+	}
+	return fmt.Errorf("create sandbox: %w", err)
+}
+
+// storedSpecFromDomain 把领域规格转换为不依赖领域字段名的持久化结构。
+func storedSpecFromDomain(spec domain.SandboxSpec) storedSandboxSpec {
+	return storedSandboxSpec{
+		Image: spec.Image,
+		Resources: storedResourceLimits{
+			CPUQuotaMillis: spec.Resources.CPUQuotaMillis,
+			MemoryMiB:      spec.Resources.MemoryMiB,
+			PIDs:           spec.Resources.PIDs,
+		},
+		Workspace: storedWorkspaceSpec{
+			MountPath:  spec.Workspace.MountPath,
+			Persistent: spec.Workspace.Persistent,
+		},
+		Network: storedNetworkSpec{
+			Outbound: spec.Network.Outbound,
+		},
+		Platform: storedPlatform{
+			OS:   spec.Platform.OS,
+			Arch: spec.Platform.Arch,
+		},
+	}
+}
+
+// isDuplicateConstraint 只识别主键或唯一键冲突。
+//
+// 其他约束错误通常表示 schema 或写入逻辑缺陷，不能伪装成客户端可重试的
+// ID 冲突。使用 driver 的结构化扩展错误码，避免依赖可能变化的错误文本。
+func isDuplicateConstraint(err error) bool {
+	var sqliteErr *sqliteDriver.Error
+	if !errors.As(err, &sqliteErr) {
+		return false
+	}
+	return sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_PRIMARYKEY ||
+		sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
 
 // Get 按 ID 读取 sandbox 记录。
