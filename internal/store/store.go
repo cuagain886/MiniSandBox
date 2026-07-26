@@ -7,9 +7,16 @@ package store
 
 import (
 	"context"
+	"errors"
 
 	"minisandbox/internal/domain"
 )
+
+// ErrCorrupt 表示持久化记录无法安全还原为领域对象。
+//
+// 调用方应把它视为需要运维介入的数据完整性故障，不能按 NotFound 或 CAS
+// 冲突重试；具体 adapter 的错误不得回显损坏字段值或数据库内部信息。
+var ErrCorrupt = errors.New("store corruption")
 
 // ObservedUpdate 描述 reconciler 对观测状态的一次 CAS 更新请求。
 type ObservedUpdate struct {

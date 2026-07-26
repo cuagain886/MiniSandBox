@@ -1,8 +1,8 @@
 // Package sqlite 承载 store 端口的 SQLite 持久化 adapter。
 //
 // 本模块设计上负责连接管理、schema 迁移和事务存取；当前已实现基于纯 Go
-// driver 的连接打开与关闭，CRUD 与迁移由后续任务实现。它不决定生命周期
-// 状态转换、鉴权或 runtime 行为，也不负责创建数据库父目录。
+// driver 的连接、迁移以及 sandbox 创建和读取，更新与列表由后续任务实现。
+// 它不决定生命周期状态转换、鉴权或 runtime 行为，也不负责创建数据库父目录。
 package sqlite
 
 import (
@@ -237,9 +237,37 @@ func isDuplicateConstraint(err error) bool {
 		sqliteErr.Code() == sqlite3.SQLITE_CONSTRAINT_UNIQUE
 }
 
-// Get 按 ID 读取 sandbox 记录。
-func (s *Store) Get(context.Context, string) (domain.Sandbox, error) {
-	return domain.Sandbox{}, domain.ErrNotImplemented
+// Get 按 ID 完整还原 sandbox 记录。
+//
+// ID 不存在时返回 domain.ErrNotFound；记录不能安全解析时返回
+// store.ErrCorrupt。Get 只读取 SQLite，不查询或修正 Docker 实际状态。
+func (s *Store) Get(ctx context.Context, id string) (domain.Sandbox, error) {
+	sandbox, err := scanSandbox(s.db.QueryRowContext(
+		ctx,
+		`SELECT
+			id,
+			spec_json,
+			desired_state,
+			observed_state,
+			reason,
+			message,
+			runtime_id,
+			spec_hash,
+			revision,
+			created_at,
+			updated_at,
+			last_transition_at
+		FROM sandboxes
+		WHERE id = ?`,
+		id,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Sandbox{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("get sandbox: %w", err)
+	}
+	return sandbox, nil
 }
 
 // UpdateDesired 以 CAS 方式更新期望状态。
