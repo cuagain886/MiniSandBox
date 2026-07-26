@@ -12,6 +12,11 @@ runtime:
   default_image: "debian:bookworm-slim"
   runner_socket_directory: "/var/lib/minisandbox/run"
   workspace_directory: "/var/lib/minisandbox/workspaces"
+  network_mode: "none"
+  workspace_persistent: false
+  platform:
+    os: "linux"
+    arch: "amd64"
 
 reconcile:
   interval: "2s"
@@ -21,4 +26,11 @@ reconcile:
 limits:
   default_ttl: "30m"
   maximum_ttl: "24h"
-
+  default_resources:
+    cpu_quota_millis: 500
+    memory_mib: 512
+    pids: 128
+  max_resources:
+    cpu_quota_millis: 4000
+    memory_mib: 8192
+    pids: 1024

@@ -1,9 +1,11 @@
-// Package config 定义 sandboxd 的强类型配置模型和安全默认值。
+// Package config 定义 sandboxd 的强类型配置模型、安全默认值、YAML 加载
+// 与启动前安全校验。
 //
 // 本模块是配置字段和默认值的 source of truth,负责用 Go 类型表示 server、
-// data、runtime、limits 和 reconcile 配置,并提供可直接生成完整 resolved
-// spec 的默认值。它不读取 YAML、不做跨字段安全校验,也不创建目录或连接
-// 外部依赖;这些能力由后续里程碑实现。
+// data、runtime、limits 和 reconcile 配置,提供可直接生成完整 resolved
+// spec 的默认值,从显式路径加载 YAML 覆盖默认值,并在启动前一次性拒绝
+// 不安全或互相矛盾的配置。它不创建目录、不监听端口,也不连接外部依赖;
+// 这些能力由后续里程碑实现。
 package config
 
 import (
