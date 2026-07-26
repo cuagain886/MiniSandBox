@@ -1,0 +1,116 @@
+package config
+
+import (
+	"reflect"
+	"testing"
+	"time"
+
+	"minisandbox/internal/domain"
+)
+
+// TestDefaultSnapshot 以快照方式钉死全部默认值,任何默认值变化都必须
+// 显式更新本测试并同步示例配置与文档。
+func TestDefaultSnapshot(t *testing.T) {
+	want := Config{
+		Server: ServerConfig{
+			ListenAddress:   "127.0.0.1:8080",
+			ShutdownTimeout: 10 * time.Second,
+		},
+		Data: DataConfig{
+			Directory:  "/var/lib/minisandbox",
+			SQLitePath: "/var/lib/minisandbox/sandboxd.db",
+		},
+		Runtime: RuntimeConfig{
+			Type:                  "docker",
+			DockerHost:            "unix:///var/run/docker.sock",
+			DefaultImage:          "debian:bookworm-slim",
+			RunnerSocketDirectory: "/var/lib/minisandbox/run",
+			WorkspaceDirectory:    "/var/lib/minisandbox/workspaces",
+			NetworkMode:           "none",
+			WorkspacePersistent:   false,
+			Platform: domain.Platform{
+				OS:   "linux",
+				Arch: "amd64",
+			},
+		},
+		Limits: LimitsConfig{
+			DefaultTTL: 30 * time.Minute,
+			MaximumTTL: 24 * time.Hour,
+			DefaultResources: domain.ResourceLimits{
+				CPUQuotaMillis: 500,
+				MemoryMiB:      512,
+				PIDs:           128,
+			},
+			MaxResources: domain.ResourceBounds{
+				MaxCPUQuotaMillis: 4000,
+				MaxMemoryMiB:      8192,
+				MaxPIDs:           1024,
+			},
+		},
+		Reconcile: ReconcileConfig{
+			Interval:           2 * time.Second,
+			RunnerReadyTimeout: 30 * time.Second,
+			DeletionTimeout:    30 * time.Second,
+		},
+	}
+
+	if got := Default(); !reflect.DeepEqual(got, want) {
+		t.Fatalf("default config snapshot mismatch:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+// TestDefaultSandboxSpecComplete 验证默认配置能生成完整且自洽的 resolved spec。
+func TestDefaultSandboxSpecComplete(t *testing.T) {
+	cfg := Default()
+	spec := cfg.DefaultSandboxSpec()
+
+	want := domain.SandboxSpec{
+		Image: "debian:bookworm-slim",
+		Resources: domain.ResourceLimits{
+			CPUQuotaMillis: 500,
+			MemoryMiB:      512,
+			PIDs:           128,
+		},
+		Workspace: domain.WorkspaceSpec{
+			MountPath:  "/workspace",
+			Persistent: false,
+		},
+		Network: domain.NetworkSpec{
+			Outbound: false,
+		},
+		Platform: domain.Platform{
+			OS:   "linux",
+			Arch: "amd64",
+		},
+	}
+	if !reflect.DeepEqual(spec, want) {
+		t.Fatalf("default resolved spec mismatch:\ngot  %+v\nwant %+v", spec, want)
+	}
+
+	// 默认 spec 必须能通过领域校验,证明默认值之间没有互相矛盾。
+	if err := spec.Validate(cfg.Limits.MaxResources); err != nil {
+		t.Fatalf("default resolved spec fails validation: %v", err)
+	}
+}
+
+// TestDefaultSandboxSpecDerivesFromConfig 验证 spec 派生自配置字段,
+// 而不是方法内部的硬编码值。
+func TestDefaultSandboxSpecDerivesFromConfig(t *testing.T) {
+	cfg := Default()
+	cfg.Runtime.DefaultImage = "alpine:3.22"
+	cfg.Limits.DefaultResources.MemoryMiB = 1024
+	cfg.Runtime.NetworkMode = "bridge"
+
+	spec := cfg.DefaultSandboxSpec()
+	if got, want := spec.Image, "alpine:3.22"; got != want {
+		t.Fatalf("image not derived from config: got %s, want %s", got, want)
+	}
+	if got, want := spec.Resources.MemoryMiB, int64(1024); got != want {
+		t.Fatalf("memory not derived from config: got %d, want %d", got, want)
+	}
+	// 非 none 网络模式映射为 Outbound=true,由领域校验兜底拒绝,
+	// 而不是在映射层被静默改写为安全值。
+	if !spec.Network.Outbound {
+		t.Fatal("non-none network mode must map to outbound=true")
+	}
+}
