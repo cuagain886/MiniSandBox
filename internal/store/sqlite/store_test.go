@@ -8,7 +8,6 @@ import (
 	"testing"
 
 	"minisandbox/internal/domain"
-	storeport "minisandbox/internal/store"
 )
 
 // testDatabasePath 返回临时目录中的数据库路径。
@@ -153,10 +152,6 @@ func TestRemainingCRUDStillNotImplemented(t *testing.T) {
 	calls := map[string]func() error{
 		"UpdateDesired": func() error {
 			_, err := store.UpdateDesired(ctx, "sb-1", domain.DesiredRunning, 1)
-			return err
-		},
-		"UpdateObserved": func() error {
-			_, err := store.UpdateObserved(ctx, storeport.ObservedUpdate{})
 			return err
 		},
 		"ListReconcileCandidates": func() error {

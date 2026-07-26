@@ -1,8 +1,9 @@
 // Package sqlite 承载 store 端口的 SQLite 持久化 adapter。
 //
 // 本模块设计上负责连接管理、schema 迁移和事务存取；当前已实现基于纯 Go
-// driver 的连接、迁移以及 sandbox 创建和读取，更新与列表由后续任务实现。
-// 它不决定生命周期状态转换、鉴权或 runtime 行为，也不负责创建数据库父目录。
+// driver 的连接、迁移、sandbox 创建与读取，以及观测状态 CAS 更新；期望
+// 状态更新与列表由后续任务实现。它不决定生命周期状态转换、鉴权或 runtime
+// 行为，也不负责创建数据库父目录。
 package sqlite
 
 import (
@@ -27,7 +28,8 @@ const busyTimeoutMillis = 5000
 
 // Store 是 store 端口的 SQLite 实现。
 type Store struct {
-	db *sql.DB
+	db  *sql.DB
+	now func() time.Time
 }
 
 // storedSandboxSpec 是 SQLite 中 resolved spec 的稳定 JSON 表示。
@@ -91,7 +93,10 @@ func Open(path string) (*Store, error) {
 	}
 	db.SetMaxOpenConns(1)
 
-	store := &Store{db: db}
+	store := &Store{
+		db:  db,
+		now: time.Now,
+	}
 	if err := store.verifyConnection(); err != nil {
 		_ = db.Close()
 		return nil, err
@@ -244,21 +249,7 @@ func isDuplicateConstraint(err error) bool {
 func (s *Store) Get(ctx context.Context, id string) (domain.Sandbox, error) {
 	sandbox, err := scanSandbox(s.db.QueryRowContext(
 		ctx,
-		`SELECT
-			id,
-			spec_json,
-			desired_state,
-			observed_state,
-			reason,
-			message,
-			runtime_id,
-			spec_hash,
-			revision,
-			created_at,
-			updated_at,
-			last_transition_at
-		FROM sandboxes
-		WHERE id = ?`,
+		selectSandboxByIDQuery,
 		id,
 	))
 	if errors.Is(err, sql.ErrNoRows) {
@@ -280,12 +271,100 @@ func (s *Store) UpdateDesired(
 	return domain.Sandbox{}, domain.ErrNotImplemented
 }
 
-// UpdateObserved 以 CAS 方式更新观测状态。
+// UpdateObserved 以 expected revision 为条件更新观测状态并返回完整新记录。
+//
+// 更新、影响行数检查和回读处于同一事务；CAS 未命中统一返回
+// domain.ErrConflict。状态发生变化时同步更新 last transition，相同状态则
+// 保留原 transition 时间。任何回读或提交失败都会回滚，不暴露部分更新。
 func (s *Store) UpdateObserved(
-	context.Context,
-	storeport.ObservedUpdate,
+	ctx context.Context,
+	update storeport.ObservedUpdate,
 ) (domain.Sandbox, error) {
-	return domain.Sandbox{}, domain.ErrNotImplemented
+	if _, err := parseObservedState(string(update.State)); err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"update observed state: %w",
+			domain.ErrInvalid,
+		)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"begin observed update transaction: %w",
+			err,
+		)
+	}
+	// Commit 成功后 Rollback 返回 sql.ErrTxDone，是安全的空操作；其他失败
+	// 路径依靠这里撤销可能已经执行的 UPDATE。
+	defer func() { _ = tx.Rollback() }()
+
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE sandboxes
+		SET
+			observed_state = ?,
+			reason = ?,
+			message = ?,
+			runtime_id = ?,
+			revision = revision + 1,
+			updated_at = ?,
+			last_transition_at = CASE
+				WHEN observed_state <> ? THEN ?
+				ELSE last_transition_at
+			END
+		WHERE id = ? AND revision = ?`,
+		update.State,
+		update.Reason,
+		update.Message,
+		update.RuntimeID,
+		now,
+		update.State,
+		now,
+		update.ID,
+		update.ExpectedRevision,
+	)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"update observed sandbox: %w",
+			err,
+		)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"read observed update result: %w",
+			err,
+		)
+	}
+	if affected == 0 {
+		return domain.Sandbox{}, domain.ErrConflict
+	}
+	if affected != 1 {
+		return domain.Sandbox{}, fmt.Errorf(
+			"update observed sandbox: expected one affected row, got %d",
+			affected,
+		)
+	}
+
+	updated, err := scanSandbox(tx.QueryRowContext(
+		ctx,
+		selectSandboxByIDQuery,
+		update.ID,
+	))
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"read updated sandbox: %w",
+			err,
+		)
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"commit observed update: %w",
+			err,
+		)
+	}
+	return updated, nil
 }
 
 // ListReconcileCandidates 返回仍需收敛的记录。

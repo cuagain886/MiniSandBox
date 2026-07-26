@@ -10,6 +10,26 @@ import (
 	storeport "minisandbox/internal/store"
 )
 
+// selectSandboxByIDQuery 固定 Get 与事务内 CAS 回读使用的列顺序。
+//
+// 修改 schema 或 scanner 字段时必须同步修改本查询，避免不同读取路径对同一
+// 记录产生不同解释。
+const selectSandboxByIDQuery = `SELECT
+	id,
+	spec_json,
+	desired_state,
+	observed_state,
+	reason,
+	message,
+	runtime_id,
+	spec_hash,
+	revision,
+	created_at,
+	updated_at,
+	last_transition_at
+FROM sandboxes
+WHERE id = ?`
+
 // rowScanner 抽象 sql.Row 和 sql.Rows 共有的 Scan 能力。
 //
 // 后续 Get、CAS 更新返回值和列表查询必须复用同一还原路径，避免不同 Store
