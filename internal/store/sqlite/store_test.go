@@ -140,7 +140,7 @@ func TestOpenMissingParentDirectory(t *testing.T) {
 	}
 }
 
-// TestRemainingCRUDStillNotImplemented 验证 P1-017 范围外的方法仍显式返回未实现错误。
+// TestRemainingCRUDStillNotImplemented 验证 P1-019 范围外的方法仍显式返回未实现错误。
 func TestRemainingCRUDStillNotImplemented(t *testing.T) {
 	store, err := Open(testDatabasePath(t))
 	if err != nil {
@@ -150,10 +150,6 @@ func TestRemainingCRUDStillNotImplemented(t *testing.T) {
 
 	ctx := context.Background()
 	calls := map[string]func() error{
-		"UpdateDesired": func() error {
-			_, err := store.UpdateDesired(ctx, "sb-1", domain.DesiredRunning, 1)
-			return err
-		},
 		"ListReconcileCandidates": func() error {
 			_, err := store.ListReconcileCandidates(ctx, 10)
 			return err

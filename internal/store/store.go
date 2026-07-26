@@ -37,13 +37,17 @@ type ObservedUpdate struct {
 // Store 定义 sandbox 期望状态的持久化能力。
 //
 // 所有更新都基于 revision CAS：expectedRevision 与存量记录不一致时必须
-// 返回 domain.ErrConflict 并保持记录不变，调用方重新读取后重试。
+// 返回 domain.ErrConflict 并保持记录不变，调用方重新读取后重试；唯一例外是
+// UpdateDesired 的目标已经满足，此时按幂等 no-op 返回当前记录。
 type Store interface {
 	// Create 持久化一条新记录，ID 已存在时返回 domain.ErrConflict。
 	Create(ctx context.Context, sandbox domain.Sandbox) error
 	// Get 按 ID 返回 sandbox，不存在时返回 domain.ErrNotFound。
 	Get(ctx context.Context, id string) (domain.Sandbox, error)
-	// UpdateDesired 以 CAS 方式更新期望状态并返回更新后的记录。
+	// UpdateDesired 以 CAS 方式提交 DesiredTerminated 并返回更新后的记录。
+	//
+	// 已经处于 DesiredTerminated 时返回当前记录作为幂等 no-op，不递增
+	// revision；只有实际状态转换才要求 expectedRevision 匹配。
 	UpdateDesired(
 		ctx context.Context,
 		id string,

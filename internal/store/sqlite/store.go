@@ -1,9 +1,9 @@
 // Package sqlite 承载 store 端口的 SQLite 持久化 adapter。
 //
 // 本模块设计上负责连接管理、schema 迁移和事务存取；当前已实现基于纯 Go
-// driver 的连接、迁移、sandbox 创建与读取，以及观测状态 CAS 更新；期望
-// 状态更新与列表由后续任务实现。它不决定生命周期状态转换、鉴权或 runtime
-// 行为，也不负责创建数据库父目录。
+// driver 的连接、迁移、sandbox 创建与读取，以及期望/观测状态 CAS 更新；
+// 列表查询由后续任务实现。它不决定生命周期状态转换、鉴权或 runtime 行为，
+// 也不负责创建数据库父目录。
 package sqlite
 
 import (
@@ -261,14 +261,100 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Sandbox, error) {
 	return sandbox, nil
 }
 
-// UpdateDesired 以 CAS 方式更新期望状态。
+// UpdateDesired 幂等提交 DesiredTerminated 并返回完整的新记录。
+//
+// Running 到 Terminated 的实际转换要求 expectedRevision 匹配，成功时 revision
+// 加一并更新 updated time，但绝不直接修改 observed state 或 transition time。
+// 已经 DesiredTerminated 时返回当前记录作为 no-op，即使调用方因响应丢失仍
+// 携带旧 revision；不存在返回 domain.ErrNotFound，旧 revision 返回
+// domain.ErrConflict。
 func (s *Store) UpdateDesired(
-	context.Context,
-	string,
-	domain.DesiredState,
-	uint64,
+	ctx context.Context,
+	id string,
+	desired domain.DesiredState,
+	expectedRevision uint64,
 ) (domain.Sandbox, error) {
-	return domain.Sandbox{}, domain.ErrNotImplemented
+	if desired != domain.DesiredTerminated {
+		return domain.Sandbox{}, fmt.Errorf(
+			"update desired state: %w",
+			domain.ErrInvalid,
+		)
+	}
+
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"begin desired update transaction: %w",
+			err,
+		)
+	}
+	// 条件 UPDATE 之后的分类读取和成功回读必须与写入共用事务；否则并发
+	// 更新可能让 no-op、NotFound 与 Conflict 的判断基于不同快照。
+	defer func() { _ = tx.Rollback() }()
+
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE sandboxes
+		SET
+			desired_state = ?,
+			revision = revision + 1,
+			updated_at = ?
+		WHERE
+			id = ? AND
+			revision = ? AND
+			desired_state = ?`,
+		desired,
+		now,
+		id,
+		expectedRevision,
+		domain.DesiredRunning,
+	)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"update desired sandbox: %w",
+			err,
+		)
+	}
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"read desired update result: %w",
+			err,
+		)
+	}
+	if affected > 1 {
+		return domain.Sandbox{}, fmt.Errorf(
+			"update desired sandbox: expected at most one affected row, got %d",
+			affected,
+		)
+	}
+
+	current, err := scanSandbox(tx.QueryRowContext(
+		ctx,
+		selectSandboxByIDQuery,
+		id,
+	))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Sandbox{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"read desired sandbox: %w",
+			err,
+		)
+	}
+	if affected == 0 && current.DesiredState != desired {
+		return domain.Sandbox{}, domain.ErrConflict
+	}
+
+	if err := tx.Commit(); err != nil {
+		return domain.Sandbox{}, fmt.Errorf(
+			"commit desired update: %w",
+			err,
+		)
+	}
+	return current, nil
 }
 
 // UpdateObserved 以 expected revision 为条件更新观测状态并返回完整新记录。
