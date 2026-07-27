@@ -2,6 +2,7 @@ package application
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"minisandbox/internal/domain"
@@ -105,4 +106,55 @@ func (s *SandboxService) Get(ctx context.Context, id string) (domain.Sandbox, er
 		return domain.Sandbox{}, fmt.Errorf("get sandbox: %w", err)
 	}
 	return sandbox, nil
+}
+
+// Delete 幂等提交 DesiredTerminated，并唤醒后台删除收敛。
+//
+// 已经观测为 Terminated 时直接返回且不再唤醒；其他已提交终止意图的记录
+// 仍会 Wake，允许调用方显式重试 cleanup pending。首次 CAS 冲突只重读一次
+// 并最多再更新一次，本方法绝不直接调用 Runtime.Delete 或修改 observed state。
+func (s *SandboxService) Delete(
+	ctx context.Context,
+	command DeleteSandbox,
+) (domain.Sandbox, error) {
+	current, err := s.Get(ctx, command.SandboxID)
+	if err != nil {
+		return domain.Sandbox{}, err
+	}
+
+	for attempt := 0; attempt < 2; attempt++ {
+		if current.ObservedState == domain.StateTerminated {
+			return current, nil
+		}
+		if current.DesiredState == domain.DesiredTerminated {
+			s.waker.Wake(current.ID)
+			return current, nil
+		}
+
+		updated, err := s.store.UpdateDesired(
+			ctx,
+			current.ID,
+			domain.DesiredTerminated,
+			current.Revision,
+		)
+		if err == nil {
+			s.waker.Wake(updated.ID)
+			return updated, nil
+		}
+		if !errors.Is(err, domain.ErrConflict) || attempt == 1 {
+			return domain.Sandbox{}, fmt.Errorf(
+				"submit sandbox termination: %w",
+				err,
+			)
+		}
+
+		// 冲突表示 snapshot 已过期；只重读一次，避免竞争激烈时请求线程
+		// 无界自旋。重读后若其他调用已提交目标，下一轮会走幂等分支。
+		current, err = s.Get(ctx, command.SandboxID)
+		if err != nil {
+			return domain.Sandbox{}, err
+		}
+	}
+
+	panic("unreachable delete retry loop")
 }
