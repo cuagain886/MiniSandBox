@@ -45,6 +45,8 @@ type LifecycleService interface {
 type RouterDependencies struct {
 	// Lifecycle 提供 sandbox 创建、查询和删除用例。
 	Lifecycle LifecycleService
+	// Readiness 保存启动依赖的并发安全就绪状态；nil 等价于全部未就绪。
+	Readiness *Readiness
 }
 
 // NewRouter 创建 sandboxd 的根 HTTP handler，并注册中间件与全部公开路由。
@@ -68,6 +70,7 @@ func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler
 			"build":   build,
 		})
 	})
+	mux.HandleFunc("GET /readyz", readinessHandler(deps.Readiness))
 	registerLifecycleRoutes(mux, deps.Lifecycle)
 	registerExecutionRoutes(mux)
 	return requestIDMiddleware(mux)

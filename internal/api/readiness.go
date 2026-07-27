@@ -1,6 +1,11 @@
 package api
 
-import "sync"
+import (
+	"net/http"
+	"sync"
+
+	"minisandbox/pkg/protocol"
+)
 
 // Readiness 并发安全地记录 sandboxd 启动所需组件是否已经就绪。
 //
@@ -85,4 +90,53 @@ func (r *Readiness) Snapshot() ReadinessSnapshot {
 		Recovery: r.recovery,
 		Worker:   r.worker,
 	}
+}
+
+// readinessHandler 根据必要组件快照返回 200 或 503。
+//
+// nil 状态对象按全部未就绪处理，使装配遗漏保持 fail-closed。响应只包含固定
+// 组件名和 ready/not_ready，不暴露探测错误或内部配置。
+func readinessHandler(readiness *Readiness) http.HandlerFunc {
+	if readiness == nil {
+		readiness = &Readiness{}
+	}
+	return func(w http.ResponseWriter, _ *http.Request) {
+		snapshot := readiness.Snapshot()
+		response := mapReadinessResponse(snapshot)
+		status := http.StatusServiceUnavailable
+		if snapshot.Ready() {
+			status = http.StatusOK
+		}
+		writeJSON(w, status, response)
+	}
+}
+
+// mapReadinessResponse 按固定顺序构造不含内部诊断信息的公共响应。
+func mapReadinessResponse(snapshot ReadinessSnapshot) protocol.ReadinessResponse {
+	status := protocol.ReadinessStatusNotReady
+	if snapshot.Ready() {
+		status = protocol.ReadinessStatusReady
+	}
+	return protocol.ReadinessResponse{
+		Status: status,
+		Components: []protocol.ReadinessComponent{
+			readinessComponent(protocol.ReadinessComponentStore, snapshot.Store),
+			readinessComponent(protocol.ReadinessComponentDocker, snapshot.Docker),
+			readinessComponent(protocol.ReadinessComponentArtifact, snapshot.Artifact),
+			readinessComponent(protocol.ReadinessComponentRecovery, snapshot.Recovery),
+			readinessComponent(protocol.ReadinessComponentWorker, snapshot.Worker),
+		},
+	}
+}
+
+// readinessComponent 把内部布尔值转换为稳定 wire 状态。
+func readinessComponent(
+	name protocol.ReadinessComponentName,
+	ready bool,
+) protocol.ReadinessComponent {
+	status := protocol.ReadinessStatusNotReady
+	if ready {
+		status = protocol.ReadinessStatusReady
+	}
+	return protocol.ReadinessComponent{Name: name, Status: status}
 }

@@ -17,8 +17,16 @@ paths:
       responses:
         "200":
           description: Control plane is ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
         "503":
-          $ref: "#/components/responses/ServiceUnavailable"
+          description: One or more required control-plane components are not ready
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ReadinessResponse"
   /v1/sandboxes:
     post:
       operationId: createSandbox
@@ -155,6 +163,34 @@ components:
       properties:
         image:
           type: string
+    ReadinessStatus:
+      type: string
+      enum: [ready, not_ready]
+    ReadinessComponentName:
+      type: string
+      enum: [store, docker, artifact, recovery, worker]
+    ReadinessComponent:
+      type: object
+      additionalProperties: false
+      required: [name, status]
+      properties:
+        name:
+          $ref: "#/components/schemas/ReadinessComponentName"
+        status:
+          $ref: "#/components/schemas/ReadinessStatus"
+    ReadinessResponse:
+      type: object
+      additionalProperties: false
+      required: [status, components]
+      properties:
+        status:
+          $ref: "#/components/schemas/ReadinessStatus"
+        components:
+          type: array
+          minItems: 5
+          maxItems: 5
+          items:
+            $ref: "#/components/schemas/ReadinessComponent"
     SandboxState:
       type: string
       enum:

@@ -145,6 +145,38 @@ func TestPhase1ErrorResponseSchema(t *testing.T) {
 	}
 }
 
+// TestPhase1ReadinessResponseSchema 验证 readyz 只公开固定组件和安全状态。
+func TestPhase1ReadinessResponseSchema(t *testing.T) {
+	document := readLifecycleOpenAPI(t)
+
+	required := []string{
+		"    ReadinessStatus:",
+		"      enum: [ready, not_ready]",
+		"    ReadinessComponentName:",
+		"      enum: [store, docker, artifact, recovery, worker]",
+		"    ReadinessComponent:",
+		"      required: [name, status]",
+		"    ReadinessResponse:",
+		"      required: [status, components]",
+		`$ref: "#/components/schemas/ReadinessResponse"`,
+	}
+	for _, fragment := range required {
+		if !strings.Contains(document, fragment) {
+			t.Errorf("readiness response schema is missing %q", fragment)
+		}
+	}
+	if got, want := strings.Count(
+		document,
+		`$ref: "#/components/schemas/ReadinessResponse"`,
+	), 2; got != want {
+		t.Fatalf(
+			"unexpected ReadinessResponse reference count: got %d, want %d",
+			got,
+			want,
+		)
+	}
+}
+
 // readLifecycleOpenAPI 读取当前仓库中的生命周期契约，失败时立即终止测试。
 func readLifecycleOpenAPI(t *testing.T) string {
 	t.Helper()

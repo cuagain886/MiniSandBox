@@ -1,8 +1,10 @@
 {
-  "error": {
-    "code": "RUNTIME_UNAVAILABLE",
-    "message": "Control plane is not ready.",
-    "request_id": "req-ready",
-    "retryable": true
-  }
+  "status": "not_ready",
+  "components": [
+    {"name": "store", "status": "ready"},
+    {"name": "docker", "status": "not_ready"},
+    {"name": "artifact", "status": "ready"},
+    {"name": "recovery", "status": "not_ready"},
+    {"name": "worker", "status": "ready"}
+  ]
 }

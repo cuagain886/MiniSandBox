@@ -124,11 +124,42 @@ func TestLifecycleFixtures(t *testing.T) {
 	})
 
 	t.Run("ready unavailable", func(t *testing.T) {
-		response := decodeLifecycleFixture[errorFixture](
+		response := decodeLifecycleFixture[protocol.ReadinessResponse](
 			t,
 			"ready-unavailable.json",
 		)
-		assertErrorFixture(t, response, "RUNTIME_UNAVAILABLE", true)
+		if response.Status != protocol.ReadinessStatusNotReady {
+			t.Fatalf("unexpected readiness status %q", response.Status)
+		}
+		expected := []protocol.ReadinessComponent{
+			{
+				Name:   protocol.ReadinessComponentStore,
+				Status: protocol.ReadinessStatusReady,
+			},
+			{
+				Name:   protocol.ReadinessComponentDocker,
+				Status: protocol.ReadinessStatusNotReady,
+			},
+			{
+				Name:   protocol.ReadinessComponentArtifact,
+				Status: protocol.ReadinessStatusReady,
+			},
+			{
+				Name:   protocol.ReadinessComponentRecovery,
+				Status: protocol.ReadinessStatusNotReady,
+			},
+			{
+				Name:   protocol.ReadinessComponentWorker,
+				Status: protocol.ReadinessStatusReady,
+			},
+		}
+		if !slices.Equal(response.Components, expected) {
+			t.Fatalf(
+				"unexpected readiness components: got %#v, want %#v",
+				response.Components,
+				expected,
+			)
+		}
 	})
 }
 
