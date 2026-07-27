@@ -95,7 +95,14 @@ func (s *SandboxService) Create(
 	return sandbox, nil
 }
 
-// Get 返回持久化的 sandbox 期望状态和最近一次观测状态。
+// Get 按 ID 返回 Store 中的 sandbox 期望状态和最近一次观测状态。
+//
+// 当前单租户版本不增加权限规则；本方法不读取 Runtime。Store 错误保留
+// errors.Is 分类并返回零值 sandbox，供后续 HTTP mapper 统一处理。
 func (s *SandboxService) Get(ctx context.Context, id string) (domain.Sandbox, error) {
-	return s.store.Get(ctx, id)
+	sandbox, err := s.store.Get(ctx, id)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("get sandbox: %w", err)
+	}
+	return sandbox, nil
 }
