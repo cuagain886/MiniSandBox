@@ -1,9 +1,9 @@
 // Package sqlite 承载 store 端口的 SQLite 持久化 adapter。
 //
 // 本模块设计上负责连接管理、schema 迁移和事务存取；当前已实现基于纯 Go
-// driver 的连接、迁移、sandbox 创建与读取，以及期望/观测状态 CAS 更新；
-// 列表查询由后续任务实现。它不决定生命周期状态转换、鉴权或 runtime 行为，
-// 也不负责创建数据库父目录。
+// driver 的连接、迁移、sandbox 创建与读取、期望/观测状态 CAS 更新，以及
+// reconcile candidate 查询；全量恢复查询由后续任务实现。它不决定生命周期
+// 状态转换、鉴权或 runtime 行为，也不负责创建数据库父目录。
 package sqlite
 
 import (
@@ -25,6 +25,9 @@ import (
 
 // busyTimeoutMillis 是等待数据库锁的毫秒数，超时前重试而不是立即报错。
 const busyTimeoutMillis = 5000
+
+// cleanupPendingReason 标识仍有受管资源需要重试清理的失败记录。
+const cleanupPendingReason = "CLEANUP_PENDING"
 
 // Store 是 store 端口的 SQLite 实现。
 type Store struct {
@@ -453,12 +456,74 @@ func (s *Store) UpdateObserved(
 	return updated, nil
 }
 
-// ListReconcileCandidates 返回仍需收敛的记录。
+// ListReconcileCandidates 按稳定顺序返回最多 limit 条仍需收敛的记录。
+//
+// Pending、Creating 和 Stopping 始终需要继续处理；稳定的 Running/Terminated
+// 只在 desired 不一致时处理；Failed 仅在 CLEANUP_PENDING 或已提交终止意图
+// 时处理，避免普通不可重试创建失败形成忙循环。limit 必须为正数。
 func (s *Store) ListReconcileCandidates(
-	context.Context,
-	int,
+	ctx context.Context,
+	limit int,
 ) ([]domain.Sandbox, error) {
-	return nil, domain.ErrNotImplemented
+	if limit < 1 {
+		return nil, fmt.Errorf(
+			"list reconcile candidates: %w",
+			domain.ErrInvalid,
+		)
+	}
+
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT `+sandboxSelectColumns+`
+		FROM sandboxes
+		WHERE
+			(
+				desired_state <> observed_state AND
+				observed_state IN (?, ?)
+			) OR
+			observed_state IN (?, ?, ?) OR
+			(
+				observed_state = ? AND
+				(desired_state = ? OR reason = ?)
+			)
+		ORDER BY created_at ASC, id ASC
+		LIMIT ?`,
+		domain.StateRunning,
+		domain.StateTerminated,
+		domain.StatePending,
+		domain.StateCreating,
+		domain.StateStopping,
+		domain.StateFailed,
+		domain.DesiredTerminated,
+		cleanupPendingReason,
+		limit,
+	)
+	if err != nil {
+		return nil, fmt.Errorf(
+			"query reconcile candidates: %w",
+			err,
+		)
+	}
+	defer rows.Close()
+
+	candidates := make([]domain.Sandbox, 0)
+	for rows.Next() {
+		sandbox, err := scanSandbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf(
+				"scan reconcile candidate: %w",
+				err,
+			)
+		}
+		candidates = append(candidates, sandbox)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf(
+			"iterate reconcile candidates: %w",
+			err,
+		)
+	}
+	return candidates, nil
 }
 
 // ListAll 返回全部持久化记录。

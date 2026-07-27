@@ -140,8 +140,8 @@ func TestOpenMissingParentDirectory(t *testing.T) {
 	}
 }
 
-// TestRemainingCRUDStillNotImplemented 验证 P1-019 范围外的方法仍显式返回未实现错误。
-func TestRemainingCRUDStillNotImplemented(t *testing.T) {
+// TestListAllStillNotImplemented 验证 P1-020 不提前实现全量恢复查询。
+func TestListAllStillNotImplemented(t *testing.T) {
 	store, err := Open(testDatabasePath(t))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -149,19 +149,8 @@ func TestRemainingCRUDStillNotImplemented(t *testing.T) {
 	defer store.Close()
 
 	ctx := context.Background()
-	calls := map[string]func() error{
-		"ListReconcileCandidates": func() error {
-			_, err := store.ListReconcileCandidates(ctx, 10)
-			return err
-		},
-		"ListAll": func() error {
-			_, err := store.ListAll(ctx)
-			return err
-		},
-	}
-	for name, call := range calls {
-		if err := call(); !errors.Is(err, domain.ErrNotImplemented) {
-			t.Fatalf("%s: got %v, want ErrNotImplemented", name, err)
-		}
+	_, err = store.ListAll(ctx)
+	if !errors.Is(err, domain.ErrNotImplemented) {
+		t.Fatalf("ListAll: got %v, want ErrNotImplemented", err)
 	}
 }

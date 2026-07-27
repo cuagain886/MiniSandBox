@@ -60,6 +60,9 @@ type Store interface {
 		update ObservedUpdate,
 	) (domain.Sandbox, error)
 	// ListReconcileCandidates 返回最多 limit 条仍需收敛的记录。
+	//
+	// limit 必须为正数；结果按创建时间和 ID 稳定排序，使重复扫描具有可预测
+	// 顺序，但返回顺序不构成调度优先级保证。
 	ListReconcileCandidates(
 		ctx context.Context,
 		limit int,
