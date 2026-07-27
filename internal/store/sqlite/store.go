@@ -2,8 +2,8 @@
 //
 // 本模块设计上负责连接管理、schema 迁移和事务存取；当前已实现基于纯 Go
 // driver 的连接、迁移、sandbox 创建与读取、期望/观测状态 CAS 更新，以及
-// reconcile candidate 查询；全量恢复查询由后续任务实现。它不决定生命周期
-// 状态转换、鉴权或 runtime 行为，也不负责创建数据库父目录。
+// reconcile candidate 和全量恢复查询。它不决定生命周期状态转换、鉴权或
+// runtime 行为，也不负责创建数据库父目录。
 package sqlite
 
 import (
@@ -526,9 +526,34 @@ func (s *Store) ListReconcileCandidates(
 	return candidates, nil
 }
 
-// ListAll 返回全部持久化记录。
-func (s *Store) ListAll(context.Context) ([]domain.Sandbox, error) {
-	return nil, domain.ErrNotImplemented
+// ListAll 按创建时间和 ID 稳定返回全部持久化记录。
+//
+// 本方法用于启动恢复和诊断，不读取 Docker，也不修改任何生命周期状态；
+// 空数据库返回非 nil 空切片。
+func (s *Store) ListAll(ctx context.Context) ([]domain.Sandbox, error) {
+	rows, err := s.db.QueryContext(
+		ctx,
+		`SELECT `+sandboxSelectColumns+`
+		FROM sandboxes
+		ORDER BY created_at ASC, id ASC`,
+	)
+	if err != nil {
+		return nil, fmt.Errorf("query all sandboxes: %w", err)
+	}
+	defer rows.Close()
+
+	sandboxes := make([]domain.Sandbox, 0)
+	for rows.Next() {
+		sandbox, err := scanSandbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan sandbox: %w", err)
+		}
+		sandboxes = append(sandboxes, sandbox)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate sandboxes: %w", err)
+	}
+	return sandboxes, nil
 }
 
 var _ storeport.Store = (*Store)(nil)

@@ -1,13 +1,9 @@
 package sqlite
 
 import (
-	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"minisandbox/internal/domain"
 )
 
 // testDatabasePath 返回临时目录中的数据库路径。
@@ -137,20 +133,5 @@ func TestOpenMissingParentDirectory(t *testing.T) {
 
 	if _, err := Open(path); err == nil {
 		t.Fatal("expected error for missing parent directory")
-	}
-}
-
-// TestListAllStillNotImplemented 验证 P1-020 不提前实现全量恢复查询。
-func TestListAllStillNotImplemented(t *testing.T) {
-	store, err := Open(testDatabasePath(t))
-	if err != nil {
-		t.Fatalf("open database: %v", err)
-	}
-	defer store.Close()
-
-	ctx := context.Background()
-	_, err = store.ListAll(ctx)
-	if !errors.Is(err, domain.ErrNotImplemented) {
-		t.Fatalf("ListAll: got %v, want ErrNotImplemented", err)
 	}
 }
