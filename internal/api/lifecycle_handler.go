@@ -35,9 +35,47 @@ func registerLifecycleRoutes(mux *http.ServeMux, service LifecycleService) {
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}", getSandboxHandler(service))
 	}
 	//删除沙盒
-	mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}", notImplemented("sandbox deletion"))
+	if service == nil {
+		mux.HandleFunc(
+			"DELETE /v1/sandboxes/{sandbox_id}",
+			notImplemented("sandbox deletion"),
+		)
+	} else {
+		mux.HandleFunc(
+			"DELETE /v1/sandboxes/{sandbox_id}",
+			deleteSandboxHandler(service),
+		)
+	}
 	//续期沙盒
 	mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/renew", notImplemented("sandbox renewal"))
+}
+
+// deleteSandboxHandler 校验公共 ID 并幂等提交 sandbox 终止意图。
+//
+// 202 表示删除仍需 reconciler 收敛；只有 Store 已观测到 Terminated 时才返回
+// 204。本 handler 不直接调用 runtime，也不等待 Docker 资源清理。
+func deleteSandboxHandler(service LifecycleService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("sandbox_id")
+		if !validSandboxID(id) {
+			writeError(w, r, domain.ErrInvalid)
+			return
+		}
+
+		sandbox, err := service.Delete(
+			r.Context(),
+			application.DeleteSandbox{SandboxID: id},
+		)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		if sandbox.ObservedState == domain.StateTerminated {
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
+		w.WriteHeader(http.StatusAccepted)
+	}
 }
 
 // getSandboxHandler 校验公共 ID 并返回最近一次持久化的 sandbox 状态。

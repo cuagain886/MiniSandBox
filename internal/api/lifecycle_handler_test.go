@@ -25,6 +25,10 @@ type fakeLifecycleService struct {
 	getResult domain.Sandbox
 	getErr    error
 	getCalls  []string
+
+	deleteResult domain.Sandbox
+	deleteErr    error
+	deleteCalls  []application.DeleteSandbox
 }
 
 // Create 记录创建命令并返回测试预设结果。
@@ -45,12 +49,105 @@ func (f *fakeLifecycleService) Get(
 	return f.getResult, f.getErr
 }
 
-// Delete 在 P1-031 测试中不应被调用。
+// Delete 记录删除命令并返回测试预设结果。
 func (f *fakeLifecycleService) Delete(
-	context.Context,
-	application.DeleteSandbox,
+	_ context.Context,
+	command application.DeleteSandbox,
 ) (domain.Sandbox, error) {
-	panic("unexpected Delete call")
+	f.deleteCalls = append(f.deleteCalls, command)
+	return f.deleteResult, f.deleteErr
+}
+
+// TestDeleteSandboxHandler 验证首次、处理中、已终止和不存在四类响应。
+func TestDeleteSandboxHandler(t *testing.T) {
+	const id = "00010203-0405-4607-8809-0a0b0c0d0e0f"
+	tests := []struct {
+		name      string
+		result    domain.Sandbox
+		err       error
+		status    int
+		errorCode string
+	}{
+		{
+			name: "first accepted",
+			result: domain.Sandbox{
+				ID:            id,
+				DesiredState:  domain.DesiredTerminated,
+				ObservedState: domain.StatePending,
+			},
+			status: http.StatusAccepted,
+		},
+		{
+			name: "deletion in progress",
+			result: domain.Sandbox{
+				ID:            id,
+				DesiredState:  domain.DesiredTerminated,
+				ObservedState: domain.StateStopping,
+			},
+			status: http.StatusAccepted,
+		},
+		{
+			name: "already terminated",
+			result: domain.Sandbox{
+				ID:            id,
+				DesiredState:  domain.DesiredTerminated,
+				ObservedState: domain.StateTerminated,
+			},
+			status: http.StatusNoContent,
+		},
+		{
+			name:      "not found",
+			err:       domain.ErrNotFound,
+			status:    http.StatusNotFound,
+			errorCode: "SANDBOX_NOT_FOUND",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeLifecycleService{
+				deleteResult: tt.result,
+				deleteErr:    tt.err,
+			}
+			request := httptest.NewRequest(
+				http.MethodDelete,
+				"/v1/sandboxes/"+id,
+				nil,
+			)
+			request.Header.Set(requestIDHeader, "req-delete")
+			response := httptest.NewRecorder()
+
+			NewRouter(
+				BuildInfo{Version: "test"},
+				RouterDependencies{Lifecycle: service},
+			).ServeHTTP(response, request)
+
+			if response.Code != tt.status {
+				t.Fatalf("status: got %d, want %d", response.Code, tt.status)
+			}
+			if got := response.Header().Get(requestIDHeader); got != "req-delete" {
+				t.Fatalf("request ID: got %q, want req-delete", got)
+			}
+			if len(service.deleteCalls) != 1 ||
+				service.deleteCalls[0].SandboxID != id {
+				t.Fatalf("delete calls: %#v", service.deleteCalls)
+			}
+			if tt.errorCode != "" {
+				var envelope protocol.ErrorResponse
+				if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
+					t.Fatalf("decode error response: %v", err)
+				}
+				if envelope.Error.Code != tt.errorCode ||
+					envelope.Error.RequestID != "req-delete" {
+					t.Fatalf("error response: %#v", envelope)
+				}
+				return
+			}
+			if response.Body.Len() != 0 {
+				t.Fatalf("success response body must be empty: %q", response.Body.String())
+			}
+		})
+	}
 }
 
 // TestGetSandboxHandlerOK 验证查询成功响应使用公共 Sandbox mapper。
