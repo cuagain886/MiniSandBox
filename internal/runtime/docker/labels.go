@@ -108,6 +108,9 @@ func validateManagedLabels(metadata ManagedLabels) error {
 	if !validResourceName(metadata.Workspace, maxWorkspaceNameLength) {
 		return labelError(LabelWorkspace, "is not a safe resource name")
 	}
+	if metadata.Workspace != workspaceName(metadata.SandboxID) {
+		return labelError(LabelWorkspace, "does not match the sandbox ID")
+	}
 	return nil
 }
 
