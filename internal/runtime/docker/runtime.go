@@ -6,17 +6,93 @@ package docker
 
 import (
 	"context"
+	"errors"
+	"fmt"
 
+	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
 )
 
-// Runtime 是 runtime 端口的 Docker Engine 实现。
-type Runtime struct{}
+// Engine 是 Docker Runtime 当前实际使用的最小 Engine client 能力。
+//
+// 后续原子任务只在真正使用新 API 时扩展本接口，普通单元测试因此不需要
+// Docker daemon，也不会依赖完整 SDK client。
+type Engine interface {
+	// Ping 探测 daemon，并通过 options 明确控制 API 版本协商。
+	Ping(
+		context.Context,
+		mobyclient.PingOptions,
+	) (mobyclient.PingResult, error)
+	// Close 释放 client 持有的连接与 transport 资源。
+	Close() error
+}
 
-// New 创建尚未绑定 Docker client 的初始化骨架。
-func New() *Runtime {
-	return &Runtime{}
+// RuntimeUnavailableError 表示 Docker daemon 当前不可访问。
+//
+// Error 使用固定安全文案；底层 cause 仅通过 errors.Is/As 保留给内部诊断，
+// 公共 API mapper 通过 Unavailable marker 返回可重试 503。
+type RuntimeUnavailableError struct {
+	cause error
+}
+
+// Error 返回不包含 Docker host 或 socket 路径的固定文案。
+func (e *RuntimeUnavailableError) Error() string {
+	return "docker runtime unavailable"
+}
+
+// Unwrap 返回内部 cause，供控制面分类和诊断使用。
+func (e *RuntimeUnavailableError) Unwrap() error {
+	return e.cause
+}
+
+// Unavailable 标记该错误应映射为依赖不可用。
+func (e *RuntimeUnavailableError) Unavailable() bool {
+	return true
+}
+
+// Runtime 是 runtime 端口的 Docker Engine 实现。
+type Runtime struct {
+	engine Engine
+}
+
+// New 创建 Docker client、启用 API version negotiation 并立即探测 daemon。
+//
+// dockerHost 必须是显式配置值，不读取 DOCKER_HOST 环境变量。Ping 失败时会
+// 先关闭 client 再返回 RuntimeUnavailableError，不留下半初始化 Runtime。
+func New(ctx context.Context, dockerHost string) (*Runtime, error) {
+	engine, err := mobyclient.New(
+		mobyclient.WithHost(dockerHost),
+		mobyclient.WithAPIVersionNegotiation(),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("create Docker client: %w", err)
+	}
+	return newRuntime(ctx, engine)
+}
+
+// newRuntime 使用可替换的窄 Engine 完成 Ping 和版本协商。
+func newRuntime(ctx context.Context, engine Engine) (*Runtime, error) {
+	if engine == nil {
+		return nil, errors.New("docker engine must not be nil")
+	}
+	_, err := engine.Ping(
+		ctx,
+		mobyclient.PingOptions{NegotiateAPIVersion: true},
+	)
+	if err != nil {
+		_ = engine.Close()
+		return nil, &RuntimeUnavailableError{cause: err}
+	}
+	return &Runtime{engine: engine}, nil
+}
+
+// Close 释放 Docker client 资源。
+func (r *Runtime) Close() error {
+	if r == nil || r.engine == nil {
+		return nil
+	}
+	return r.engine.Close()
 }
 
 // Ensure 幂等保证 Docker 资源符合 sandbox 期望状态。
