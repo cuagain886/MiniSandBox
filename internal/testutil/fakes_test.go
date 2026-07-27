@@ -142,6 +142,7 @@ func TestFakesConcurrentAccess(t *testing.T) {
 	ctx := context.Background()
 	storeFake := NewFakeStore()
 	runtimeFake := NewFakeRuntime()
+	wakerFake := NewFakeWaker()
 
 	var wait sync.WaitGroup
 	wait.Add(goroutines)
@@ -168,6 +169,7 @@ func TestFakesConcurrentAccess(t *testing.T) {
 			_, _ = runtimeFake.Inspect(ctx, sandbox.ID)
 			_ = runtimeFake.Delete(ctx, sandbox.ID)
 			_, _ = runtimeFake.ListManaged(ctx)
+			wakerFake.Wake(sandbox.ID)
 		}()
 	}
 	wait.Wait()
@@ -186,5 +188,8 @@ func TestFakesConcurrentAccess(t *testing.T) {
 	}
 	if got := runtimeFake.ListManagedCallCount(); got != goroutines {
 		t.Fatalf("concurrent ListManaged calls: got %d, want %d", got, goroutines)
+	}
+	if got := len(wakerFake.WakeCalls()); got != goroutines {
+		t.Fatalf("concurrent Wake calls: got %d, want %d", got, goroutines)
 	}
 }

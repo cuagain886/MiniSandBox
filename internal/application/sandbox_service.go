@@ -15,12 +15,22 @@ const (
 	createAcceptedMessage = "Sandbox creation has been accepted."
 )
 
+// Waker 提醒后台 reconciler 尽快处理指定 sandbox。
+//
+// Wake 是无业务状态的尽力通知，允许在进程关闭时静默丢弃；Store 中的持久化
+// 记录才是事实源，启动恢复会重新扫描未收敛记录。
+type Waker interface {
+	// Wake 尝试唤醒 sandbox ID，不保证通知实际进入内存队列。
+	Wake(id string)
+}
+
 // SandboxService 编排 sandbox 生命周期用例及其持久化访问。
 type SandboxService struct {
 	store       store.Store
 	idGenerator IDGenerator
 	clock       Clock
 	specBuilder SandboxSpecBuilder
+	waker       Waker
 }
 
 // NewSandboxService 使用显式依赖创建可确定测试的生命周期服务。
@@ -32,12 +42,14 @@ func NewSandboxService(
 	idGenerator IDGenerator,
 	clock Clock,
 	specBuilder SandboxSpecBuilder,
+	waker Waker,
 ) *SandboxService {
 	return &SandboxService{
 		store:       s,
 		idGenerator: idGenerator,
 		clock:       clock,
 		specBuilder: specBuilder,
+		waker:       waker,
 	}
 }
 
@@ -77,6 +89,9 @@ func (s *SandboxService) Create(
 	if err := s.store.Create(ctx, sandbox); err != nil {
 		return domain.Sandbox{}, fmt.Errorf("persist sandbox creation: %w", err)
 	}
+	// Wake 只能出现在持久化成功之后；它没有返回值，防止队列关闭把已经落库
+	// 的创建意图改写为客户端失败并诱发重复创建。
+	s.waker.Wake(sandbox.ID)
 	return sandbox, nil
 }
 
