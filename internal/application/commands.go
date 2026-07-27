@@ -5,20 +5,16 @@
 package application
 
 import (
-	"time"
-
 	"minisandbox/internal/domain"
 )
 
 // CreateSandbox 表示创建 sandbox 的应用层命令。
 //
-// RequestKey 用于请求重试时的幂等去重，TTL 为零时由配置层提供默认值。
+// Phase 1 只接受镜像引用；资源、workspace、网络和平台全部来自服务端安全
+// 默认值，不接受客户端宿主机路径或 Docker 配置。
 type CreateSandbox struct {
-	Image      string
-	Command    []string
-	Env        map[string]string
-	TTL        time.Duration
-	RequestKey string
+	// Image 是用户请求的容器镜像引用，不能为空。
+	Image string
 }
 
 // DeleteSandbox 表示将指定 sandbox 的期望状态设置为 Terminated。
