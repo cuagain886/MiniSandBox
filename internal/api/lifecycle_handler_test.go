@@ -21,6 +21,10 @@ type fakeLifecycleService struct {
 	createResult domain.Sandbox
 	createErr    error
 	createCalls  []application.CreateSandbox
+
+	getResult domain.Sandbox
+	getErr    error
+	getCalls  []string
 }
 
 // Create 记录创建命令并返回测试预设结果。
@@ -32,12 +36,13 @@ func (f *fakeLifecycleService) Create(
 	return f.createResult, f.createErr
 }
 
-// Get 在 P1-031 测试中不应被调用。
+// Get 记录查询 ID 并返回测试预设结果。
 func (f *fakeLifecycleService) Get(
-	context.Context,
-	string,
+	_ context.Context,
+	id string,
 ) (domain.Sandbox, error) {
-	panic("unexpected Get call")
+	f.getCalls = append(f.getCalls, id)
+	return f.getResult, f.getErr
 }
 
 // Delete 在 P1-031 测试中不应被调用。
@@ -46,6 +51,130 @@ func (f *fakeLifecycleService) Delete(
 	application.DeleteSandbox,
 ) (domain.Sandbox, error) {
 	panic("unexpected Delete call")
+}
+
+// TestGetSandboxHandlerOK 验证查询成功响应使用公共 Sandbox mapper。
+func TestGetSandboxHandlerOK(t *testing.T) {
+	const id = "00010203-0405-4607-8809-0a0b0c0d0e0f"
+	now := time.Date(2027, 7, 8, 9, 10, 11, 0, time.UTC)
+	service := &fakeLifecycleService{
+		getResult: domain.Sandbox{
+			ID:            id,
+			Spec:          domain.SandboxSpec{Image: "alpine:3.22"},
+			ObservedState: domain.StateRunning,
+			Reason:        string(protocol.SandboxReasonRunning),
+			Message:       "Sandbox is running.",
+			CreatedAt:     now,
+			UpdatedAt:     now,
+		},
+	}
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/sandboxes/"+id,
+		nil,
+	)
+	response := httptest.NewRecorder()
+
+	NewRouter(
+		BuildInfo{Version: "test"},
+		RouterDependencies{Lifecycle: service},
+	).ServeHTTP(response, request)
+
+	if got, want := response.Code, http.StatusOK; got != want {
+		t.Fatalf("status: got %d, want %d", got, want)
+	}
+	if len(service.getCalls) != 1 || service.getCalls[0] != id {
+		t.Fatalf("get calls: %#v", service.getCalls)
+	}
+	var sandbox protocol.Sandbox
+	if err := json.NewDecoder(response.Body).Decode(&sandbox); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if sandbox.ID != id ||
+		sandbox.State != protocol.SandboxStateRunning ||
+		sandbox.Reason != protocol.SandboxReasonRunning {
+		t.Fatalf("response sandbox: %#v", sandbox)
+	}
+}
+
+// TestGetSandboxHandlerRejectsInvalidID 验证非法 ID 不进入应用层。
+func TestGetSandboxHandlerRejectsInvalidID(t *testing.T) {
+	service := &fakeLifecycleService{}
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/v1/sandboxes/..%2Fhost",
+		nil,
+	)
+	request.Header.Set(requestIDHeader, "req-invalid-id")
+	response := httptest.NewRecorder()
+
+	NewRouter(
+		BuildInfo{Version: "test"},
+		RouterDependencies{Lifecycle: service},
+	).ServeHTTP(response, request)
+
+	assertLifecycleError(
+		t,
+		response,
+		http.StatusBadRequest,
+		"INVALID_REQUEST",
+		"req-invalid-id",
+	)
+	if len(service.getCalls) != 0 {
+		t.Fatalf("invalid ID called service: %#v", service.getCalls)
+	}
+}
+
+// TestGetSandboxHandlerMapsServiceErrors 验证 404 和依赖不可用错误。
+func TestGetSandboxHandlerMapsServiceErrors(t *testing.T) {
+	const id = "00010203-0405-4607-8809-0a0b0c0d0e0f"
+	tests := []struct {
+		name   string
+		err    error
+		status int
+		code   string
+	}{
+		{
+			name:   "not found",
+			err:    domain.ErrNotFound,
+			status: http.StatusNotFound,
+			code:   "SANDBOX_NOT_FOUND",
+		},
+		{
+			name: "store unavailable",
+			err: &testUnavailableError{
+				cause: errors.New("secret sqlite path"),
+			},
+			status: http.StatusServiceUnavailable,
+			code:   "RUNTIME_UNAVAILABLE",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			service := &fakeLifecycleService{getErr: tt.err}
+			request := httptest.NewRequest(
+				http.MethodGet,
+				"/v1/sandboxes/"+id,
+				nil,
+			)
+			request.Header.Set(requestIDHeader, "req-get-error")
+			response := httptest.NewRecorder()
+
+			NewRouter(
+				BuildInfo{Version: "test"},
+				RouterDependencies{Lifecycle: service},
+			).ServeHTTP(response, request)
+
+			assertLifecycleError(
+				t,
+				response,
+				tt.status,
+				tt.code,
+				"req-get-error",
+			)
+		})
+	}
 }
 
 // TestCreateSandboxHandlerAccepted 验证创建请求只提交意图并返回 202 与 Location。

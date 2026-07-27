@@ -26,11 +26,75 @@ func registerLifecycleRoutes(mux *http.ServeMux, service LifecycleService) {
 		mux.HandleFunc("POST /v1/sandboxes", createSandboxHandler(service))
 	}
 	//查询沙盒
-	mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}", notImplemented("sandbox lookup"))
+	if service == nil {
+		mux.HandleFunc(
+			"GET /v1/sandboxes/{sandbox_id}",
+			notImplemented("sandbox lookup"),
+		)
+	} else {
+		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}", getSandboxHandler(service))
+	}
 	//删除沙盒
 	mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}", notImplemented("sandbox deletion"))
 	//续期沙盒
 	mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/renew", notImplemented("sandbox renewal"))
+}
+
+// getSandboxHandler 校验公共 ID 并返回最近一次持久化的 sandbox 状态。
+func getSandboxHandler(service LifecycleService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("sandbox_id")
+		if !validSandboxID(id) {
+			writeError(w, r, domain.ErrInvalid)
+			return
+		}
+
+		sandbox, err := service.Get(r.Context(), id)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		response, err := mapSandboxResponse(sandbox)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+	}
+}
+
+// validSandboxID 只接受控制面生成的规范小写 UUID v4。
+//
+// 在进入 application 和后续路径/资源命名逻辑前拒绝分隔符、路径穿越和
+// 非规范别名，保证同一个 sandbox 只有一种公共 ID 表示。
+func validSandboxID(id string) bool {
+	if len(id) != 36 ||
+		id[8] != '-' ||
+		id[13] != '-' ||
+		id[18] != '-' ||
+		id[23] != '-' ||
+		id[14] != '4' {
+		return false
+	}
+	for index := range id {
+		if index == 8 || index == 13 || index == 18 || index == 23 {
+			continue
+		}
+		if !isLowerHex(id[index]) {
+			return false
+		}
+	}
+	switch id[19] {
+	case '8', '9', 'a', 'b':
+		return true
+	default:
+		return false
+	}
+}
+
+// isLowerHex 判断单字节是否属于规范 UUID 使用的小写十六进制集合。
+func isLowerHex(value byte) bool {
+	return value >= '0' && value <= '9' || value >= 'a' && value <= 'f'
 }
 
 // createSandboxHandler 严格解析创建请求并提交 application 创建意图。
