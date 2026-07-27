@@ -5,8 +5,12 @@
 package api
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
+
+	"minisandbox/internal/application"
+	"minisandbox/internal/domain"
 )
 
 // BuildInfo 描述当前 sandboxd 构建版本，用于健康检查和故障定位。
@@ -15,8 +19,47 @@ type BuildInfo struct {
 	Commit  string `json:"commit,omitempty"`
 }
 
+// LifecycleService 定义生命周期 HTTP handler 允许调用的应用层用例。
+//
+// 接口刻意不暴露 Store、Runtime 或 reconcile 细节，避免 HTTP 层越过
+// application 边界直接操作基础设施。
+type LifecycleService interface {
+	// Create 提交 sandbox 创建意图；成功不表示 Docker 资源已经创建完成。
+	Create(
+		ctx context.Context,
+		command application.CreateSandbox,
+	) (domain.Sandbox, error)
+	// Get 读取 sandbox 最近一次持久化的生命周期状态。
+	Get(ctx context.Context, id string) (domain.Sandbox, error)
+	// Delete 幂等提交 sandbox 终止意图；成功不等待资源清理完成。
+	Delete(
+		ctx context.Context,
+		command application.DeleteSandbox,
+	) (domain.Sandbox, error)
+}
+
+// RouterDependencies 保存 HTTP 适配层使用的应用服务。
+//
+// 零值用于尚未完成生产装配的初始化骨架，对应业务路由继续返回明确的
+// NOT_IMPLEMENTED，而不是伪装成功。
+type RouterDependencies struct {
+	// Lifecycle 提供 sandbox 创建、查询和删除用例。
+	Lifecycle LifecycleService
+}
+
 // NewRouter 创建 sandboxd 的根 HTTP handler，并注册中间件与全部公开路由。
-func NewRouter(build BuildInfo) http.Handler {
+//
+// dependencies 是可选单元素参数，用于保持初始化阶段调用方兼容；传入多个
+// 依赖对象属于装配错误，会触发 panic。
+func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler {
+	if len(dependencies) > 1 {
+		panic("api: NewRouter accepts at most one RouterDependencies")
+	}
+	var deps RouterDependencies
+	if len(dependencies) == 1 {
+		deps = dependencies[0]
+	}
+
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		writeJSON(w, http.StatusOK, map[string]any{
@@ -25,7 +68,7 @@ func NewRouter(build BuildInfo) http.Handler {
 			"build":   build,
 		})
 	})
-	registerLifecycleRoutes(mux)
+	registerLifecycleRoutes(mux, deps.Lifecycle)
 	registerExecutionRoutes(mux)
 	return requestIDMiddleware(mux)
 }
