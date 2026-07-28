@@ -68,6 +68,11 @@ func startContainer(
 	if err == nil {
 		return nil
 	}
+	// inspect 与 start 之间可能有同一 sandbox 的重试完成启动；Docker 的
+	// NotModified 正表示期望 running 状态已达成，因此必须按幂等成功处理。
+	if cerrdefs.IsNotModified(err) {
+		return nil
+	}
 	if cerrdefs.IsNotFound(err) {
 		return &RuntimeMissingError{}
 	}

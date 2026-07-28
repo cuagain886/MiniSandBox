@@ -74,6 +74,28 @@ func TestStartContainerStartsCreatedAndStopped(t *testing.T) {
 	}
 }
 
+// TestStartContainerConcurrentAlreadyStartedIsSuccess 验证 inspect/start 竞态仍保持幂等。
+func TestStartContainerConcurrentAlreadyStartedIsSuccess(t *testing.T) {
+	engine := &fakeEngine{
+		containerInspectFunc: inspectionWithState(mobycontainer.StateCreated),
+		containerStartFunc: func(
+			context.Context,
+			string,
+			mobyclient.ContainerStartOptions,
+		) (mobyclient.ContainerStartResult, error) {
+			return mobyclient.ContainerStartResult{}, cerrdefs.ErrNotModified
+		},
+	}
+
+	if err := startContainer(
+		context.Background(),
+		engine,
+		"container-id",
+	); err != nil {
+		t.Fatalf("concurrent start: %v", err)
+	}
+}
+
 // TestStartContainerMissingIsClassified 验证 inspect 和 start 期间消失都映射 runtime missing。
 func TestStartContainerMissingIsClassified(t *testing.T) {
 	tests := []struct {
