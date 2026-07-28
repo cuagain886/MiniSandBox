@@ -8,6 +8,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"time"
 
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
@@ -99,14 +101,34 @@ func (e *RuntimeUnavailableError) Unavailable() bool {
 
 // Runtime 是 runtime 端口的 Docker Engine 实现。
 type Runtime struct {
-	engine Engine
+	engine        Engine
+	dataDirectory string
+	artifacts     ArtifactProvider
+	createTimeout time.Duration
+}
+
+// RuntimeOptions 保存 Docker Ensure 编排所需的宿主机受管依赖。
+type RuntimeOptions struct {
+	// DataDirectory 是已经由启动流程准备好的绝对数据根目录。
+	DataDirectory string
+	// Artifacts 提供经过平台校验的 runnerd 和 sandbox-init。
+	Artifacts ArtifactProvider
+	// CreateTimeout 限制镜像拉取和 artifact copy 的单步最长时间。
+	CreateTimeout time.Duration
 }
 
 // New 创建 Docker client、启用 API version negotiation 并立即探测 daemon。
 //
-// dockerHost 必须是显式配置值，不读取 DOCKER_HOST 环境变量。Ping 失败时会
-// 先关闭 client 再返回 RuntimeUnavailableError，不留下半初始化 Runtime。
-func New(ctx context.Context, dockerHost string) (*Runtime, error) {
+// dockerHost 必须是显式配置值，不读取 DOCKER_HOST 环境变量。options 必须
+// 提供受管 data directory、artifact provider 和正 create timeout。
+func New(
+	ctx context.Context,
+	dockerHost string,
+	options RuntimeOptions,
+) (*Runtime, error) {
+	if err := validateRuntimeOptions(options); err != nil {
+		return nil, err
+	}
 	engine, err := mobyclient.New(
 		mobyclient.WithHost(dockerHost),
 		mobyclient.WithAPIVersionNegotiation(),
@@ -114,7 +136,12 @@ func New(ctx context.Context, dockerHost string) (*Runtime, error) {
 	if err != nil {
 		return nil, fmt.Errorf("create Docker client: %w", err)
 	}
-	return newRuntime(ctx, engine)
+	runtime, err := newRuntime(ctx, engine)
+	if err != nil {
+		return nil, err
+	}
+	runtime.applyOptions(options)
+	return runtime, nil
 }
 
 // newRuntime 使用可替换的窄 Engine 完成 Ping 和版本协商。
@@ -133,22 +160,33 @@ func newRuntime(ctx context.Context, engine Engine) (*Runtime, error) {
 	return &Runtime{engine: engine}, nil
 }
 
+// validateRuntimeOptions 在连接 Docker 前拒绝不完整的 Ensure 依赖。
+func validateRuntimeOptions(options RuntimeOptions) error {
+	if !filepath.IsAbs(options.DataDirectory) {
+		return errors.New("runtime data directory must be absolute")
+	}
+	if options.Artifacts == nil {
+		return errors.New("runtime artifact provider must not be nil")
+	}
+	if options.CreateTimeout <= 0 {
+		return errors.New("runtime create timeout must be positive")
+	}
+	return nil
+}
+
+// applyOptions 把已经校验的编排依赖保存到 Runtime。
+func (r *Runtime) applyOptions(options RuntimeOptions) {
+	r.dataDirectory = filepath.Clean(options.DataDirectory)
+	r.artifacts = options.Artifacts
+	r.createTimeout = options.CreateTimeout
+}
+
 // Close 释放 Docker client 资源。
 func (r *Runtime) Close() error {
 	if r == nil || r.engine == nil {
 		return nil
 	}
 	return r.engine.Close()
-}
-
-// Ensure 幂等保证 Docker 资源符合 sandbox 期望状态。
-//
-// 当前初始化骨架尚未实现 Docker 调用。
-func (r *Runtime) Ensure(
-	context.Context,
-	domain.Sandbox,
-) (runtimeport.ActualSandbox, error) {
-	return runtimeport.ActualSandbox{}, domain.ErrNotImplemented
 }
 
 // Delete 幂等删除指定 sandbox 的 Docker 资源。
