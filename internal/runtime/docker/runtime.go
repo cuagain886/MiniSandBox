@@ -151,14 +151,6 @@ func (r *Runtime) Ensure(
 	return runtimeport.ActualSandbox{}, domain.ErrNotImplemented
 }
 
-// Inspect 读取指定 sandbox 的 Docker 实际状态。
-func (r *Runtime) Inspect(
-	context.Context,
-	string,
-) (runtimeport.ActualSandbox, error) {
-	return runtimeport.ActualSandbox{}, domain.ErrNotImplemented
-}
-
 // Delete 幂等删除指定 sandbox 的 Docker 资源。
 func (r *Runtime) Delete(context.Context, string) error {
 	return domain.ErrNotImplemented

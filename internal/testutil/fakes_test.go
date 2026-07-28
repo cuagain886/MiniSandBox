@@ -92,9 +92,9 @@ func TestFakeRuntimeRecordsCallsAndInjectsResults(t *testing.T) {
 	injected := errors.New("injected runtime error")
 	sandbox := domain.Sandbox{ID: "sandbox-1"}
 	actual := runtimeport.ActualSandbox{
-		ID:          sandbox.ID,
-		ContainerID: "container-1",
-		State:       runtimeport.ActualRunning,
+		ID:        sandbox.ID,
+		RuntimeID: "container-1",
+		State:     runtimeport.ActualRunning,
 	}
 	fake := NewFakeRuntime()
 
