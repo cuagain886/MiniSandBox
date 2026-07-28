@@ -49,6 +49,16 @@ type fakeEngine struct {
 		string,
 		mobyclient.ContainerStartOptions,
 	) (mobyclient.ContainerStartResult, error)
+	containerStopFunc func(
+		context.Context,
+		string,
+		mobyclient.ContainerStopOptions,
+	) (mobyclient.ContainerStopResult, error)
+	containerRemoveFunc func(
+		context.Context,
+		string,
+		mobyclient.ContainerRemoveOptions,
+	) (mobyclient.ContainerRemoveResult, error)
 	volumeInspectFunc func(
 		context.Context,
 		string,
@@ -145,6 +155,30 @@ func (f *fakeEngine) ContainerStart(
 		return mobyclient.ContainerStartResult{}, nil
 	}
 	return f.containerStartFunc(ctx, containerID, options)
+}
+
+// ContainerStop 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) ContainerStop(
+	ctx context.Context,
+	containerID string,
+	options mobyclient.ContainerStopOptions,
+) (mobyclient.ContainerStopResult, error) {
+	if f.containerStopFunc == nil {
+		return mobyclient.ContainerStopResult{}, nil
+	}
+	return f.containerStopFunc(ctx, containerID, options)
+}
+
+// ContainerRemove 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) ContainerRemove(
+	ctx context.Context,
+	containerID string,
+	options mobyclient.ContainerRemoveOptions,
+) (mobyclient.ContainerRemoveResult, error) {
+	if f.containerRemoveFunc == nil {
+		return mobyclient.ContainerRemoveResult{}, nil
+	}
+	return f.containerRemoveFunc(ctx, containerID, options)
 }
 
 // VolumeInspect 调用测试注入函数；未配置时返回零值成功。

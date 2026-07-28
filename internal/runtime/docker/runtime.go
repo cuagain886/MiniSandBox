@@ -61,6 +61,18 @@ type Engine interface {
 		string,
 		mobyclient.ContainerStartOptions,
 	) (mobyclient.ContainerStartResult, error)
+	// ContainerStop 优雅停止经过身份验证的 sandbox 容器。
+	ContainerStop(
+		context.Context,
+		string,
+		mobyclient.ContainerStopOptions,
+	) (mobyclient.ContainerStopResult, error)
+	// ContainerRemove 删除经过身份验证且已停止的 sandbox 容器。
+	ContainerRemove(
+		context.Context,
+		string,
+		mobyclient.ContainerRemoveOptions,
+	) (mobyclient.ContainerRemoveResult, error)
 	// VolumeInspect 读取确定性名称对应的 workspace volume 元数据。
 	VolumeInspect(
 		context.Context,
