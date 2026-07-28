@@ -36,6 +36,17 @@ type Engine interface {
 		string,
 		mobyclient.ImagePullOptions,
 	) (mobyclient.ImagePullResponse, error)
+	// ContainerInspect 读取确定性名称对应的容器状态和恢复元数据。
+	ContainerInspect(
+		context.Context,
+		string,
+		mobyclient.ContainerInspectOptions,
+	) (mobyclient.ContainerInspectResult, error)
+	// ContainerCreate 创建尚未启动的 sandbox 容器。
+	ContainerCreate(
+		context.Context,
+		mobyclient.ContainerCreateOptions,
+	) (mobyclient.ContainerCreateResult, error)
 	// VolumeInspect 读取确定性名称对应的 workspace volume 元数据。
 	VolumeInspect(
 		context.Context,

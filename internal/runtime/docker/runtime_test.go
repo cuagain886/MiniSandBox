@@ -30,6 +30,15 @@ type fakeEngine struct {
 		string,
 		mobyclient.ImagePullOptions,
 	) (mobyclient.ImagePullResponse, error)
+	containerInspectFunc func(
+		context.Context,
+		string,
+		mobyclient.ContainerInspectOptions,
+	) (mobyclient.ContainerInspectResult, error)
+	containerCreateFunc func(
+		context.Context,
+		mobyclient.ContainerCreateOptions,
+	) (mobyclient.ContainerCreateResult, error)
 	volumeInspectFunc func(
 		context.Context,
 		string,
@@ -79,6 +88,29 @@ func (f *fakeEngine) ImagePull(
 		return newFakePullResponse(nil), nil
 	}
 	return f.imagePullFunc(ctx, image, options)
+}
+
+// ContainerInspect 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) ContainerInspect(
+	ctx context.Context,
+	name string,
+	options mobyclient.ContainerInspectOptions,
+) (mobyclient.ContainerInspectResult, error) {
+	if f.containerInspectFunc == nil {
+		return mobyclient.ContainerInspectResult{}, nil
+	}
+	return f.containerInspectFunc(ctx, name, options)
+}
+
+// ContainerCreate 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) ContainerCreate(
+	ctx context.Context,
+	options mobyclient.ContainerCreateOptions,
+) (mobyclient.ContainerCreateResult, error) {
+	if f.containerCreateFunc == nil {
+		return mobyclient.ContainerCreateResult{}, nil
+	}
+	return f.containerCreateFunc(ctx, options)
 }
 
 // VolumeInspect 调用测试注入函数；未配置时返回零值成功。

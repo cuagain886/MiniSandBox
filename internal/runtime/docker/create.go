@@ -1,9 +1,13 @@
 package docker
 
 import (
+	"context"
 	"errors"
+	"fmt"
 	"path/filepath"
+	"strings"
 
+	cerrdefs "github.com/containerd/errdefs"
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobymount "github.com/moby/moby/api/types/mount"
 	mobyclient "github.com/moby/moby/client"
@@ -24,6 +28,14 @@ var fixedEntrypoint = []string{
 	"--",
 	runnerPath,
 	"serve",
+}
+
+// ContainerEnsureResult 描述 stopped container 原子保证操作的结果。
+type ContainerEnsureResult struct {
+	// ContainerID 是 Docker daemon 分配的稳定容器 ID。
+	ContainerID string
+	// CreatedByThisCall 表示本次调用创建了容器，供后续失败补偿判断。
+	CreatedByThisCall bool
 }
 
 // buildContainerCreateOptions 把 resolved sandbox 转为固定安全 Docker 配置。
@@ -100,4 +112,88 @@ func buildContainerCreateOptions(
 			Architecture: "amd64",
 		},
 	}, nil
+}
+
+// ensureStoppedContainer 幂等创建或复用当前 sandbox 的受管容器。
+//
+// 本函数只建立容器对象，不复制 artifact、启动容器或执行容器内命令。
+func ensureStoppedContainer(
+	ctx context.Context,
+	engine Engine,
+	sandbox domain.Sandbox,
+	names ResourceNames,
+) (ContainerEnsureResult, error) {
+	options, err := buildContainerCreateOptions(sandbox, names)
+	if err != nil {
+		return ContainerEnsureResult{}, err
+	}
+	expected := ManagedLabels{
+		SandboxID: sandbox.ID,
+		SpecHash:  sandbox.SpecHash,
+		Workspace: names.Workspace,
+	}
+
+	inspection, err := engine.ContainerInspect(
+		ctx,
+		names.Container,
+		mobyclient.ContainerInspectOptions{},
+	)
+	switch {
+	case err == nil:
+		if err := validateManagedContainer(
+			inspection.Container,
+			names.Container,
+			expected,
+		); err != nil {
+			return ContainerEnsureResult{}, err
+		}
+		return ContainerEnsureResult{
+			ContainerID: inspection.Container.ID,
+		}, nil
+	case !cerrdefs.IsNotFound(err):
+		return ContainerEnsureResult{}, runtimeUnavailable(err)
+	}
+
+	created, err := engine.ContainerCreate(ctx, options)
+	if err != nil {
+		if cerrdefs.IsConflict(err) {
+			return ContainerEnsureResult{}, containerIdentityConflict()
+		}
+		return ContainerEnsureResult{}, runtimeUnavailable(err)
+	}
+	if created.ID == "" {
+		return ContainerEnsureResult{}, runtimeUnavailable(
+			errors.New("Docker returned an empty container ID"),
+		)
+	}
+	return ContainerEnsureResult{
+		ContainerID:       created.ID,
+		CreatedByThisCall: true,
+	}, nil
+}
+
+// validateManagedContainer 验证 inspect 结果属于预期 sandbox 和规格。
+func validateManagedContainer(
+	container mobycontainer.InspectResponse,
+	expectedName string,
+	expected ManagedLabels,
+) error {
+	if container.ID == "" ||
+		strings.TrimPrefix(container.Name, "/") != expectedName ||
+		container.Config == nil {
+		return containerIdentityConflict()
+	}
+	actual, err := ParseLabels(container.Config.Labels)
+	if err != nil || actual != expected {
+		return containerIdentityConflict()
+	}
+	return nil
+}
+
+// containerIdentityConflict 返回不泄露 inspect 数据的稳定受管身份冲突。
+func containerIdentityConflict() error {
+	return fmt.Errorf(
+		"container conflicts with managed identity: %w",
+		domain.ErrConflict,
+	)
 }
