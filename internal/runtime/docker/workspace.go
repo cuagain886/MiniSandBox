@@ -35,6 +35,28 @@ type WorkspaceVolumeResult struct {
 	CreatedByThisCall bool
 }
 
+// CleanupPendingError 表示受管资源身份已确认，但仍被其他 runtime 资源占用。
+//
+// 删除编排可在后续 reconcile 重试；固定错误文本不回显 Docker 引用关系。
+type CleanupPendingError struct {
+	cause error
+}
+
+// Error 返回安全、稳定的 cleanup pending 文案。
+func (*CleanupPendingError) Error() string {
+	return "sandbox runtime cleanup is pending"
+}
+
+// Unwrap 返回 Docker cause，供内部 errors.Is/As 诊断。
+func (e *CleanupPendingError) Unwrap() error {
+	return e.cause
+}
+
+// CleanupPending 标记该错误需要后续清理重试。
+func (*CleanupPendingError) CleanupPending() bool {
+	return true
+}
+
 // ensureWorkspaceVolume 幂等保证 sandbox 的受管 workspace volume 存在。
 //
 // 已有同名 volume 必须携带匹配 sandbox ID、spec hash 和 schema 的完整 labels；
@@ -105,6 +127,52 @@ func validateWorkspaceVolume(
 // workspaceVolumeConflict 返回不泄露实际 labels 或资源元数据的固定冲突错误。
 func workspaceVolumeConflict() error {
 	return fmt.Errorf("workspace volume conflicts with managed identity: %w", domain.ErrConflict)
+}
+
+// deleteWorkspaceVolume 幂等删除当前 sandbox 的非持久受管 volume。
+//
+// 只使用 Force=false；volume in use 不升级为强制删除，而是返回 cleanup
+// pending，等待容器清理完成后由后续 reconcile 重试。
+func deleteWorkspaceVolume(
+	ctx context.Context,
+	engine Engine,
+	sandboxID string,
+) error {
+	if !validSandboxID(sandboxID) {
+		return errors.New("sandbox ID is invalid")
+	}
+	name := workspaceName(sandboxID)
+	inspection, err := engine.VolumeInspect(
+		ctx,
+		name,
+		mobyclient.VolumeInspectOptions{},
+	)
+	if err != nil {
+		if errdefs.IsNotFound(err) {
+			return nil
+		}
+		return runtimeUnavailable(err)
+	}
+	metadata, parseErr := ParseLabels(inspection.Volume.Labels)
+	if inspection.Volume.Name != name ||
+		parseErr != nil ||
+		metadata.SandboxID != sandboxID ||
+		metadata.Workspace != name {
+		return workspaceVolumeConflict()
+	}
+
+	_, err = engine.VolumeRemove(
+		ctx,
+		name,
+		mobyclient.VolumeRemoveOptions{Force: false},
+	)
+	if err == nil || errdefs.IsNotFound(err) {
+		return nil
+	}
+	if errdefs.IsConflict(err) || errdefs.IsFailedPrecondition(err) {
+		return &CleanupPendingError{cause: err}
+	}
+	return runtimeUnavailable(err)
 }
 
 // EnsureRuntimeDirectory 幂等创建 `<dataDirectory>/run/<sandboxID>`。

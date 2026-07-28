@@ -84,6 +84,12 @@ type Engine interface {
 		context.Context,
 		mobyclient.VolumeCreateOptions,
 	) (mobyclient.VolumeCreateResult, error)
+	// VolumeRemove 删除经过身份验证且未被容器占用的 workspace volume。
+	VolumeRemove(
+		context.Context,
+		string,
+		mobyclient.VolumeRemoveOptions,
+	) (mobyclient.VolumeRemoveResult, error)
 	// Close 释放 client 持有的连接与 transport 资源。
 	Close() error
 }

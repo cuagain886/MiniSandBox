@@ -68,6 +68,11 @@ type fakeEngine struct {
 		context.Context,
 		mobyclient.VolumeCreateOptions,
 	) (mobyclient.VolumeCreateResult, error)
+	volumeRemoveFunc func(
+		context.Context,
+		string,
+		mobyclient.VolumeRemoveOptions,
+	) (mobyclient.VolumeRemoveResult, error)
 }
 
 // Ping 记录版本协商选项并返回预设结果。
@@ -202,6 +207,18 @@ func (f *fakeEngine) VolumeCreate(
 		return mobyclient.VolumeCreateResult{}, nil
 	}
 	return f.volumeCreateFunc(ctx, options)
+}
+
+// VolumeRemove 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) VolumeRemove(
+	ctx context.Context,
+	name string,
+	options mobyclient.VolumeRemoveOptions,
+) (mobyclient.VolumeRemoveResult, error) {
+	if f.volumeRemoveFunc == nil {
+		return mobyclient.VolumeRemoveResult{}, nil
+	}
+	return f.volumeRemoveFunc(ctx, name, options)
 }
 
 // fakePullResponse 模拟必须 Wait 并 Close 的 Docker pull stream。
