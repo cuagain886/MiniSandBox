@@ -214,6 +214,52 @@ func EnsureRuntimeDirectory(
 	}, nil
 }
 
+// DeleteRuntimeDirectory 安全删除单个 sandbox 的受管 runtime directory。
+//
+// 删除目标必须精确等于 `<dataDirectory>/run/<sandboxID>`；函数拒绝 run root
+// 或目标 symlink、非目录占位和越界 ID。RemoveAll 只用于已经完成上述证明的
+// ID 子目录，永远不会用于 data root 或 run root。
+func DeleteRuntimeDirectory(
+	dataDirectory string,
+	sandboxID string,
+) error {
+	names, err := NamesForSandbox(dataDirectory, sandboxID)
+	if err != nil {
+		return err
+	}
+	runRoot := filepath.Dir(names.RuntimeDirectory)
+	relative, err := filepath.Rel(runRoot, names.RuntimeDirectory)
+	if err != nil ||
+		relative != sandboxID ||
+		filepath.Dir(names.RuntimeDirectory) != runRoot {
+		return errors.New("runtime directory is outside managed run root")
+	}
+
+	if err := requireRealDirectory(runRoot); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("validate runtime root before delete: %w", err)
+	}
+	info, err := os.Lstat(names.RuntimeDirectory)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("inspect runtime directory before delete: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 {
+		return errors.New("runtime directory is a symlink")
+	}
+	if !info.IsDir() {
+		return errors.New("runtime directory is not a directory")
+	}
+	if err := os.RemoveAll(names.RuntimeDirectory); err != nil {
+		return fmt.Errorf("remove runtime directory: %w", err)
+	}
+	return nil
+}
+
 // requireRealDirectory 要求路径存在、是目录且本身不是 symlink。
 func requireRealDirectory(path string) error {
 	info, err := os.Lstat(path)
