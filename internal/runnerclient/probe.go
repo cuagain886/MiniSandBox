@@ -102,7 +102,11 @@ func (p *Probe) Probe(ctx context.Context, sandboxID string) error {
 	operationContext, cancel := context.WithTimeout(ctx, p.timeout)
 	defer cancel()
 
-	err = New(socketPath, p.token).Health(operationContext)
+	client := New(socketPath, p.token)
+	// Probe 的唯一时间边界必须来自 runner ready timeout；通用 Client 的
+	// 30 秒默认值会在配置更大时提前终止并被误分类为 unhealthy。
+	client.httpClient.Timeout = 0
+	err = client.Health(operationContext)
 	if err == nil {
 		return nil
 	}
