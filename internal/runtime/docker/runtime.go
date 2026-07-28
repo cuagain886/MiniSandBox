@@ -53,6 +53,12 @@ type Engine interface {
 		string,
 		mobyclient.CopyToContainerOptions,
 	) (mobyclient.CopyToContainerResult, error)
+	// ContainerStart 启动已经完成 artifact 注入的 stopped container。
+	ContainerStart(
+		context.Context,
+		string,
+		mobyclient.ContainerStartOptions,
+	) (mobyclient.ContainerStartResult, error)
 	// VolumeInspect 读取确定性名称对应的 workspace volume 元数据。
 	VolumeInspect(
 		context.Context,

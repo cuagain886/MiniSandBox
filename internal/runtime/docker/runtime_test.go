@@ -44,6 +44,11 @@ type fakeEngine struct {
 		string,
 		mobyclient.CopyToContainerOptions,
 	) (mobyclient.CopyToContainerResult, error)
+	containerStartFunc func(
+		context.Context,
+		string,
+		mobyclient.ContainerStartOptions,
+	) (mobyclient.ContainerStartResult, error)
 	volumeInspectFunc func(
 		context.Context,
 		string,
@@ -128,6 +133,18 @@ func (f *fakeEngine) CopyToContainer(
 		return mobyclient.CopyToContainerResult{}, nil
 	}
 	return f.copyToContainerFunc(ctx, containerID, options)
+}
+
+// ContainerStart 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) ContainerStart(
+	ctx context.Context,
+	containerID string,
+	options mobyclient.ContainerStartOptions,
+) (mobyclient.ContainerStartResult, error) {
+	if f.containerStartFunc == nil {
+		return mobyclient.ContainerStartResult{}, nil
+	}
+	return f.containerStartFunc(ctx, containerID, options)
 }
 
 // VolumeInspect 调用测试注入函数；未配置时返回零值成功。
