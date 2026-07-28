@@ -3,8 +3,11 @@ package docker
 import (
 	"context"
 	"errors"
+	"io"
+	"iter"
 	"testing"
 
+	"github.com/moby/moby/api/types/jsonstream"
 	mobyclient "github.com/moby/moby/client"
 )
 
@@ -16,6 +19,17 @@ type fakeEngine struct {
 	pingOptions []mobyclient.PingOptions
 	closeCalls  int
 	closeErr    error
+
+	imageInspectFunc func(
+		context.Context,
+		string,
+		...mobyclient.ImageInspectOption,
+	) (mobyclient.ImageInspectResult, error)
+	imagePullFunc func(
+		context.Context,
+		string,
+		mobyclient.ImagePullOptions,
+	) (mobyclient.ImagePullResponse, error)
 }
 
 // Ping 记录版本协商选项并返回预设结果。
@@ -32,6 +46,67 @@ func (f *fakeEngine) Ping(
 func (f *fakeEngine) Close() error {
 	f.closeCalls++
 	return f.closeErr
+}
+
+// ImageInspect 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) ImageInspect(
+	ctx context.Context,
+	image string,
+	options ...mobyclient.ImageInspectOption,
+) (mobyclient.ImageInspectResult, error) {
+	if f.imageInspectFunc == nil {
+		return mobyclient.ImageInspectResult{}, nil
+	}
+	return f.imageInspectFunc(ctx, image, options...)
+}
+
+// ImagePull 调用测试注入函数；未配置时返回空成功流。
+func (f *fakeEngine) ImagePull(
+	ctx context.Context,
+	image string,
+	options mobyclient.ImagePullOptions,
+) (mobyclient.ImagePullResponse, error) {
+	if f.imagePullFunc == nil {
+		return newFakePullResponse(nil), nil
+	}
+	return f.imagePullFunc(ctx, image, options)
+}
+
+// fakePullResponse 模拟必须 Wait 并 Close 的 Docker pull stream。
+type fakePullResponse struct {
+	waitErr    error
+	waitCalls  int
+	closeErr   error
+	closeCalls int
+}
+
+// newFakePullResponse 创建返回指定 Wait 错误的响应流。
+func newFakePullResponse(waitErr error) *fakePullResponse {
+	return &fakePullResponse{waitErr: waitErr}
+}
+
+// Read 为 io.ReadCloser 兼容面返回 EOF；测试通过 Wait 记录完整消费。
+func (r *fakePullResponse) Read([]byte) (int, error) {
+	return 0, io.EOF
+}
+
+// Close 记录流关闭次数。
+func (r *fakePullResponse) Close() error {
+	r.closeCalls++
+	return r.closeErr
+}
+
+// Wait 记录完整消费并返回预设 pull 结果。
+func (r *fakePullResponse) Wait(context.Context) error {
+	r.waitCalls++
+	return r.waitErr
+}
+
+// JSONMessages 返回空序列；生产代码使用 Wait 完整消费。
+func (r *fakePullResponse) JSONMessages(
+	context.Context,
+) iter.Seq2[jsonstream.Message, error] {
+	return func(func(jsonstream.Message, error) bool) {}
 }
 
 // TestNewRuntimePingsWithVersionNegotiation 验证构造阶段探测并协商 API。

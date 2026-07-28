@@ -24,6 +24,18 @@ type Engine interface {
 		context.Context,
 		mobyclient.PingOptions,
 	) (mobyclient.PingResult, error)
+	// ImageInspect 读取 daemon 中已有镜像的元数据。
+	ImageInspect(
+		context.Context,
+		string,
+		...mobyclient.ImageInspectOption,
+	) (mobyclient.ImageInspectResult, error)
+	// ImagePull 从 registry 拉取镜像并返回必须消费和关闭的响应流。
+	ImagePull(
+		context.Context,
+		string,
+		mobyclient.ImagePullOptions,
+	) (mobyclient.ImagePullResponse, error)
 	// Close 释放 client 持有的连接与 transport 资源。
 	Close() error
 }
