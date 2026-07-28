@@ -47,6 +47,12 @@ type Engine interface {
 		context.Context,
 		mobyclient.ContainerCreateOptions,
 	) (mobyclient.ContainerCreateResult, error)
+	// CopyToContainer 把固定 artifact tar 写入指定 stopped container。
+	CopyToContainer(
+		context.Context,
+		string,
+		mobyclient.CopyToContainerOptions,
+	) (mobyclient.CopyToContainerResult, error)
 	// VolumeInspect 读取确定性名称对应的 workspace volume 元数据。
 	VolumeInspect(
 		context.Context,

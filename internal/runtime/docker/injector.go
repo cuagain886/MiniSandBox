@@ -3,10 +3,13 @@ package docker
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"io"
 	"time"
+
+	mobyclient "github.com/moby/moby/client"
 )
 
 const artifactFileMode int64 = 0o755
@@ -51,4 +54,48 @@ func BuildArtifactTar(provider ArtifactProvider) (io.ReadCloser, error) {
 		return nil, fmt.Errorf("close artifact tar: %w", err)
 	}
 	return io.NopCloser(bytes.NewReader(buffer.Bytes())), nil
+}
+
+// copyArtifacts 把受验证 provider 生成的固定 tar 注入 stopped container。
+//
+// 目标目录、覆盖和 UID/GID 语义均由本函数固定；调用方不能提供任意 reader
+// 或容器内路径。无论 Docker 调用如何结束，tar reader 都会被关闭。
+func copyArtifacts(
+	ctx context.Context,
+	engine Engine,
+	containerID string,
+	provider ArtifactProvider,
+	timeout time.Duration,
+) error {
+	if containerID == "" {
+		return errors.New("container ID must not be empty")
+	}
+	if timeout <= 0 {
+		return errors.New("artifact copy timeout must be positive")
+	}
+	content, err := BuildArtifactTar(provider)
+	if err != nil {
+		return err
+	}
+	defer content.Close()
+
+	operationContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	_, err = engine.CopyToContainer(
+		operationContext,
+		containerID,
+		mobyclient.CopyToContainerOptions{
+			DestinationPath:           artifactDirectory,
+			Content:                   content,
+			AllowOverwriteDirWithFile: false,
+			CopyUIDGID:                false,
+		},
+	)
+	if err != nil {
+		if contextErr := operationContext.Err(); contextErr != nil {
+			return runtimeUnavailable(contextErr)
+		}
+		return runtimeUnavailable(err)
+	}
+	return nil
 }
