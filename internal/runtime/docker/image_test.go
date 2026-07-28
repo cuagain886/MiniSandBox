@@ -281,7 +281,99 @@ func TestEnsureImageTimeoutIsRuntimeUnavailable(t *testing.T) {
 	}
 }
 
-// imageInspectResponse 构造只设置 ID 的 SDK inspect payload。
+// TestValidateImagePlatform 验证唯一允许的平台及所有缺失/不匹配情况。
+func TestValidateImagePlatform(t *testing.T) {
+	tests := []struct {
+		name         string
+		os           string
+		architecture string
+		valid        bool
+	}{
+		{name: "linux amd64", os: "linux", architecture: "amd64", valid: true},
+		{name: "linux arm64", os: "linux", architecture: "arm64"},
+		{name: "windows amd64", os: "windows", architecture: "amd64"},
+		{name: "missing os", architecture: "amd64"},
+		{name: "missing architecture", os: "linux"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			inspection := mobyclient.ImageInspectResult{
+				InspectResponse: mobyimage.InspectResponse{
+					Os:           tt.os,
+					Architecture: tt.architecture,
+				},
+			}
+			err := validateImagePlatform(inspection)
+			if tt.valid {
+				if err != nil {
+					t.Fatalf("valid platform rejected: %v", err)
+				}
+				return
+			}
+			var artifactError *ArtifactInvalidError
+			if !errors.As(err, &artifactError) {
+				t.Fatalf("error classification: %T %v", err, err)
+			}
+		})
+	}
+}
+
+// TestEnsureImageRejectsPulledPlatformMismatch 验证 pull 后仍在返回前检查平台。
+func TestEnsureImageRejectsPulledPlatformMismatch(t *testing.T) {
+	inspectCalls := 0
+	response := newFakePullResponse(nil)
+	engine := &fakeEngine{
+		imageInspectFunc: func(
+			context.Context,
+			string,
+			...mobyclient.ImageInspectOption,
+		) (mobyclient.ImageInspectResult, error) {
+			inspectCalls++
+			if inspectCalls == 1 {
+				return mobyclient.ImageInspectResult{}, cerrdefs.ErrNotFound
+			}
+			return mobyclient.ImageInspectResult{
+				InspectResponse: mobyimage.InspectResponse{
+					ID:           "sha256:arm64",
+					Os:           "linux",
+					Architecture: "arm64",
+				},
+			}, nil
+		},
+		imagePullFunc: func(
+			context.Context,
+			string,
+			mobyclient.ImagePullOptions,
+		) (mobyclient.ImagePullResponse, error) {
+			return response, nil
+		},
+	}
+
+	_, err := ensureImage(
+		context.Background(),
+		engine,
+		"alpine:3.22",
+		time.Second,
+	)
+	var artifactError *ArtifactInvalidError
+	if !errors.As(err, &artifactError) {
+		t.Fatalf("platform mismatch classification: %T %v", err, err)
+	}
+	if response.waitCalls != 1 || response.closeCalls != 1 {
+		t.Fatalf(
+			"pull stream lifecycle: wait=%d close=%d",
+			response.waitCalls,
+			response.closeCalls,
+		)
+	}
+}
+
+// imageInspectResponse 构造 linux/amd64 SDK inspect payload。
 func imageInspectResponse(id string) mobyimage.InspectResponse {
-	return mobyimage.InspectResponse{ID: id}
+	return mobyimage.InspectResponse{
+		ID:           id,
+		Os:           "linux",
+		Architecture: "amd64",
+	}
 }

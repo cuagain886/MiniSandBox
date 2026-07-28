@@ -32,6 +32,17 @@ func (e *ImagePullFailedError) Unwrap() error {
 	return e.cause
 }
 
+// ArtifactInvalidError 表示镜像平台与 Phase 1 嵌入产物不兼容。
+//
+// Phase 1 只提供 linux/amd64 runner 和 init；平台缺失也不能猜测，否则可能
+// 在启动容器后才以 exec format error 失败。
+type ArtifactInvalidError struct{}
+
+// Error 返回不包含镜像内部元数据的固定安全文案。
+func (*ArtifactInvalidError) Error() string {
+	return "sandbox image platform is incompatible with embedded artifacts"
+}
+
 // ImageReference 保存已经通过基础语法校验的规范镜像引用。
 type ImageReference struct {
 	// Name 是规范化后的完整 name/tag/digest，可直接传给 Docker Engine。
@@ -95,6 +106,9 @@ func ensureImage(
 
 	inspection, err := engine.ImageInspect(operationContext, imageReference.Name)
 	if err == nil {
+		if err := validateImagePlatform(inspection); err != nil {
+			return mobyclient.ImageInspectResult{}, err
+		}
 		return inspection, nil
 	}
 	if !cerrdefs.IsNotFound(err) {
@@ -140,7 +154,18 @@ func ensureImage(
 		}
 		return mobyclient.ImageInspectResult{}, runtimeUnavailable(err)
 	}
+	if err := validateImagePlatform(inspection); err != nil {
+		return mobyclient.ImageInspectResult{}, err
+	}
 	return inspection, nil
+}
+
+// validateImagePlatform 强制镜像与唯一的 linux/amd64 artifact 集合匹配。
+func validateImagePlatform(inspection mobyclient.ImageInspectResult) error {
+	if inspection.Os != "linux" || inspection.Architecture != "amd64" {
+		return &ArtifactInvalidError{}
+	}
+	return nil
 }
 
 // classifyPullError 区分 operation context 故障和 registry/pull 失败。
