@@ -30,6 +30,15 @@ type fakeEngine struct {
 		string,
 		mobyclient.ImagePullOptions,
 	) (mobyclient.ImagePullResponse, error)
+	volumeInspectFunc func(
+		context.Context,
+		string,
+		mobyclient.VolumeInspectOptions,
+	) (mobyclient.VolumeInspectResult, error)
+	volumeCreateFunc func(
+		context.Context,
+		mobyclient.VolumeCreateOptions,
+	) (mobyclient.VolumeCreateResult, error)
 }
 
 // Ping 记录版本协商选项并返回预设结果。
@@ -70,6 +79,29 @@ func (f *fakeEngine) ImagePull(
 		return newFakePullResponse(nil), nil
 	}
 	return f.imagePullFunc(ctx, image, options)
+}
+
+// VolumeInspect 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) VolumeInspect(
+	ctx context.Context,
+	name string,
+	options mobyclient.VolumeInspectOptions,
+) (mobyclient.VolumeInspectResult, error) {
+	if f.volumeInspectFunc == nil {
+		return mobyclient.VolumeInspectResult{}, nil
+	}
+	return f.volumeInspectFunc(ctx, name, options)
+}
+
+// VolumeCreate 调用测试注入函数；未配置时返回零值成功。
+func (f *fakeEngine) VolumeCreate(
+	ctx context.Context,
+	options mobyclient.VolumeCreateOptions,
+) (mobyclient.VolumeCreateResult, error) {
+	if f.volumeCreateFunc == nil {
+		return mobyclient.VolumeCreateResult{}, nil
+	}
+	return f.volumeCreateFunc(ctx, options)
 }
 
 // fakePullResponse 模拟必须 Wait 并 Close 的 Docker pull stream。

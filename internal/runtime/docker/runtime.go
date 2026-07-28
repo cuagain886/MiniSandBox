@@ -36,6 +36,17 @@ type Engine interface {
 		string,
 		mobyclient.ImagePullOptions,
 	) (mobyclient.ImagePullResponse, error)
+	// VolumeInspect 读取确定性名称对应的 workspace volume 元数据。
+	VolumeInspect(
+		context.Context,
+		string,
+		mobyclient.VolumeInspectOptions,
+	) (mobyclient.VolumeInspectResult, error)
+	// VolumeCreate 创建带有恢复 labels 的 workspace named volume。
+	VolumeCreate(
+		context.Context,
+		mobyclient.VolumeCreateOptions,
+	) (mobyclient.VolumeCreateResult, error)
 	// Close 释放 client 持有的连接与 transport 资源。
 	Close() error
 }

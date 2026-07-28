@@ -1,10 +1,16 @@
 package docker
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
+
+	"github.com/containerd/errdefs"
+	mobyvolume "github.com/moby/moby/api/types/volume"
+	mobyclient "github.com/moby/moby/client"
+	"minisandbox/internal/domain"
 )
 
 // Workspace 描述宿主机目录与容器内挂载路径的对应关系。
@@ -19,6 +25,86 @@ type RuntimePaths struct {
 	Directory string
 	// HostRunnerSocket 是 runner 后续绑定的 Unix Socket 路径；本任务不创建它。
 	HostRunnerSocket string
+}
+
+// WorkspaceVolumeResult 描述 workspace volume 的幂等保证结果。
+type WorkspaceVolumeResult struct {
+	// Name 是 sandbox ID 对应的确定性 Docker named volume 名称。
+	Name string
+	// CreatedByThisCall 表示本次调用走过创建分支；复用已有 volume 时为 false。
+	CreatedByThisCall bool
+}
+
+// ensureWorkspaceVolume 幂等保证 sandbox 的受管 workspace volume 存在。
+//
+// 已有同名 volume 必须携带匹配 sandbox ID、spec hash 和 schema 的完整 labels；
+// 这样不会把用户创建的同名 volume 或其他规格遗留的资源误接管。
+func ensureWorkspaceVolume(
+	ctx context.Context,
+	engine Engine,
+	sandboxID string,
+	specHash string,
+) (WorkspaceVolumeResult, error) {
+	name := workspaceName(sandboxID)
+	expected := ManagedLabels{
+		SandboxID: sandboxID,
+		SpecHash:  specHash,
+		Workspace: name,
+	}
+	labels, err := EncodeLabels(expected)
+	if err != nil {
+		return WorkspaceVolumeResult{}, fmt.Errorf("prepare workspace volume labels: %w", err)
+	}
+
+	inspection, err := engine.VolumeInspect(
+		ctx,
+		name,
+		mobyclient.VolumeInspectOptions{},
+	)
+	switch {
+	case err == nil:
+		if err := validateWorkspaceVolume(inspection.Volume, name, expected); err != nil {
+			return WorkspaceVolumeResult{}, err
+		}
+		return WorkspaceVolumeResult{Name: name}, nil
+	case !errdefs.IsNotFound(err):
+		return WorkspaceVolumeResult{}, &RuntimeUnavailableError{cause: err}
+	}
+
+	created, err := engine.VolumeCreate(ctx, mobyclient.VolumeCreateOptions{
+		Name:   name,
+		Labels: labels,
+	})
+	if err != nil {
+		return WorkspaceVolumeResult{}, &RuntimeUnavailableError{cause: err}
+	}
+	// Docker 的命名资源创建可能与并发请求相遇，因此即使 Create 成功也要验证
+	// daemon 返回的身份，不能仅凭请求参数假定拿到的是本 sandbox 的资源。
+	if err := validateWorkspaceVolume(created.Volume, name, expected); err != nil {
+		return WorkspaceVolumeResult{}, err
+	}
+	return WorkspaceVolumeResult{Name: name, CreatedByThisCall: true}, nil
+}
+
+// validateWorkspaceVolume 校验已有或新建 volume 的受管身份。
+func validateWorkspaceVolume(
+	volume mobyvolume.Volume,
+	expectedName string,
+	expected ManagedLabels,
+) error {
+	if volume.Name != expectedName {
+		return workspaceVolumeConflict()
+	}
+	actual, err := ParseLabels(volume.Labels)
+	if err != nil || actual != expected {
+		return workspaceVolumeConflict()
+	}
+	return nil
+}
+
+// workspaceVolumeConflict 返回不泄露实际 labels 或资源元数据的固定冲突错误。
+func workspaceVolumeConflict() error {
+	return fmt.Errorf("workspace volume conflicts with managed identity: %w", domain.ErrConflict)
 }
 
 // EnsureRuntimeDirectory 幂等创建 `<dataDirectory>/run/<sandboxID>`。
