@@ -138,6 +138,9 @@ func recordingFactories(
 		events:      events,
 	}
 	return factories{
+		readiness: func() *controlapi.Readiness {
+			return &controlapi.Readiness{}
+		},
 		loadConfig: func(string) (config.Config, error) {
 			*events = append(*events, "config")
 			return config.Default(), stageError("config", failAt, cause)

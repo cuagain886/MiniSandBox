@@ -53,6 +53,7 @@ type httpHandle interface {
 
 // factories 封装启动阶段的外部副作用，供顺序和失败清理测试替换。
 type factories struct {
+	readiness   func() *controlapi.Readiness
 	loadConfig  func(string) (config.Config, error)
 	directories func(config.Config) (datadir.Paths, error)
 	openStore   func(context.Context, datadir.Paths) (managedStore, error)
@@ -97,6 +98,12 @@ func Run(ctx context.Context, options Options) error {
 
 // run 使用可替换 factories 执行固定启动状态机。
 func run(ctx context.Context, options Options, factory factories) error {
+	readiness := factory.readiness()
+	if readiness == nil {
+		return errors.New("create readiness state: factory returned nil")
+	}
+	defer markNotReady(readiness)
+
 	cfg, err := factory.loadConfig(options.ConfigPath)
 	if err != nil {
 		return fmt.Errorf("load sandboxd configuration: %w", err)
@@ -112,6 +119,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 	if err != nil {
 		return fmt.Errorf("open sandbox store: %w", err)
 	}
+	readiness.SetStore(true)
 
 	artifactProvider, err := factory.artifacts()
 	if err != nil {
@@ -120,6 +128,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 			closeResource("sandbox store", sandboxStore),
 		)
 	}
+	readiness.SetArtifact(true)
 	runtime, err := factory.openRuntime(
 		ctx,
 		cfg,
@@ -132,6 +141,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 			closeResource("sandbox store", sandboxStore),
 		)
 	}
+	readiness.SetDocker(true)
 
 	queue := reconcile.NewWakeQueue()
 	worker, err := factory.startWorker(
@@ -149,7 +159,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 			closeResource("sandbox store", sandboxStore),
 		)
 	}
-	readiness := &controlapi.Readiness{}
+	readiness.SetWorker(true)
 	if err := factory.recover(
 		ctx,
 		sandboxStore,
@@ -164,6 +174,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 			closeResource("sandbox store", sandboxStore),
 		)
 	}
+	readiness.SetRecovery(true)
 	server, err := factory.startHTTP(
 		cfg,
 		options.Build,
@@ -188,6 +199,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 			runErr = fmt.Errorf("serve sandbox HTTP API: %w", serveErr)
 		}
 	}
+	markNotReady(readiness)
 	return errors.Join(
 		runErr,
 		closeWithTimeout(cfg, "sandbox HTTP server", server),
@@ -195,6 +207,17 @@ func run(ctx context.Context, options Options, factory factories) error {
 		closeResource("sandbox runtime", runtime),
 		closeResource("sandbox store", sandboxStore),
 	)
+}
+
+// markNotReady 在关闭其他资源前撤销全部启动就绪位。
+func markNotReady(readiness *controlapi.Readiness) {
+	// Recovery 是 Ready 判定链中的最后一位，先清它即可立即 fail closed；
+	// 再清其余位使诊断响应准确反映 shutdown 后的组件状态。
+	readiness.SetRecovery(false)
+	readiness.SetWorker(false)
+	readiness.SetDocker(false)
+	readiness.SetArtifact(false)
+	readiness.SetStore(false)
 }
 
 // closeWithTimeout 给可能等待 goroutine 的关闭步骤设置统一 shutdown 边界。

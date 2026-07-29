@@ -23,6 +23,9 @@ import (
 // productionFactories 返回只使用仓库真实 adapter 的启动依赖。
 func productionFactories() factories {
 	return factories{
+		readiness: func() *controlapi.Readiness {
+			return &controlapi.Readiness{}
+		},
 		loadConfig: config.Load,
 		directories: func(cfg config.Config) (datadir.Paths, error) {
 			return datadir.Ensure(
