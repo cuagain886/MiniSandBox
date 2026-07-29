@@ -204,7 +204,7 @@ func TestEnsureWorkspaceVolumeValidatesCreateResult(t *testing.T) {
 		},
 	}
 
-	_, err := ensureWorkspaceVolume(
+	result, err := ensureWorkspaceVolume(
 		context.Background(),
 		engine,
 		testSandboxID,
@@ -212,6 +212,9 @@ func TestEnsureWorkspaceVolumeValidatesCreateResult(t *testing.T) {
 	)
 	if !errors.Is(err, domain.ErrConflict) {
 		t.Fatalf("error: got %v, want conflict", err)
+	}
+	if !result.CreatedByThisCall {
+		t.Fatal("created volume was omitted from compensation result")
 	}
 }
 

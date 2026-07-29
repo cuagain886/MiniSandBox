@@ -196,15 +196,17 @@ func TestRuntimeEnsureValidatesBeforeSideEffects(t *testing.T) {
 
 // ensureHarness 模拟 Ensure 各 Docker 原子的状态变化和调用记录。
 type ensureHarness struct {
-	t               *testing.T
-	engine          *fakeEngine
-	events          []string
-	initialState    runtimeport.ActualState
-	containerChecks int
-	volumeMissing   bool
-	failAt          string
-	failure         error
-	specHash        string
+	t                *testing.T
+	engine           *fakeEngine
+	events           []string
+	initialState     runtimeport.ActualState
+	containerChecks  int
+	volumeMissing    bool
+	volumeCreated    bool
+	containerCreated bool
+	failAt           string
+	failure          error
+	specHash         string
 }
 
 // newEnsureHarness 创建会从 initialState 收敛到 running 的 Engine fake。
@@ -228,6 +230,8 @@ func newEnsureHarness(
 	engine.containerCreateFunc = harness.createContainer
 	engine.copyToContainerFunc = harness.copyArtifacts
 	engine.containerStartFunc = harness.startContainer
+	engine.containerRemoveFunc = harness.removeContainer
+	engine.volumeRemoveFunc = harness.removeVolume
 	return harness
 }
 
@@ -311,7 +315,7 @@ func (h *ensureHarness) inspectVolume(
 	if h.failAt == "volume-inspect" {
 		return mobyclient.VolumeInspectResult{}, h.failure
 	}
-	if h.volumeMissing {
+	if h.volumeMissing && !h.volumeCreated {
 		return mobyclient.VolumeInspectResult{}, cerrdefs.ErrNotFound
 	}
 	return mobyclient.VolumeInspectResult{
@@ -328,6 +332,7 @@ func (h *ensureHarness) createVolume(
 	options mobyclient.VolumeCreateOptions,
 ) (mobyclient.VolumeCreateResult, error) {
 	h.events = append(h.events, "volume-create")
+	h.volumeCreated = true
 	return mobyclient.VolumeCreateResult{
 		Volume: mobyvolume.Volume{
 			Name:   options.Name,
@@ -345,6 +350,7 @@ func (h *ensureHarness) createContainer(
 	if h.failAt == "container-create" {
 		return mobyclient.ContainerCreateResult{}, h.failure
 	}
+	h.containerCreated = true
 	return mobyclient.ContainerCreateResult{ID: "container-id"}, nil
 }
 
@@ -375,6 +381,28 @@ func (h *ensureHarness) startContainer(
 		return mobyclient.ContainerStartResult{}, h.failure
 	}
 	return mobyclient.ContainerStartResult{}, nil
+}
+
+// removeContainer 记录失败补偿删除本次创建的 container。
+func (h *ensureHarness) removeContainer(
+	context.Context,
+	string,
+	mobyclient.ContainerRemoveOptions,
+) (mobyclient.ContainerRemoveResult, error) {
+	h.events = append(h.events, "container-remove")
+	h.containerCreated = false
+	return mobyclient.ContainerRemoveResult{}, nil
+}
+
+// removeVolume 记录失败补偿删除本次创建的 workspace volume。
+func (h *ensureHarness) removeVolume(
+	context.Context,
+	string,
+	mobyclient.VolumeRemoveOptions,
+) (mobyclient.VolumeRemoveResult, error) {
+	h.events = append(h.events, "volume-remove")
+	h.volumeCreated = false
+	return mobyclient.VolumeRemoveResult{}, nil
 }
 
 // newEnsureRuntime 创建带真实临时 runtime root 的测试 Runtime。

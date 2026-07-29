@@ -26,6 +26,9 @@ func TestEnsureRuntimeDirectoryCreatesOnlyDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ensure runtime directory: %v", err)
 	}
+	if !paths.CreatedByThisCall {
+		t.Fatal("first ensure did not report directory creation")
+	}
 	wantDirectory := filepath.Join(dataDirectory, "run", testSandboxID)
 	if paths.Directory != wantDirectory {
 		t.Fatalf("directory: got %q, want %q", paths.Directory, wantDirectory)
@@ -65,8 +68,12 @@ func TestEnsureRuntimeDirectoryIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("second ensure: %v", err)
 	}
+	if second.CreatedByThisCall {
+		t.Fatal("repeated ensure reported a reused directory as newly created")
+	}
+	first.CreatedByThisCall = false
 	if !reflect.DeepEqual(first, second) {
-		t.Fatalf("paths changed: first=%#v second=%#v", first, second)
+		t.Fatalf("path identity changed: first=%#v second=%#v", first, second)
 	}
 	if runtime.GOOS != "windows" {
 		info, err := os.Lstat(second.Directory)

@@ -36,16 +36,21 @@ func (r *Runtime) Ensure(
 		}
 	}
 
+	journal := ensureJournal{sandboxID: sandbox.ID}
 	paths, err := EnsureRuntimeDirectory(r.dataDirectory, sandbox.ID)
+	journal.directoryCreated = paths.CreatedByThisCall
 	if err != nil {
-		return runtimeport.ActualSandbox{}, err
+		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
 	// 名称计算和目录创建必须指向同一个受管路径，避免未来改动造成 bind
 	// mount 与 runner probe 使用不同目录。
 	if paths.Directory != names.RuntimeDirectory ||
 		paths.HostRunnerSocket != names.HostRunnerSocket {
-		return runtimeport.ActualSandbox{}, errors.New(
-			"runtime directory identity is inconsistent",
+		return runtimeport.ActualSandbox{}, ensureFailure(
+			ctx,
+			r,
+			journal,
+			errors.New("runtime directory identity is inconsistent"),
 		)
 	}
 	if _, err := ensureImage(
@@ -54,19 +59,22 @@ func (r *Runtime) Ensure(
 		sandbox.Spec.Image,
 		r.createTimeout,
 	); err != nil {
-		return runtimeport.ActualSandbox{}, err
+		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
-	if _, err := ensureWorkspaceVolume(
+	volume, err := ensureWorkspaceVolume(
 		ctx,
 		r.engine,
 		sandbox.ID,
 		sandbox.SpecHash,
-	); err != nil {
-		return runtimeport.ActualSandbox{}, err
+	)
+	journal.volumeCreated = volume.CreatedByThisCall
+	if err != nil {
+		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
 	container, err := ensureStoppedContainer(ctx, r.engine, sandbox, names)
+	journal.containerCreated = container.CreatedByThisCall
 	if err != nil {
-		return runtimeport.ActualSandbox{}, err
+		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
 	if err := copyArtifacts(
 		ctx,
@@ -75,12 +83,16 @@ func (r *Runtime) Ensure(
 		r.artifacts,
 		r.createTimeout,
 	); err != nil {
-		return runtimeport.ActualSandbox{}, err
+		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
 	if err := startContainer(ctx, r.engine, container.ContainerID); err != nil {
-		return runtimeport.ActualSandbox{}, err
+		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
-	return r.Inspect(ctx, sandbox.ID)
+	actual, err = r.Inspect(ctx, sandbox.ID)
+	if err != nil {
+		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
+	}
+	return actual, nil
 }
 
 // validateEnsureInput 在任何 Docker 或文件系统副作用前校验规格与 artifacts。

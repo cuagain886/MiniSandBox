@@ -26,6 +26,10 @@ type RuntimePaths struct {
 	Directory string
 	// HostRunnerSocket 是 runner 后续绑定的 Unix Socket 路径；本任务不创建它。
 	HostRunnerSocket string
+	// CreatedByThisCall 表示本次调用创建了 runtime directory。
+	//
+	// 调用方只能用它补偿同一次操作产生的副作用，不能据此删除复用目录。
+	CreatedByThisCall bool
 }
 
 // WorkspaceVolumeResult 描述 workspace volume 的幂等保证结果。
@@ -106,12 +110,13 @@ func ensureWorkspaceVolume(
 	if err != nil {
 		return WorkspaceVolumeResult{}, &RuntimeUnavailableError{cause: err}
 	}
+	result := WorkspaceVolumeResult{Name: name, CreatedByThisCall: true}
 	// Docker 的命名资源创建可能与并发请求相遇，因此即使 Create 成功也要验证
 	// daemon 返回的身份，不能仅凭请求参数假定拿到的是本 sandbox 的资源。
 	if err := validateWorkspaceVolume(created.Volume, name, expected); err != nil {
-		return WorkspaceVolumeResult{}, err
+		return result, err
 	}
-	return WorkspaceVolumeResult{Name: name, CreatedByThisCall: true}, nil
+	return result, nil
 }
 
 // validateWorkspaceVolume 校验已有或新建 volume 的受管身份。
@@ -198,26 +203,27 @@ func EnsureRuntimeDirectory(
 		return RuntimePaths{}, fmt.Errorf("validate runtime root: %w", err)
 	}
 
+	paths := RuntimePaths{
+		Directory:        names.RuntimeDirectory,
+		HostRunnerSocket: names.HostRunnerSocket,
+	}
 	err = os.Mkdir(names.RuntimeDirectory, 0o700)
 	switch {
 	case err == nil:
+		paths.CreatedByThisCall = true
 		// 创建成功后仍通过 Lstat 校验，统一首次和重复调用的安全语义。
 	case errors.Is(err, os.ErrExist):
 	default:
 		return RuntimePaths{}, fmt.Errorf("create runtime directory: %w", err)
 	}
 	if err := requireRealDirectory(names.RuntimeDirectory); err != nil {
-		return RuntimePaths{}, fmt.Errorf("validate runtime directory: %w", err)
+		return paths, fmt.Errorf("validate runtime directory: %w", err)
 	}
 	// umask 或先前进程可能留下更宽权限；每次幂等调用都重新收敛。
 	if err := os.Chmod(names.RuntimeDirectory, 0o700); err != nil {
-		return RuntimePaths{}, fmt.Errorf("restrict runtime directory: %w", err)
+		return paths, fmt.Errorf("restrict runtime directory: %w", err)
 	}
-
-	return RuntimePaths{
-		Directory:        names.RuntimeDirectory,
-		HostRunnerSocket: names.HostRunnerSocket,
-	}, nil
+	return paths, nil
 }
 
 // DeleteRuntimeDirectory 安全删除单个 sandbox 的受管 runtime directory。

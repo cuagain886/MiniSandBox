@@ -96,6 +96,38 @@ func TestEnsureStoppedContainerCreatesMissingContainer(t *testing.T) {
 	}
 }
 
+// TestEnsureStoppedContainerReportsCreationWhenDaemonOmitsID 验证空 ID 失败仍进入补偿日志。
+func TestEnsureStoppedContainerReportsCreationWhenDaemonOmitsID(t *testing.T) {
+	engine := &fakeEngine{
+		containerInspectFunc: func(
+			context.Context,
+			string,
+			mobyclient.ContainerInspectOptions,
+		) (mobyclient.ContainerInspectResult, error) {
+			return mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound
+		},
+		containerCreateFunc: func(
+			context.Context,
+			mobyclient.ContainerCreateOptions,
+		) (mobyclient.ContainerCreateResult, error) {
+			return mobyclient.ContainerCreateResult{}, nil
+		},
+	}
+
+	result, err := ensureStoppedContainer(
+		context.Background(),
+		engine,
+		testDockerSandbox(),
+		testResourceNames(t),
+	)
+	if err == nil {
+		t.Fatal("empty container ID was accepted")
+	}
+	if !result.CreatedByThisCall {
+		t.Fatal("created container was omitted from compensation result")
+	}
+}
+
 // TestEnsureStoppedContainerRejectsDrift 验证同名非受管和 spec drift 都返回 conflict。
 func TestEnsureStoppedContainerRejectsDrift(t *testing.T) {
 	names := testResourceNames(t)

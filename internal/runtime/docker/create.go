@@ -161,9 +161,10 @@ func ensureStoppedContainer(
 		return ContainerEnsureResult{}, &ContainerCreateFailedError{cause: err}
 	}
 	if created.ID == "" {
-		return ContainerEnsureResult{}, &ContainerCreateFailedError{
-			cause: errors.New("Docker returned an empty container ID"),
-		}
+		return ContainerEnsureResult{CreatedByThisCall: true},
+			&ContainerCreateFailedError{
+				cause: errors.New("Docker returned an empty container ID"),
+			}
 	}
 	return ContainerEnsureResult{
 		ContainerID:       created.ID,
