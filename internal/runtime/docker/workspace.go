@@ -44,7 +44,8 @@ type WorkspaceVolumeResult struct {
 //
 // 删除编排可在后续 reconcile 重试；固定错误文本不回显 Docker 引用关系。
 type CleanupPendingError struct {
-	cause error
+	cause        error
+	operationErr error
 }
 
 // Error 返回安全、稳定的 cleanup pending 文案。
@@ -54,7 +55,7 @@ func (*CleanupPendingError) Error() string {
 
 // Unwrap 返回 Docker cause，供内部 errors.Is/As 诊断。
 func (e *CleanupPendingError) Unwrap() error {
-	return e.cause
+	return errors.Join(e.operationErr, e.cause)
 }
 
 // CleanupPending 标记该错误需要后续清理重试。
@@ -65,6 +66,14 @@ func (*CleanupPendingError) CleanupPending() bool {
 // FailureReason 返回稳定的 cleanup pending 生命周期 reason。
 func (*CleanupPendingError) FailureReason() string {
 	return runtimeport.FailureReasonCleanupPending
+}
+
+// OperationError 返回补偿开始前的原始创建失败。
+//
+// 普通删除错误没有独立 operation error，返回 nil；reconciler 只在后续幂等
+// Delete 已成功时使用该值恢复原始失败分类。
+func (e *CleanupPendingError) OperationError() error {
+	return e.operationErr
 }
 
 // ensureWorkspaceVolume 幂等保证 sandbox 的受管 workspace volume 存在。

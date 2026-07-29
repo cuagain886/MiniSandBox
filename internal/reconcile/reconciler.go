@@ -6,6 +6,7 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"fmt"
 
 	"minisandbox/internal/domain"
@@ -89,7 +90,7 @@ func (r *Reconciler) reconcileRunning(
 
 	actual, err := r.runtime.Ensure(ctx, creating)
 	if err != nil {
-		return fmt.Errorf("ensure sandbox runtime: %w", err)
+		return r.failRunning(ctx, creating, err)
 	}
 	waiting, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               creating.ID,
@@ -103,7 +104,7 @@ func (r *Reconciler) reconcileRunning(
 		return fmt.Errorf("mark sandbox waiting for runner: %w", err)
 	}
 	if err := r.probe.Probe(ctx, waiting.ID); err != nil {
-		return fmt.Errorf("probe sandbox runner: %w", err)
+		return r.failRunning(ctx, waiting, err)
 	}
 	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               waiting.ID,
@@ -139,9 +140,12 @@ func (r *Reconciler) reconcileTerminated(
 		return fmt.Errorf("mark sandbox runtime deleting: %w", err)
 	}
 	if err := r.runtime.Delete(ctx, stopping.ID); err != nil {
-		// 删除未确认完成时必须保留 Stopping；P1-060/P1-062 再负责失败分类
-		// 和 Failed 状态，当前任务绝不提前写 Terminated。
-		return fmt.Errorf("delete sandbox runtime: %w", err)
+		return r.recordFailure(
+			ctx,
+			stopping,
+			&cleanupPendingFailure{cause: err},
+			stopping.RuntimeID,
+		)
 	}
 	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               stopping.ID,
@@ -155,4 +159,83 @@ func (r *Reconciler) reconcileTerminated(
 		return fmt.Errorf("mark sandbox terminated: %w", err)
 	}
 	return nil
+}
+
+// failRunning 清理由创建或 runner probe 失败遗留的全部 runtime 资源。
+//
+// Runtime.Ensure 已补偿本次调用的副作用，这里仍幂等 Delete 一次，以覆盖
+// 进程崩溃前留下、未被本次 operation journal 记录的旧 partial resource。
+func (r *Reconciler) failRunning(
+	ctx context.Context,
+	sandbox domain.Sandbox,
+	operationErr error,
+) error {
+	cleanupErr := r.runtime.Delete(ctx, sandbox.ID)
+	if cleanupErr != nil {
+		return r.recordFailure(
+			ctx,
+			sandbox,
+			&cleanupPendingFailure{
+				cause: errors.Join(operationErr, cleanupErr),
+			},
+			sandbox.RuntimeID,
+		)
+	}
+
+	// Ensure 内部补偿曾失败、但这里的全量 Delete 已成功时，恢复真正触发
+	// 创建失败的 reason，避免已经清干净的记录继续伪装为待清理。
+	failureErr := operationErr
+	var compensated interface {
+		OperationError() error
+	}
+	if errors.As(operationErr, &compensated) &&
+		compensated.OperationError() != nil {
+		failureErr = compensated.OperationError()
+	}
+	return r.recordFailure(ctx, sandbox, failureErr, "")
+}
+
+// recordFailure 用当前 revision CAS 写入安全的 Failed 状态并保留原始 cause。
+func (r *Reconciler) recordFailure(
+	ctx context.Context,
+	sandbox domain.Sandbox,
+	failureErr error,
+	runtimeID string,
+) error {
+	failure := runtimeport.ClassifyError(failureErr)
+	_, updateErr := r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID:               sandbox.ID,
+		ExpectedRevision: sandbox.Revision,
+		State:            domain.StateFailed,
+		Reason:           failure.Reason,
+		Message:          failure.Message,
+		RuntimeID:        runtimeID,
+	})
+	if updateErr != nil {
+		return errors.Join(failureErr, fmt.Errorf(
+			"record sandbox failure: %w",
+			updateErr,
+		))
+	}
+	return failureErr
+}
+
+// cleanupPendingFailure 强制把未完成的资源删除映射为可重试清理状态。
+type cleanupPendingFailure struct {
+	cause error
+}
+
+// Error 返回不会泄露底层删除错误的固定安全文案。
+func (*cleanupPendingFailure) Error() string {
+	return "sandbox runtime cleanup is pending"
+}
+
+// Unwrap 保留内部创建与删除 cause，供日志和 errors.Is 使用。
+func (e *cleanupPendingFailure) Unwrap() error {
+	return e.cause
+}
+
+// FailureReason 返回稳定的 cleanup pending 生命周期 reason。
+func (*cleanupPendingFailure) FailureReason() string {
+	return runtimeport.FailureReasonCleanupPending
 }

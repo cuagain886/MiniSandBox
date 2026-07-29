@@ -4,11 +4,14 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 
 	"minisandbox/internal/domain"
+	"minisandbox/internal/runnerclient"
 	runtimeport "minisandbox/internal/runtime"
+	dockerruntime "minisandbox/internal/runtime/docker"
 	"minisandbox/internal/store"
 )
 
@@ -82,8 +85,8 @@ func TestReconcileRunningRecordIsNoOp(t *testing.T) {
 	}
 }
 
-// TestReconcileRunningStopsAtRuntimeFailure 验证 Ensure 失败时停留在 Creating。
-func TestReconcileRunningStopsAtRuntimeFailure(t *testing.T) {
+// TestReconcileRunningRecordsRuntimeFailure 验证 Ensure 失败后清理并写入 Failed。
+func TestReconcileRunningRecordsRuntimeFailure(t *testing.T) {
 	events := make([]string, 0, 3)
 	cause := errors.New("runtime failure")
 	sandboxStore := newReconcileStore(&events, pendingSandbox())
@@ -101,14 +104,16 @@ func TestReconcileRunningStopsAtRuntimeFailure(t *testing.T) {
 		"store-get",
 		"store-update-Creating-CREATING_RUNTIME",
 		"runtime-ensure",
+		"runtime-delete",
+		"store-update-Failed-INTERNAL_ERROR",
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events: got %v, want %v", events, want)
 	}
 }
 
-// TestReconcileRunningStopsAtProbeFailure 验证 Probe 失败时不提前写 Running。
-func TestReconcileRunningStopsAtProbeFailure(t *testing.T) {
+// TestReconcileRunningRecordsProbeFailure 验证 Probe 失败后清理并写入 Failed。
+func TestReconcileRunningRecordsProbeFailure(t *testing.T) {
 	events := make([]string, 0, 5)
 	cause := errors.New("probe failure")
 	sandboxStore := newReconcileStore(&events, pendingSandbox())
@@ -133,6 +138,8 @@ func TestReconcileRunningStopsAtProbeFailure(t *testing.T) {
 		"runtime-ensure",
 		"store-update-Creating-WAITING_RUNNER",
 		"runner-probe",
+		"runtime-delete",
+		"store-update-Failed-INTERNAL_ERROR",
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events: got %v, want %v", events, want)
@@ -186,8 +193,8 @@ func TestReconcileTerminatedTransitionsFromEveryNonTerminalState(t *testing.T) {
 	}
 }
 
-// TestReconcileTerminatedDeleteFailureDoesNotWriteTerminated 验证清理失败时保持 Stopping。
-func TestReconcileTerminatedDeleteFailureDoesNotWriteTerminated(t *testing.T) {
+// TestReconcileTerminatedDeleteFailureWritesCleanupPending 验证删除失败进入可重试清理态。
+func TestReconcileTerminatedDeleteFailureWritesCleanupPending(t *testing.T) {
 	events := make([]string, 0, 3)
 	cause := errors.New("delete failure")
 	sandbox := pendingSandbox()
@@ -208,12 +215,144 @@ func TestReconcileTerminatedDeleteFailureDoesNotWriteTerminated(t *testing.T) {
 		"store-get",
 		"store-update-Stopping-DELETING_RUNTIME",
 		"runtime-delete",
+		"store-update-Failed-CLEANUP_PENDING",
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events: got %v, want %v", events, want)
 	}
-	if got := sandboxStore.record.ObservedState; got != domain.StateStopping {
-		t.Fatalf("state: got %s, want Stopping", got)
+	if got := sandboxStore.record.ObservedState; got != domain.StateFailed {
+		t.Fatalf("state: got %s, want Failed", got)
+	}
+}
+
+// TestReconcileRunningPersistsEveryFailureReason 验证所有 runtime 分类均以安全状态落库。
+func TestReconcileRunningPersistsEveryFailureReason(t *testing.T) {
+	const secret = "daemon secret detail"
+	tests := []struct {
+		name   string
+		err    error
+		reason string
+	}{
+		{"image pull", new(dockerruntime.ImagePullFailedError), runtimeport.FailureReasonImagePullFailed},
+		{"artifact invalid", new(dockerruntime.ArtifactInvalidError), runtimeport.FailureReasonArtifactInvalid},
+		{"container create", new(dockerruntime.ContainerCreateFailedError), runtimeport.FailureReasonContainerCreateFailed},
+		{"artifact injection", new(dockerruntime.ArtifactInjectionFailedError), runtimeport.FailureReasonArtifactInjectionFailed},
+		{"container start", new(dockerruntime.ContainerStartFailedError), runtimeport.FailureReasonContainerStartFailed},
+		{"runner unhealthy", new(runnerclient.UnhealthyError), runtimeport.FailureReasonRunnerUnhealthy},
+		{"spec drift", new(dockerruntime.SpecDriftError), runtimeport.FailureReasonSpecDrift},
+		{"cleanup pending", new(dockerruntime.CleanupPendingError), runtimeport.FailureReasonCleanupPending},
+		{"runtime unavailable", new(dockerruntime.RuntimeUnavailableError), runtimeport.FailureReasonRuntimeUnavailable},
+		{"internal", errors.New("unknown failure"), runtimeport.FailureReasonInternalError},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			events := make([]string, 0, 5)
+			sandbox := pendingSandbox()
+			sandbox.RuntimeID = "stale-runtime-id"
+			sandboxStore := newReconcileStore(&events, sandbox)
+			operationErr := errors.Join(errors.New(secret), tt.err)
+			reconciler := New(
+				sandboxStore,
+				&recordingRuntime{
+					events:    &events,
+					ensureErr: operationErr,
+				},
+				&recordingProbe{events: &events},
+			)
+
+			err := reconciler.Reconcile(context.Background(), sandbox.ID)
+			if !errors.Is(err, tt.err) {
+				t.Fatalf("reconcile lost operation cause: %v", err)
+			}
+			record := sandboxStore.record
+			if record.ObservedState != domain.StateFailed ||
+				record.Reason != tt.reason ||
+				record.Message == "" ||
+				record.RuntimeID != "" {
+				t.Fatalf("failed record: %#v", record)
+			}
+			if strings.Contains(record.Message, secret) {
+				t.Fatalf("stored message leaked cause: %q", record.Message)
+			}
+		})
+	}
+}
+
+// TestReconcileProbeCleanupFailureKeepsRuntimeForRetry 验证 runner 失败且清理失败时保留定位信息。
+func TestReconcileProbeCleanupFailureKeepsRuntimeForRetry(t *testing.T) {
+	events := make([]string, 0, 8)
+	probeErr := new(runnerclient.UnhealthyError)
+	cleanupErr := errors.New("delete failed")
+	sandboxStore := newReconcileStore(&events, pendingSandbox())
+	reconciler := New(
+		sandboxStore,
+		&recordingRuntime{
+			events: &events,
+			ensureResult: runtimeport.ActualSandbox{
+				RuntimeID: "container-id",
+			},
+			deleteErr: cleanupErr,
+		},
+		&recordingProbe{events: &events, err: probeErr},
+	)
+
+	err := reconciler.Reconcile(context.Background(), "sandbox-id")
+	if !errors.Is(err, probeErr) || !errors.Is(err, cleanupErr) {
+		t.Fatalf("reconcile lost failure causes: %v", err)
+	}
+	record := sandboxStore.record
+	if record.ObservedState != domain.StateFailed ||
+		record.Reason != runtimeport.FailureReasonCleanupPending ||
+		record.RuntimeID != "container-id" {
+		t.Fatalf("cleanup pending record: %#v", record)
+	}
+}
+
+// TestReconcileSuccessfulDeleteRestoresCompensatedOperationReason 验证二次清理成功后不遗留假清理态。
+func TestReconcileSuccessfulDeleteRestoresCompensatedOperationReason(
+	t *testing.T,
+) {
+	events := make([]string, 0, 6)
+	operationErr := new(dockerruntime.ImagePullFailedError)
+	ensureErr := &compensatedFailure{operationErr: operationErr}
+	sandboxStore := newReconcileStore(&events, pendingSandbox())
+	reconciler := New(
+		sandboxStore,
+		&recordingRuntime{events: &events, ensureErr: ensureErr},
+		&recordingProbe{events: &events},
+	)
+
+	err := reconciler.Reconcile(context.Background(), "sandbox-id")
+	if !errors.Is(err, operationErr) {
+		t.Fatalf("reconcile lost original operation cause: %v", err)
+	}
+	if got := sandboxStore.record.Reason; got !=
+		runtimeport.FailureReasonImagePullFailed {
+		t.Fatalf("reason: got %s, want image pull failed", got)
+	}
+}
+
+// TestReconcileFailureCASConflictDoesNotOverwriteState 验证失败落库遇到并发修订时保持原记录。
+func TestReconcileFailureCASConflictDoesNotOverwriteState(t *testing.T) {
+	events := make([]string, 0, 6)
+	operationErr := new(dockerruntime.ImagePullFailedError)
+	sandboxStore := newReconcileStore(&events, pendingSandbox())
+	sandboxStore.failReason = runtimeport.FailureReasonImagePullFailed
+	sandboxStore.failErr = domain.ErrConflict
+	reconciler := New(
+		sandboxStore,
+		&recordingRuntime{events: &events, ensureErr: operationErr},
+		&recordingProbe{events: &events},
+	)
+
+	err := reconciler.Reconcile(context.Background(), "sandbox-id")
+	if !errors.Is(err, domain.ErrConflict) ||
+		!errors.Is(err, operationErr) {
+		t.Fatalf("CAS failure causes: %v", err)
+	}
+	if sandboxStore.record.ObservedState != domain.StateCreating {
+		t.Fatalf("conflicting state was overwritten: %#v", sandboxStore.record)
 	}
 }
 
@@ -243,10 +382,12 @@ func TestReconcileTerminatedRecordIsNoOp(t *testing.T) {
 
 // reconcileStore 是维护 revision CAS 的最小状态化 Store fake。
 type reconcileStore struct {
-	mu      sync.Mutex
-	record  domain.Sandbox
-	events  *[]string
-	updates []store.ObservedUpdate
+	mu         sync.Mutex
+	record     domain.Sandbox
+	events     *[]string
+	updates    []store.ObservedUpdate
+	failReason string
+	failErr    error
 }
 
 // newReconcileStore 创建包含单条记录的状态化 Store fake。
@@ -296,6 +437,9 @@ func (s *reconcileStore) UpdateObserved(
 	if update.ID != s.record.ID ||
 		update.ExpectedRevision != s.record.Revision {
 		return domain.Sandbox{}, domain.ErrConflict
+	}
+	if update.Reason == s.failReason && s.failErr != nil {
+		return domain.Sandbox{}, s.failErr
 	}
 	s.updates = append(s.updates, update)
 	*s.events = append(
@@ -380,6 +524,31 @@ type recordingProbe struct {
 func (p *recordingProbe) Probe(context.Context, string) error {
 	*p.events = append(*p.events, "runner-probe")
 	return p.err
+}
+
+// compensatedFailure 模拟 Ensure 补偿失败后返回的 cleanup pending 包装。
+type compensatedFailure struct {
+	operationErr error
+}
+
+// Error 返回固定测试错误文本。
+func (*compensatedFailure) Error() string {
+	return "compensation failed"
+}
+
+// Unwrap 保留原始创建失败。
+func (e *compensatedFailure) Unwrap() error {
+	return e.operationErr
+}
+
+// FailureReason 把外层错误标记为 cleanup pending。
+func (*compensatedFailure) FailureReason() string {
+	return runtimeport.FailureReasonCleanupPending
+}
+
+// OperationError 返回补偿前的原始创建错误。
+func (e *compensatedFailure) OperationError() error {
+	return e.operationErr
 }
 
 // pendingSandbox 返回 revision 已存在的 DesiredRunning 记录。

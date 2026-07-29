@@ -73,6 +73,7 @@ func ensureFailure(
 		return operationErr
 	}
 	return &CleanupPendingError{
-		cause: errors.Join(operationErr, cleanupErr),
+		cause:        cleanupErr,
+		operationErr: operationErr,
 	}
 }
