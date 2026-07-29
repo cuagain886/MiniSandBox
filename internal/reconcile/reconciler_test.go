@@ -139,6 +139,108 @@ func TestReconcileRunningStopsAtProbeFailure(t *testing.T) {
 	}
 }
 
+// TestReconcileTerminatedTransitionsFromEveryNonTerminalState 验证所有起点先 Stopping 再删除。
+func TestReconcileTerminatedTransitionsFromEveryNonTerminalState(t *testing.T) {
+	for _, state := range []domain.SandboxState{
+		domain.StatePending,
+		domain.StateCreating,
+		domain.StateRunning,
+		domain.StateFailed,
+		domain.StateStopping,
+	} {
+		t.Run(string(state), func(t *testing.T) {
+			events := make([]string, 0, 4)
+			sandbox := pendingSandbox()
+			sandbox.DesiredState = domain.DesiredTerminated
+			sandbox.ObservedState = state
+			sandbox.RuntimeID = "container-id"
+			sandboxStore := newReconcileStore(&events, sandbox)
+			reconciler := New(
+				sandboxStore,
+				&recordingRuntime{events: &events},
+				&recordingProbe{events: &events},
+			)
+
+			if err := reconciler.Reconcile(
+				context.Background(),
+				sandbox.ID,
+			); err != nil {
+				t.Fatalf("reconcile terminated: %v", err)
+			}
+			want := []string{
+				"store-get",
+				"store-update-Stopping-DELETING_RUNTIME",
+				"runtime-delete",
+				"store-update-Terminated-TERMINATED",
+			}
+			if !reflect.DeepEqual(events, want) {
+				t.Fatalf("events: got %v, want %v", events, want)
+			}
+			updates := sandboxStore.updatesSnapshot()
+			if len(updates) != 2 ||
+				updates[0].RuntimeID != "container-id" ||
+				updates[1].RuntimeID != "" {
+				t.Fatalf("updates: %#v", updates)
+			}
+		})
+	}
+}
+
+// TestReconcileTerminatedDeleteFailureDoesNotWriteTerminated 验证清理失败时保持 Stopping。
+func TestReconcileTerminatedDeleteFailureDoesNotWriteTerminated(t *testing.T) {
+	events := make([]string, 0, 3)
+	cause := errors.New("delete failure")
+	sandbox := pendingSandbox()
+	sandbox.DesiredState = domain.DesiredTerminated
+	sandbox.ObservedState = domain.StateRunning
+	sandboxStore := newReconcileStore(&events, sandbox)
+	reconciler := New(
+		sandboxStore,
+		&recordingRuntime{events: &events, deleteErr: cause},
+		&recordingProbe{events: &events},
+	)
+
+	err := reconciler.Reconcile(context.Background(), sandbox.ID)
+	if !errors.Is(err, cause) {
+		t.Fatalf("error: got %v, want delete cause", err)
+	}
+	want := []string{
+		"store-get",
+		"store-update-Stopping-DELETING_RUNTIME",
+		"runtime-delete",
+	}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events: got %v, want %v", events, want)
+	}
+	if got := sandboxStore.record.ObservedState; got != domain.StateStopping {
+		t.Fatalf("state: got %s, want Stopping", got)
+	}
+}
+
+// TestReconcileTerminatedRecordIsNoOp 验证已 Terminated 记录不再调用 Runtime.Delete。
+func TestReconcileTerminatedRecordIsNoOp(t *testing.T) {
+	events := make([]string, 0, 1)
+	sandbox := pendingSandbox()
+	sandbox.DesiredState = domain.DesiredTerminated
+	sandbox.ObservedState = domain.StateTerminated
+	sandboxStore := newReconcileStore(&events, sandbox)
+	reconciler := New(
+		sandboxStore,
+		&recordingRuntime{events: &events},
+		&recordingProbe{events: &events},
+	)
+
+	if err := reconciler.Reconcile(
+		context.Background(),
+		sandbox.ID,
+	); err != nil {
+		t.Fatalf("reconcile terminated record: %v", err)
+	}
+	if !reflect.DeepEqual(events, []string{"store-get"}) {
+		t.Fatalf("events: %v", events)
+	}
+}
+
 // reconcileStore 是维护 revision CAS 的最小状态化 Store fake。
 type reconcileStore struct {
 	mu      sync.Mutex

@@ -17,10 +17,14 @@ const (
 	reasonCreatingRuntime = "CREATING_RUNTIME"
 	reasonWaitingRunner   = "WAITING_RUNNER"
 	reasonRunning         = "RUNNING"
+	reasonDeletingRuntime = "DELETING_RUNTIME"
+	reasonTerminated      = "TERMINATED"
 
 	messageCreatingRuntime = "Preparing sandbox runtime."
 	messageWaitingRunner   = "Waiting for sandbox runner."
 	messageRunning         = "Sandbox is running."
+	messageDeletingRuntime = "Deleting sandbox runtime."
+	messageTerminated      = "Sandbox runtime has been deleted."
 )
 
 // Reconciler 将单个 sandbox 的期望状态幂等收敛到 runtime 实际状态。
@@ -53,11 +57,14 @@ func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
 	if err != nil {
 		return fmt.Errorf("read sandbox for reconcile: %w", err)
 	}
-	if sandbox.DesiredState != domain.DesiredRunning {
-		// P1-059 再实现 DesiredTerminated 分支。
-		return nil
+	switch sandbox.DesiredState {
+	case domain.DesiredRunning:
+		return r.reconcileRunning(ctx, sandbox)
+	case domain.DesiredTerminated:
+		return r.reconcileTerminated(ctx, sandbox)
+	default:
+		return fmt.Errorf("sandbox desired state is invalid: %w", domain.ErrInvalid)
 	}
-	return r.reconcileRunning(ctx, sandbox)
 }
 
 // reconcileRunning 把 DesiredRunning 记录从任意未完成创建态推进到 Running。
@@ -108,6 +115,44 @@ func (r *Reconciler) reconcileRunning(
 	})
 	if err != nil {
 		return fmt.Errorf("mark sandbox running: %w", err)
+	}
+	return nil
+}
+
+// reconcileTerminated 把任意非 Terminated 记录先推进到 Stopping 再清理。
+func (r *Reconciler) reconcileTerminated(
+	ctx context.Context,
+	sandbox domain.Sandbox,
+) error {
+	if sandbox.ObservedState == domain.StateTerminated {
+		return nil
+	}
+	stopping, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID:               sandbox.ID,
+		ExpectedRevision: sandbox.Revision,
+		State:            domain.StateStopping,
+		Reason:           reasonDeletingRuntime,
+		Message:          messageDeletingRuntime,
+		RuntimeID:        sandbox.RuntimeID,
+	})
+	if err != nil {
+		return fmt.Errorf("mark sandbox runtime deleting: %w", err)
+	}
+	if err := r.runtime.Delete(ctx, stopping.ID); err != nil {
+		// 删除未确认完成时必须保留 Stopping；P1-060/P1-062 再负责失败分类
+		// 和 Failed 状态，当前任务绝不提前写 Terminated。
+		return fmt.Errorf("delete sandbox runtime: %w", err)
+	}
+	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID:               stopping.ID,
+		ExpectedRevision: stopping.Revision,
+		State:            domain.StateTerminated,
+		Reason:           reasonTerminated,
+		Message:          messageTerminated,
+		RuntimeID:        "",
+	})
+	if err != nil {
+		return fmt.Errorf("mark sandbox terminated: %w", err)
 	}
 	return nil
 }
