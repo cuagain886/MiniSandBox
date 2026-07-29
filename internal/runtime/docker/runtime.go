@@ -12,7 +12,6 @@ import (
 	"time"
 
 	mobyclient "github.com/moby/moby/client"
-	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
 )
 
@@ -44,6 +43,11 @@ type Engine interface {
 		string,
 		mobyclient.ContainerInspectOptions,
 	) (mobyclient.ContainerInspectResult, error)
+	// ContainerList 按受管 label 枚举 running 和 stopped 容器。
+	ContainerList(
+		context.Context,
+		mobyclient.ContainerListOptions,
+	) (mobyclient.ContainerListResult, error)
 	// ContainerCreate 创建尚未启动的 sandbox 容器。
 	ContainerCreate(
 		context.Context,
@@ -205,13 +209,6 @@ func (r *Runtime) Close() error {
 		return nil
 	}
 	return r.engine.Close()
-}
-
-// ListManaged 按稳定 labels 枚举当前 daemon 中的受管容器。
-func (r *Runtime) ListManaged(
-	context.Context,
-) ([]runtimeport.ActualSandbox, error) {
-	return nil, domain.ErrNotImplemented
 }
 
 var _ runtimeport.Runtime = (*Runtime)(nil)

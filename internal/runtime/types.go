@@ -14,6 +14,15 @@ const (
 	ActualStopped ActualState = "Stopped"
 )
 
+const (
+	// DiscoveryLabelsInvalid 表示受管容器 labels 缺失、格式错误或身份不一致。
+	DiscoveryLabelsInvalid = "LABELS_INVALID"
+	// DiscoverySchemaUnsupported 表示受管容器使用当前控制面不认识的 label schema。
+	DiscoverySchemaUnsupported = "LABEL_SCHEMA_UNSUPPORTED"
+	// DiscoveryStateUnsupported 表示 Docker 状态无法安全映射为稳定 ActualState。
+	DiscoveryStateUnsupported = "STATE_UNSUPPORTED"
+)
+
 // ActualSandbox 汇总 reconciler 决策所需的 runtime 观测结果。
 type ActualSandbox struct {
 	// ID 是从受管 labels 验证得到的 sandbox ID；Missing 时为请求 ID。

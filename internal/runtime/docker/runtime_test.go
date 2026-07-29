@@ -35,6 +35,10 @@ type fakeEngine struct {
 		string,
 		mobyclient.ContainerInspectOptions,
 	) (mobyclient.ContainerInspectResult, error)
+	containerListFunc func(
+		context.Context,
+		mobyclient.ContainerListOptions,
+	) (mobyclient.ContainerListResult, error)
 	containerCreateFunc func(
 		context.Context,
 		mobyclient.ContainerCreateOptions,
@@ -125,6 +129,17 @@ func (f *fakeEngine) ContainerInspect(
 		return mobyclient.ContainerInspectResult{}, nil
 	}
 	return f.containerInspectFunc(ctx, name, options)
+}
+
+// ContainerList 调用测试注入函数；未配置时返回空列表成功。
+func (f *fakeEngine) ContainerList(
+	ctx context.Context,
+	options mobyclient.ContainerListOptions,
+) (mobyclient.ContainerListResult, error) {
+	if f.containerListFunc == nil {
+		return mobyclient.ContainerListResult{}, nil
+	}
+	return f.containerListFunc(ctx, options)
 }
 
 // ContainerCreate 调用测试注入函数；未配置时返回零值成功。
