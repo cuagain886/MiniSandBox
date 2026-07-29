@@ -3,6 +3,11 @@
 Docker 集成测试默认不会运行，必须在 Linux Docker 主机显式 opt-in：
 
 ```bash
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+go build -o internal/embedded/artifacts/linux_amd64/runnerd ./cmd/runnerd
+GOOS=linux GOARCH=amd64 CGO_ENABLED=0 \
+go build -o internal/embedded/artifacts/linux_amd64/sandbox-init ./cmd/sandbox-init
+
 MINISANDBOX_INTEGRATION=1 \
 go test -tags=integration ./tests/integration/...
 ```

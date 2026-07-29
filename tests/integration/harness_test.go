@@ -15,11 +15,13 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	mobyclient "github.com/moby/moby/client"
+	dockerruntime "minisandbox/internal/runtime/docker"
 )
 
 const (
@@ -35,6 +37,8 @@ type dockerHarness struct {
 	client        *mobyclient.Client
 	testID        string
 	dataDirectory string
+	mu            sync.Mutex
+	sandboxIDs    []string
 }
 
 // newDockerHarness 在显式 opt-in 后连接 Docker 并注册 finally cleanup。
@@ -43,8 +47,8 @@ func newDockerHarness(t *testing.T) *dockerHarness {
 	if os.Getenv(integrationOptInEnv) != "1" {
 		t.Skip("set MINISANDBOX_INTEGRATION=1 to run Docker integration tests")
 	}
-	if runtime.GOOS != "linux" {
-		t.Skip("Docker integration suite requires a Linux host")
+	if runtime.GOOS != "linux" || runtime.GOARCH != "amd64" {
+		t.Skip("Docker integration suite requires a linux/amd64 host")
 	}
 
 	testID := randomTestID(t)
@@ -95,6 +99,13 @@ func (h *dockerHarness) labels() map[string]string {
 	return map[string]string{testIDLabel: h.testID}
 }
 
+// trackSandbox 登记由当前测试 API 创建的 ID，供 finally cleanup 精确过滤。
+func (h *dockerHarness) trackSandbox(sandboxID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.sandboxIDs = append(h.sandboxIDs, sandboxID)
+}
+
 // cleanup 按当前 test label 先删 container、再删 volume。
 //
 // 错误只报告失败阶段，不包含 Docker host、原始响应或 labels。
@@ -102,55 +113,58 @@ func (h *dockerHarness) cleanup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
 	failures := make([]string, 0, 2)
-
-	containers, err := h.client.ContainerList(
-		ctx,
-		mobyclient.ContainerListOptions{
-			All: true,
-			Filters: make(mobyclient.Filters).Add(
-				"label",
-				testIDLabel+"="+h.testID,
-			),
-		},
-	)
-	if err != nil {
-		failures = append(failures, "list containers")
-	} else {
-		for _, container := range containers.Items {
-			_, removeErr := h.client.ContainerRemove(
-				ctx,
-				container.ID,
-				mobyclient.ContainerRemoveOptions{
-					Force:         true,
-					RemoveVolumes: false,
-				},
-			)
-			if removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
-				failures = append(failures, "remove container")
-			}
-		}
+	h.mu.Lock()
+	sandboxIDs := append([]string(nil), h.sandboxIDs...)
+	h.mu.Unlock()
+	filters := []string{testIDLabel + "=" + h.testID}
+	for _, sandboxID := range sandboxIDs {
+		filters = append(filters, dockerruntime.LabelSandboxID+"="+sandboxID)
 	}
 
-	volumes, err := h.client.VolumeList(
-		ctx,
-		mobyclient.VolumeListOptions{
-			Filters: make(mobyclient.Filters).Add(
-				"label",
-				testIDLabel+"="+h.testID,
-			),
-		},
-	)
-	if err != nil {
-		failures = append(failures, "list volumes")
-	} else {
-		for _, volume := range volumes.Items {
-			_, removeErr := h.client.VolumeRemove(
-				ctx,
-				volume.Name,
-				mobyclient.VolumeRemoveOptions{Force: true},
-			)
-			if removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
-				failures = append(failures, "remove volume")
+	for _, label := range filters {
+		containers, err := h.client.ContainerList(
+			ctx,
+			mobyclient.ContainerListOptions{
+				All:     true,
+				Filters: make(mobyclient.Filters).Add("label", label),
+			},
+		)
+		if err != nil {
+			failures = append(failures, "list containers")
+		} else {
+			for _, container := range containers.Items {
+				_, removeErr := h.client.ContainerRemove(
+					ctx,
+					container.ID,
+					mobyclient.ContainerRemoveOptions{
+						Force:         true,
+						RemoveVolumes: false,
+					},
+				)
+				if removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
+					failures = append(failures, "remove container")
+				}
+			}
+		}
+
+		volumes, err := h.client.VolumeList(
+			ctx,
+			mobyclient.VolumeListOptions{
+				Filters: make(mobyclient.Filters).Add("label", label),
+			},
+		)
+		if err != nil {
+			failures = append(failures, "list volumes")
+		} else {
+			for _, volume := range volumes.Items {
+				_, removeErr := h.client.VolumeRemove(
+					ctx,
+					volume.Name,
+					mobyclient.VolumeRemoveOptions{Force: true},
+				)
+				if removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
+					failures = append(failures, "remove volume")
+				}
 			}
 		}
 	}
