@@ -6,26 +6,108 @@ package reconcile
 
 import (
 	"context"
+	"fmt"
 
+	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
 	"minisandbox/internal/store"
+)
+
+const (
+	reasonCreatingRuntime = "CREATING_RUNTIME"
+	reasonWaitingRunner   = "WAITING_RUNNER"
+	reasonRunning         = "RUNNING"
+
+	messageCreatingRuntime = "Preparing sandbox runtime."
+	messageWaitingRunner   = "Waiting for sandbox runner."
+	messageRunning         = "Sandbox is running."
 )
 
 // Reconciler 将单个 sandbox 的期望状态幂等收敛到 runtime 实际状态。
 type Reconciler struct {
 	store   store.Store
 	runtime runtimeport.Runtime
+	probe   RunnerProbe
 	locks   *KeyedLock
 }
 
-// New 使用持久化端口和 runtime 端口创建状态收敛器。
-func New(s store.Store, r runtimeport.Runtime) *Reconciler {
-	return &Reconciler{store: s, runtime: r, locks: NewKeyedLock()}
+// New 使用持久化、runtime 和 runner probe 端口创建状态收敛器。
+func New(s store.Store, r runtimeport.Runtime, probe RunnerProbe) *Reconciler {
+	return &Reconciler{
+		store:   s,
+		runtime: r,
+		probe:   probe,
+		locks:   NewKeyedLock(),
+	}
 }
 
 // Reconcile 对指定 sandbox 执行一次幂等收敛。
 //
-// 初始化骨架尚未实现具体状态转换，后续实现必须在崩溃重试时保持相同结果。
-func (r *Reconciler) Reconcile(context.Context, string) error {
+// 同一 ID 先通过 keyed lock 串行化，再从 Store 重读最新 revision；内存 wake
+// 携带的旧 snapshot 从不参与状态决策。
+func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
+	unlock := r.locks.Lock(sandboxID)
+	defer unlock()
+
+	sandbox, err := r.store.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("read sandbox for reconcile: %w", err)
+	}
+	if sandbox.DesiredState != domain.DesiredRunning {
+		// P1-059 再实现 DesiredTerminated 分支。
+		return nil
+	}
+	return r.reconcileRunning(ctx, sandbox)
+}
+
+// reconcileRunning 把 DesiredRunning 记录从任意未完成创建态推进到 Running。
+func (r *Reconciler) reconcileRunning(
+	ctx context.Context,
+	sandbox domain.Sandbox,
+) error {
+	if sandbox.ObservedState == domain.StateRunning {
+		return nil
+	}
+	creating, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID:               sandbox.ID,
+		ExpectedRevision: sandbox.Revision,
+		State:            domain.StateCreating,
+		Reason:           reasonCreatingRuntime,
+		Message:          messageCreatingRuntime,
+		RuntimeID:        sandbox.RuntimeID,
+	})
+	if err != nil {
+		return fmt.Errorf("mark sandbox runtime creating: %w", err)
+	}
+
+	actual, err := r.runtime.Ensure(ctx, creating)
+	if err != nil {
+		return fmt.Errorf("ensure sandbox runtime: %w", err)
+	}
+	waiting, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID:               creating.ID,
+		ExpectedRevision: creating.Revision,
+		State:            domain.StateCreating,
+		Reason:           reasonWaitingRunner,
+		Message:          messageWaitingRunner,
+		RuntimeID:        actual.RuntimeID,
+	})
+	if err != nil {
+		return fmt.Errorf("mark sandbox waiting for runner: %w", err)
+	}
+	if err := r.probe.Probe(ctx, waiting.ID); err != nil {
+		return fmt.Errorf("probe sandbox runner: %w", err)
+	}
+	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID:               waiting.ID,
+		ExpectedRevision: waiting.Revision,
+		State:            domain.StateRunning,
+		Reason:           reasonRunning,
+		Message:          messageRunning,
+		RuntimeID:        actual.RuntimeID,
+	})
+	if err != nil {
+		return fmt.Errorf("mark sandbox running: %w", err)
+	}
 	return nil
 }
