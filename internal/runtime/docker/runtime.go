@@ -207,11 +207,6 @@ func (r *Runtime) Close() error {
 	return r.engine.Close()
 }
 
-// Delete 幂等删除指定 sandbox 的 Docker 资源。
-func (r *Runtime) Delete(context.Context, string) error {
-	return domain.ErrNotImplemented
-}
-
 // ListManaged 按稳定 labels 枚举当前 daemon 中的受管容器。
 func (r *Runtime) ListManaged(
 	context.Context,

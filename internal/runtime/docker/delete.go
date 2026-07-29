@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 	"math"
 	"time"
 
@@ -10,6 +11,44 @@ import (
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 )
+
+const defaultContainerStopTimeout = 10 * time.Second
+
+// Delete 按 container、workspace volume、runtime directory 的固定顺序清理。
+//
+// 三个步骤均按 best-effort 执行并使用 errors.Join 保留所有未完成项；重复
+// 调用会由各原子 helper 从实际状态继续。只有三类资源均确认不存在才返回 nil。
+func (r *Runtime) Delete(ctx context.Context, sandboxID string) error {
+	if r == nil || r.engine == nil {
+		return errors.New("Docker runtime is not initialized")
+	}
+	if !validSandboxID(sandboxID) {
+		return errors.New("sandbox ID is invalid")
+	}
+
+	var failures []error
+	if err := deleteManagedContainer(
+		ctx,
+		r.engine,
+		sandboxID,
+		defaultContainerStopTimeout,
+	); err != nil {
+		failures = append(failures, fmt.Errorf("delete container: %w", err))
+	}
+	if err := deleteWorkspaceVolume(ctx, r.engine, sandboxID); err != nil {
+		failures = append(
+			failures,
+			fmt.Errorf("delete workspace volume: %w", err),
+		)
+	}
+	if err := DeleteRuntimeDirectory(r.dataDirectory, sandboxID); err != nil {
+		failures = append(
+			failures,
+			fmt.Errorf("delete runtime directory: %w", err),
+		)
+	}
+	return errors.Join(failures...)
+}
 
 // deleteManagedContainer 幂等停止并删除单个经过身份验证的 sandbox 容器。
 //
