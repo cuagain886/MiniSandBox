@@ -6,16 +6,14 @@ package main
 
 import (
 	"context"
-	"errors"
 	"flag"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"syscall"
-	"time"
 
 	controlapi "minisandbox/internal/api"
+	"minisandbox/internal/bootstrap"
 )
 
 var (
@@ -24,10 +22,10 @@ var (
 )
 
 func main() {
-	listenAddress := flag.String(
-		"listen",
-		"127.0.0.1:8080",
-		"HTTP listen address",
+	configPath := flag.String(
+		"config",
+		"configs/sandboxd.example.yaml",
+		"sandboxd YAML configuration path",
 	)
 	flag.Parse()
 
@@ -38,29 +36,14 @@ func main() {
 	)
 	defer stop()
 
-	server := &http.Server{
-		Addr: *listenAddress,
-		Handler: controlapi.NewRouter(controlapi.BuildInfo{
+	err := bootstrap.Run(ctx, bootstrap.Options{
+		ConfigPath: *configPath,
+		Build: controlapi.BuildInfo{
 			Version: version,
 			Commit:  commit,
-		}),
-		ReadHeaderTimeout: 5 * time.Second,
-	}
-
-	go func() {
-		<-ctx.Done()
-		shutdownContext, cancel := context.WithTimeout(
-			context.Background(),
-			10*time.Second,
-		)
-		defer cancel()
-		if err := server.Shutdown(shutdownContext); err != nil {
-			slog.Error("sandboxd shutdown failed", "error", err)
-		}
-	}()
-
-	slog.Info("sandboxd listening", "address", *listenAddress, "version", version)
-	if err := server.ListenAndServe(); !errors.Is(err, http.ErrServerClosed) {
+		},
+	})
+	if err != nil {
 		slog.Error("sandboxd stopped", "error", err)
 		os.Exit(1)
 	}
