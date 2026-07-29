@@ -11,6 +11,7 @@ import (
 	mobyvolume "github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
+	runtimeport "minisandbox/internal/runtime"
 )
 
 // Workspace 描述宿主机目录与容器内挂载路径的对应关系。
@@ -55,6 +56,11 @@ func (e *CleanupPendingError) Unwrap() error {
 // CleanupPending 标记该错误需要后续清理重试。
 func (*CleanupPendingError) CleanupPending() bool {
 	return true
+}
+
+// FailureReason 返回稳定的 cleanup pending 生命周期 reason。
+func (*CleanupPendingError) FailureReason() string {
+	return runtimeport.FailureReasonCleanupPending
 }
 
 // ensureWorkspaceVolume 幂等保证 sandbox 的受管 workspace volume 存在。

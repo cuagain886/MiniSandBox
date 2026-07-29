@@ -175,8 +175,8 @@ func TestStartContainerMapsStartFailure(t *testing.T) {
 	}
 
 	err := startContainer(context.Background(), engine, "container-id")
-	var unavailable *RuntimeUnavailableError
-	if !errors.As(err, &unavailable) || !errors.Is(err, cause) {
+	var startFailed *ContainerStartFailedError
+	if !errors.As(err, &startFailed) || !errors.Is(err, cause) {
 		t.Fatalf("error: got %T %v", err, err)
 	}
 	if strings.Contains(err.Error(), cause.Error()) {

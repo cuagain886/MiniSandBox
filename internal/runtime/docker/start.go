@@ -36,7 +36,7 @@ func startContainer(
 	containerID string,
 ) error {
 	if containerID == "" {
-		return &RuntimeMissingError{}
+		return &ContainerStartFailedError{cause: &RuntimeMissingError{}}
 	}
 	inspection, err := engine.ContainerInspect(
 		ctx,
@@ -45,19 +45,19 @@ func startContainer(
 	)
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
-			return &RuntimeMissingError{}
+			return &ContainerStartFailedError{cause: &RuntimeMissingError{}}
 		}
 		return runtimeUnavailable(err)
 	}
 	if inspection.Container.State == nil {
-		return containerStateConflict()
+		return &ContainerStartFailedError{cause: containerStateConflict()}
 	}
 	switch inspection.Container.State.Status {
 	case mobycontainer.StateRunning:
 		return nil
 	case mobycontainer.StateCreated, mobycontainer.StateExited:
 	default:
-		return containerStateConflict()
+		return &ContainerStartFailedError{cause: containerStateConflict()}
 	}
 
 	_, err = engine.ContainerStart(
@@ -74,9 +74,9 @@ func startContainer(
 		return nil
 	}
 	if cerrdefs.IsNotFound(err) {
-		return &RuntimeMissingError{}
+		return &ContainerStartFailedError{cause: &RuntimeMissingError{}}
 	}
-	return runtimeUnavailable(err)
+	return &ContainerStartFailedError{cause: err}
 }
 
 // containerStateConflict 返回不泄露 Docker 原始状态的固定冲突错误。

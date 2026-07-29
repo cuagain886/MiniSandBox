@@ -121,6 +121,11 @@ func (e *RuntimeUnavailableError) Unavailable() bool {
 	return true
 }
 
+// FailureReason 返回稳定的 runtime unavailable 生命周期 reason。
+func (e *RuntimeUnavailableError) FailureReason() string {
+	return runtimeport.FailureReasonRuntimeUnavailable
+}
+
 // Runtime 是 runtime 端口的 Docker Engine 实现。
 type Runtime struct {
 	engine        Engine

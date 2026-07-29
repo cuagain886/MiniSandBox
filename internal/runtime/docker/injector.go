@@ -75,7 +75,7 @@ func copyArtifacts(
 	}
 	content, err := BuildArtifactTar(provider)
 	if err != nil {
-		return err
+		return &ArtifactInvalidError{cause: err}
 	}
 	defer content.Close()
 
@@ -93,9 +93,9 @@ func copyArtifacts(
 	)
 	if err != nil {
 		if contextErr := operationContext.Err(); contextErr != nil {
-			return runtimeUnavailable(contextErr)
+			return &ArtifactInjectionFailedError{cause: contextErr}
 		}
-		return runtimeUnavailable(err)
+		return &ArtifactInjectionFailedError{cause: err}
 	}
 	return nil
 }

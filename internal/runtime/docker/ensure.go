@@ -111,7 +111,7 @@ func (r *Runtime) validateEnsureInput(
 		return ResourceNames{}, err
 	}
 	if err := validateArtifactSet(r.artifacts.Artifacts()); err != nil {
-		return ResourceNames{}, err
+		return ResourceNames{}, &ArtifactInvalidError{cause: err}
 	}
 	return names, nil
 }

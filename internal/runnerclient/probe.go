@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"minisandbox/pkg/protocol"
 )
 
 const runnerSocketName = "runner.sock"
@@ -26,6 +28,11 @@ func (*SocketMissingError) Error() string {
 // Unwrap 返回底层文件系统错误，供 errors.Is 分类。
 func (e *SocketMissingError) Unwrap() error {
 	return e.cause
+}
+
+// FailureReason 返回稳定的 runner unhealthy 生命周期 reason。
+func (*SocketMissingError) FailureReason() string {
+	return string(protocol.SandboxReasonRunnerUnhealthy)
 }
 
 // UnhealthyError 表示 runner 返回非 200 状态或连接出现非缺失故障。
@@ -49,6 +56,11 @@ func (e *UnhealthyError) StatusCode() int {
 	return e.statusCode
 }
 
+// FailureReason 返回稳定的 runner unhealthy 生命周期 reason。
+func (*UnhealthyError) FailureReason() string {
+	return string(protocol.SandboxReasonRunnerUnhealthy)
+}
+
 // TimeoutError 表示 runner 未在配置的 ready timeout 内响应。
 type TimeoutError struct {
 	cause error
@@ -62,6 +74,11 @@ func (*TimeoutError) Error() string {
 // Unwrap 返回 context deadline cause。
 func (e *TimeoutError) Unwrap() error {
 	return e.cause
+}
+
+// FailureReason 返回稳定的 runner unhealthy 生命周期 reason。
+func (*TimeoutError) FailureReason() string {
+	return string(protocol.SandboxReasonRunnerUnhealthy)
 }
 
 // Probe 按 sandbox ID 对固定 Unix Socket `/healthz` 执行健康检查。

@@ -3,7 +3,6 @@ package docker
 import (
 	"context"
 	"errors"
-	"fmt"
 	"path/filepath"
 	"strings"
 
@@ -157,14 +156,14 @@ func ensureStoppedContainer(
 	created, err := engine.ContainerCreate(ctx, options)
 	if err != nil {
 		if cerrdefs.IsConflict(err) {
-			return ContainerEnsureResult{}, containerIdentityConflict()
+			return ContainerEnsureResult{}, &SpecDriftError{cause: domain.ErrConflict}
 		}
-		return ContainerEnsureResult{}, runtimeUnavailable(err)
+		return ContainerEnsureResult{}, &ContainerCreateFailedError{cause: err}
 	}
 	if created.ID == "" {
-		return ContainerEnsureResult{}, runtimeUnavailable(
-			errors.New("Docker returned an empty container ID"),
-		)
+		return ContainerEnsureResult{}, &ContainerCreateFailedError{
+			cause: errors.New("Docker returned an empty container ID"),
+		}
 	}
 	return ContainerEnsureResult{
 		ContainerID:       created.ID,
@@ -192,8 +191,5 @@ func validateManagedContainer(
 
 // containerIdentityConflict 返回不泄露 inspect 数据的稳定受管身份冲突。
 func containerIdentityConflict() error {
-	return fmt.Errorf(
-		"container conflicts with managed identity: %w",
-		domain.ErrConflict,
-	)
+	return &SpecDriftError{cause: domain.ErrConflict}
 }

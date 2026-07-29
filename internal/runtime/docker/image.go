@@ -10,6 +10,7 @@ import (
 	"github.com/distribution/reference"
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
+	runtimeport "minisandbox/internal/runtime"
 )
 
 var errInvalidImageReference = &invalidImageReferenceError{}
@@ -32,15 +33,32 @@ func (e *ImagePullFailedError) Unwrap() error {
 	return e.cause
 }
 
+// FailureReason 返回稳定的 image pull 生命周期 reason。
+func (*ImagePullFailedError) FailureReason() string {
+	return runtimeport.FailureReasonImagePullFailed
+}
+
 // ArtifactInvalidError 表示镜像平台与 Phase 1 嵌入产物不兼容。
 //
 // Phase 1 只提供 linux/amd64 runner 和 init；平台缺失也不能猜测，否则可能
 // 在启动容器后才以 exec format error 失败。
-type ArtifactInvalidError struct{}
+type ArtifactInvalidError struct {
+	cause error
+}
 
 // Error 返回不包含镜像内部元数据的固定安全文案。
 func (*ArtifactInvalidError) Error() string {
-	return "sandbox image platform is incompatible with embedded artifacts"
+	return "sandbox runtime artifacts are invalid"
+}
+
+// Unwrap 返回内部 artifact 校验 cause。
+func (e *ArtifactInvalidError) Unwrap() error {
+	return e.cause
+}
+
+// FailureReason 返回稳定的 artifact invalid 生命周期 reason。
+func (*ArtifactInvalidError) FailureReason() string {
+	return runtimeport.FailureReasonArtifactInvalid
 }
 
 // ImageReference 保存已经通过基础语法校验的规范镜像引用。

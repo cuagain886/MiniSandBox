@@ -83,8 +83,8 @@ func TestCopyArtifactsPropagatesEngineFailure(t *testing.T) {
 		testArtifactProvider(),
 		time.Second,
 	)
-	var unavailable *RuntimeUnavailableError
-	if !errors.As(err, &unavailable) || !errors.Is(err, cause) {
+	var injectionFailed *ArtifactInjectionFailedError
+	if !errors.As(err, &injectionFailed) || !errors.Is(err, cause) {
 		t.Fatalf("error: got %T %v", err, err)
 	}
 	if strings.Contains(err.Error(), cause.Error()) {

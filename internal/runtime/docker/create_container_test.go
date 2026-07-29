@@ -155,9 +155,10 @@ func TestEnsureStoppedContainerMapsEngineErrors(t *testing.T) {
 	inspectCause := errors.New("inspect engine detail")
 	createCause := errors.New("create engine detail")
 	tests := []struct {
-		name   string
-		engine *fakeEngine
-		cause  error
+		name       string
+		engine     *fakeEngine
+		cause      error
+		wantCreate bool
 	}{
 		{
 			name: "inspect",
@@ -189,7 +190,8 @@ func TestEnsureStoppedContainerMapsEngineErrors(t *testing.T) {
 					return mobyclient.ContainerCreateResult{}, createCause
 				},
 			},
-			cause: createCause,
+			cause:      createCause,
+			wantCreate: true,
 		},
 	}
 
@@ -201,8 +203,15 @@ func TestEnsureStoppedContainerMapsEngineErrors(t *testing.T) {
 				testDockerSandbox(),
 				names,
 			)
-			var unavailable *RuntimeUnavailableError
-			if !errors.As(err, &unavailable) || !errors.Is(err, tt.cause) {
+			var matched bool
+			if tt.wantCreate {
+				var createFailed *ContainerCreateFailedError
+				matched = errors.As(err, &createFailed)
+			} else {
+				var unavailable *RuntimeUnavailableError
+				matched = errors.As(err, &unavailable)
+			}
+			if !matched || !errors.Is(err, tt.cause) {
 				t.Fatalf("error: got %T %v", err, err)
 			}
 			if strings.Contains(err.Error(), tt.cause.Error()) {
