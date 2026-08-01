@@ -18,7 +18,7 @@ func (p staticArtifactProvider) Artifacts() ArtifactSet {
 	return cloneArtifactSet(p.artifacts)
 }
 
-// TestBuildArtifactTar 验证固定路径、内容、权限、属主、mtime 和 entry 数量。
+// TestBuildArtifactTar 验证固定目录、文件路径、权限、属主、mtime 和 entry 数量。
 func TestBuildArtifactTar(t *testing.T) {
 	runnerData := testELF64AMD64()
 	initData := append(testELF64AMD64(), []byte("init")...)
@@ -36,12 +36,26 @@ func TestBuildArtifactTar(t *testing.T) {
 	defer archive.Close()
 
 	reader := tar.NewReader(archive)
+	for _, want := range []string{"opt", "opt/minisandbox"} {
+		header, err := reader.Next()
+		if err != nil {
+			t.Fatalf("read %s directory header: %v", want, err)
+		}
+		if header.Name != want ||
+			header.Mode != artifactDirectoryMode ||
+			header.Uid != 0 ||
+			header.Gid != 0 ||
+			header.Typeflag != tar.TypeDir ||
+			!header.ModTime.Equal(artifactModTime) {
+			t.Fatalf("directory header: %#v", header)
+		}
+	}
 	expected := []struct {
 		name string
 		data []byte
 	}{
-		{name: RunnerArtifactName, data: runnerData},
-		{name: InitArtifactName, data: initData},
+		{name: "opt/minisandbox/" + RunnerArtifactName, data: runnerData},
+		{name: "opt/minisandbox/" + InitArtifactName, data: initData},
 	}
 	for _, want := range expected {
 		header, err := reader.Next()

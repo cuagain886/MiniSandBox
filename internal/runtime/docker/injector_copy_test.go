@@ -13,7 +13,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 )
 
-// TestCopyArtifactsUsesFixedDestinationAndTar 验证 Copy API 只收到两个固定 artifact。
+// TestCopyArtifactsUsesFixedDestinationAndTar 验证 Copy API 只收到固定目录和 artifact。
 func TestCopyArtifactsUsesFixedDestinationAndTar(t *testing.T) {
 	var names []string
 	engine := &fakeEngine{
@@ -25,7 +25,7 @@ func TestCopyArtifactsUsesFixedDestinationAndTar(t *testing.T) {
 			if containerID != "container-id" {
 				t.Fatalf("container ID: got %q", containerID)
 			}
-			if options.DestinationPath != artifactDirectory ||
+			if options.DestinationPath != artifactCopyDestination ||
 				options.AllowOverwriteDirWithFile ||
 				options.CopyUIDGID {
 				t.Fatalf("copy options: %#v", options)
@@ -58,7 +58,12 @@ func TestCopyArtifactsUsesFixedDestinationAndTar(t *testing.T) {
 	if err != nil {
 		t.Fatalf("copy artifacts: %v", err)
 	}
-	if !reflect.DeepEqual(names, []string{RunnerArtifactName, InitArtifactName}) {
+	if !reflect.DeepEqual(names, []string{
+		"opt",
+		"opt/minisandbox",
+		"opt/minisandbox/" + RunnerArtifactName,
+		"opt/minisandbox/" + InitArtifactName,
+	}) {
 		t.Fatalf("tar entries: %v", names)
 	}
 }

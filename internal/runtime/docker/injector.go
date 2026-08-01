@@ -7,20 +7,26 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path"
 	"time"
 
 	mobyclient "github.com/moby/moby/client"
 )
 
-const artifactFileMode int64 = 0o755
+const (
+	artifactCopyDestination = "/"
+	artifactDirectoryMode   = 0o755
+	artifactFileMode        = 0o755
+)
 
 var artifactModTime = time.Unix(0, 0).UTC()
 
 // BuildArtifactTar 把 provider 中两个固定产物编码为 Docker Copy API 可用的 tar。
 //
-// archive entry 只能是 runnerd 和 sandbox-init，调用方不能传目标路径；目标
-// `/opt/minisandbox` 由后续 CopyToContainer 原子任务固定。全部内容在内存中
-// 生成，不创建宿主机临时文件。调用方必须关闭返回的 reader。
+// archive entry 只能是固定目录以及 runnerd 和 sandbox-init，调用方不能传
+// 目标路径。tar 从容器根目录解包并显式创建 `/opt/minisandbox`，因此不要求
+// 用户镜像预建该目录。全部内容在内存中生成，不创建宿主机临时文件。调用方
+// 必须关闭返回的 reader。
 func BuildArtifactTar(provider ArtifactProvider) (io.ReadCloser, error) {
 	if provider == nil {
 		return nil, errors.New("artifact provider must not be nil")
@@ -32,9 +38,26 @@ func BuildArtifactTar(provider ArtifactProvider) (io.ReadCloser, error) {
 
 	var buffer bytes.Buffer
 	writer := tar.NewWriter(&buffer)
+	for _, directory := range []string{
+		"opt",
+		path.Join("opt", "minisandbox"),
+	} {
+		header := &tar.Header{
+			Name:     directory,
+			Mode:     artifactDirectoryMode,
+			Uid:      0,
+			Gid:      0,
+			ModTime:  artifactModTime,
+			Typeflag: tar.TypeDir,
+			Format:   tar.FormatUSTAR,
+		}
+		if err := writer.WriteHeader(header); err != nil {
+			return nil, fmt.Errorf("write artifact directory header: %w", err)
+		}
+	}
 	for _, artifact := range []Artifact{artifacts.Runner, artifacts.Init} {
 		header := &tar.Header{
-			Name:     artifact.Name,
+			Name:     path.Join("opt", "minisandbox", artifact.Name),
 			Mode:     artifactFileMode,
 			Uid:      0,
 			Gid:      0,
@@ -85,7 +108,7 @@ func copyArtifacts(
 		operationContext,
 		containerID,
 		mobyclient.CopyToContainerOptions{
-			DestinationPath:           artifactDirectory,
+			DestinationPath:           artifactCopyDestination,
 			Content:                   content,
 			AllowOverwriteDirWithFile: false,
 			CopyUIDGID:                false,
