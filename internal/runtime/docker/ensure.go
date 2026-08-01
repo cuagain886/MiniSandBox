@@ -100,7 +100,7 @@ func (r *Runtime) validateEnsureInput(
 	sandbox domain.Sandbox,
 ) (ResourceNames, error) {
 	if r == nil || r.engine == nil {
-		return ResourceNames{}, errors.New("Docker runtime is not initialized")
+		return ResourceNames{}, errors.New("docker runtime is not initialized")
 	}
 	options := RuntimeOptions{
 		DataDirectory: r.dataDirectory,

@@ -20,7 +20,7 @@ func unixTransport(string) http.RoundTripper {
 			string,
 			string,
 		) (net.Conn, error) {
-			return nil, errors.New("Unix socket transport is unavailable on Windows")
+			return nil, errors.New("unix socket transport is unavailable on Windows")
 		},
 	}
 }

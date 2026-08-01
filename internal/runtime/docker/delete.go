@@ -20,7 +20,7 @@ const defaultContainerStopTimeout = 10 * time.Second
 // 调用会由各原子 helper 从实际状态继续。只有三类资源均确认不存在才返回 nil。
 func (r *Runtime) Delete(ctx context.Context, sandboxID string) error {
 	if r == nil || r.engine == nil {
-		return errors.New("Docker runtime is not initialized")
+		return errors.New("docker runtime is not initialized")
 	}
 	if !validSandboxID(sandboxID) {
 		return errors.New("sandbox ID is invalid")

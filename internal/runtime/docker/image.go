@@ -146,7 +146,7 @@ func ensureImage(
 	}
 	if stream == nil {
 		return mobyclient.ImageInspectResult{}, &ImagePullFailedError{
-			cause: errors.New("Docker returned a nil pull stream"),
+			cause: errors.New("docker returned a nil pull stream"),
 		}
 	}
 	waitErr := stream.Wait(operationContext)

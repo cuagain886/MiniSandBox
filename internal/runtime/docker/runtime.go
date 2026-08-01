@@ -1,7 +1,7 @@
 // Package docker 承载基于 Docker Engine 的 sandbox runtime adapter。
 //
-// 本模块设计上负责镜像、容器、workspace、labels 和 runner 注入；当前仅提供
-// 接口骨架和数据结构。它不负责租户鉴权、配额策略或公共 API 错误码。
+// 本模块负责 Phase 1 的镜像、容器、workspace、labels、runner 注入和幂等
+// 清理。它不负责租户鉴权、配额策略、reconcile 状态机或公共 API 错误码。
 package docker
 
 import (
@@ -144,10 +144,11 @@ type RuntimeOptions struct {
 	CreateTimeout time.Duration
 }
 
-// New 创建 Docker client、启用 API version negotiation 并立即探测 daemon。
+// New 创建 Docker client 并立即探测 daemon。
 //
 // dockerHost 必须是显式配置值，不读取 DOCKER_HOST 环境变量。options 必须
-// 提供受管 data directory、artifact provider 和正 create timeout。
+// 提供受管 data directory、artifact provider 和正 create timeout。当前
+// Moby client 默认启用 API version negotiation，不再传入已经弃用的空操作。
 func New(
 	ctx context.Context,
 	dockerHost string,
@@ -158,7 +159,6 @@ func New(
 	}
 	engine, err := mobyclient.New(
 		mobyclient.WithHost(dockerHost),
-		mobyclient.WithAPIVersionNegotiation(),
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create Docker client: %w", err)
