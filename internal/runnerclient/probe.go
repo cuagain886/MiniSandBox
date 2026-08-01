@@ -8,12 +8,16 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"syscall"
 	"time"
 
 	"minisandbox/pkg/protocol"
 )
 
-const runnerSocketName = "runner.sock"
+const (
+	runnerSocketName         = "runner.sock"
+	runnerProbeRetryInterval = 50 * time.Millisecond
+)
 
 // SocketMissingError 表示当前 sandbox 的 runner Unix Socket 尚不存在。
 type SocketMissingError struct {
@@ -83,9 +87,10 @@ func (*TimeoutError) FailureReason() string {
 
 // Probe 按 sandbox ID 对固定 Unix Socket `/healthz` 执行健康检查。
 type Probe struct {
-	socketRoot string
-	timeout    time.Duration
-	token      string
+	socketRoot    string
+	timeout       time.Duration
+	retryInterval time.Duration
+	token         string
 }
 
 // NewRunnerProbe 创建绑定到受管 socket 根目录的健康检查 adapter。
@@ -104,9 +109,10 @@ func NewRunnerProbe(
 		return nil, errors.New("runner ready timeout must be positive")
 	}
 	return &Probe{
-		socketRoot: filepath.Clean(socketRoot),
-		timeout:    timeout,
-		token:      token,
+		socketRoot:    filepath.Clean(socketRoot),
+		timeout:       timeout,
+		retryInterval: runnerProbeRetryInterval,
+		token:         token,
 	}, nil
 }
 
@@ -123,27 +129,60 @@ func (p *Probe) Probe(ctx context.Context, sandboxID string) error {
 	// Probe 的唯一时间边界必须来自 runner ready timeout；通用 Client 的
 	// 30 秒默认值会在配置更大时提前终止并被误分类为 unhealthy。
 	client.httpClient.Timeout = 0
-	err = client.Health(operationContext)
-	if err == nil {
-		return nil
-	}
-	if errors.Is(operationContext.Err(), context.DeadlineExceeded) {
-		return &TimeoutError{cause: context.DeadlineExceeded}
-	}
-	if errors.Is(operationContext.Err(), context.Canceled) {
-		return context.Canceled
-	}
-	var statusError *StatusError
-	if errors.As(err, &statusError) {
-		return &UnhealthyError{
-			statusCode: statusError.StatusCode,
-			cause:      err,
+	for {
+		err = client.Health(operationContext)
+		if err == nil {
+			return nil
+		}
+		if contextErr := operationContext.Err(); contextErr != nil {
+			return probeContextError(contextErr, err)
+		}
+		var statusError *StatusError
+		if errors.As(err, &statusError) {
+			return &UnhealthyError{
+				statusCode: statusError.StatusCode,
+				cause:      err,
+			}
+		}
+		if !isRetryableConnectError(err) {
+			return &UnhealthyError{cause: err}
+		}
+
+		// 容器启动和 Unix Socket 出现之间天然存在短暂竞态。只对“尚未出现”
+		// 和“监听尚未建立”重试，避免把权限、协议等永久故障拖到完整超时。
+		timer := time.NewTimer(p.retryInterval)
+		select {
+		case <-operationContext.Done():
+			if !timer.Stop() {
+				select {
+				case <-timer.C:
+				default:
+				}
+			}
+			return probeContextError(operationContext.Err(), err)
+		case <-timer.C:
 		}
 	}
-	if isSocketMissing(err) {
-		return &SocketMissingError{cause: err}
+}
+
+// probeContextError 把 probe 自身的时间边界与调用方取消映射为稳定错误。
+func probeContextError(contextErr, lastErr error) error {
+	if errors.Is(contextErr, context.Canceled) {
+		return context.Canceled
 	}
-	return &UnhealthyError{cause: err}
+	cause := contextErr
+	if isSocketMissing(lastErr) {
+		cause = errors.Join(
+			contextErr,
+			&SocketMissingError{cause: lastErr},
+		)
+	}
+	return &TimeoutError{cause: cause}
+}
+
+// isRetryableConnectError 仅识别 runner 启动过程中可能自行恢复的连接错误。
+func isRetryableConnectError(err error) bool {
+	return isSocketMissing(err) || errors.Is(err, syscall.ECONNREFUSED)
 }
 
 // socketPath 校验 UUID v4 并证明结果仍是 socketRoot 的直接子路径。

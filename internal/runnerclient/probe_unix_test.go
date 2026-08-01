@@ -53,16 +53,69 @@ func TestRunnerProbeUnixSocketStatuses(t *testing.T) {
 	}
 }
 
-// TestRunnerProbeUnixSocketMissing 验证不存在的 socket 使用独立错误类型。
+// TestRunnerProbeUnixSocketMissing 验证不存在的 socket 会等待到 ready timeout。
 func TestRunnerProbeUnixSocketMissing(t *testing.T) {
-	probe, err := NewRunnerProbe(t.TempDir(), time.Second, "")
+	probe, err := NewRunnerProbe(t.TempDir(), 30*time.Millisecond, "")
 	if err != nil {
 		t.Fatalf("new runner probe: %v", err)
 	}
+	probe.retryInterval = 5 * time.Millisecond
 	err = probe.Probe(context.Background(), testProbeSandboxID)
+	var timeout *TimeoutError
 	var missing *SocketMissingError
-	if !errors.As(err, &missing) || !errors.Is(err, os.ErrNotExist) {
+	if !errors.As(err, &timeout) ||
+		!errors.As(err, &missing) ||
+		!errors.Is(err, context.DeadlineExceeded) ||
+		!errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("error: got %T %v", err, err)
+	}
+}
+
+// TestRunnerProbeWaitsForDelayedUnixSocket 验证容器启动竞态不会立即判定失败。
+func TestRunnerProbeWaitsForDelayedUnixSocket(t *testing.T) {
+	root := t.TempDir()
+	directory := filepath.Join(root, testProbeSandboxID)
+	if err := os.Mkdir(directory, 0o700); err != nil {
+		t.Fatalf("create socket directory: %v", err)
+	}
+	probe, err := NewRunnerProbe(root, time.Second, "")
+	if err != nil {
+		t.Fatalf("new runner probe: %v", err)
+	}
+	probe.retryInterval = 5 * time.Millisecond
+
+	serverResult := make(chan error, 1)
+	shutdown := make(chan func(), 1)
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		listener, listenErr := net.Listen(
+			"unix",
+			filepath.Join(directory, runnerSocketName),
+		)
+		if listenErr != nil {
+			serverResult <- listenErr
+			return
+		}
+		server := &http.Server{Handler: http.HandlerFunc(func(
+			writer http.ResponseWriter,
+			_ *http.Request,
+		) {
+			writer.WriteHeader(http.StatusOK)
+		})}
+		shutdown <- func() {
+			_ = server.Close()
+			_ = listener.Close()
+		}
+		serverResult <- server.Serve(listener)
+	}()
+
+	if err := probe.Probe(context.Background(), testProbeSandboxID); err != nil {
+		t.Fatalf("probe delayed socket: %v", err)
+	}
+	stop := <-shutdown
+	stop()
+	if err := <-serverResult; err != nil && err != http.ErrServerClosed {
+		t.Fatalf("serve delayed socket: %v", err)
 	}
 }
 
