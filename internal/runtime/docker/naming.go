@@ -3,6 +3,7 @@ package docker
 import (
 	"errors"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -13,6 +14,7 @@ const (
 	runnerSocketName           = "runner.sock"
 	maxDockerResourceNameBytes = 128
 	maxManagedPathBytes        = 4096
+	maxUnixSocketPathBytes     = 107
 
 	// GuestRunnerSocketPath 是 runner 在 sandbox 容器内监听的固定 Unix Socket。
 	GuestRunnerSocketPath = "/run/minisandbox/runner.sock"
@@ -49,7 +51,7 @@ func NamesForSandbox(
 	workspace := workspaceName(sandboxID)
 	if len(container) > maxDockerResourceNameBytes ||
 		len(workspace) > maxDockerResourceNameBytes {
-		return ResourceNames{}, errors.New("Docker resource name is too long")
+		return ResourceNames{}, errors.New("docker resource name is too long")
 	}
 
 	runRoot := filepath.Join(filepath.Clean(dataDirectory), runtimeRootName)
@@ -66,6 +68,12 @@ func NamesForSandbox(
 	if len(runtimeDirectory) > maxManagedPathBytes ||
 		len(hostSocket) > maxManagedPathBytes {
 		return ResourceNames{}, errors.New("managed runtime path is too long")
+	}
+	// Linux sockaddr_un.sun_path 总长为 108 字节且需要结尾 NUL。若只按
+	// 普通文件路径上限校验，runner 可以创建 socket 文件，但宿主机 dial
+	// 会返回 EINVAL，最终被误报为 runner unhealthy。
+	if runtime.GOOS == "linux" && len(hostSocket) > maxUnixSocketPathBytes {
+		return ResourceNames{}, errors.New("runner socket path is too long")
 	}
 
 	return ResourceNames{

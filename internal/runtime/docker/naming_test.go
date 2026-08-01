@@ -3,6 +3,7 @@ package docker
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -67,6 +68,20 @@ func TestNamesForSandboxRejectsUnsafeInput(t *testing.T) {
 			),
 			id: testSandboxID,
 		},
+	}
+	if runtime.GOOS == "linux" {
+		tests = append(tests, struct {
+			name string
+			root string
+			id   string
+		}{
+			name: "overlong runner socket path",
+			root: filepath.Join(
+				filepath.VolumeName(dataDirectory)+string(filepath.Separator),
+				strings.Repeat("s", maxUnixSocketPathBytes),
+			),
+			id: testSandboxID,
+		})
 	}
 
 	for _, tt := range tests {
