@@ -27,6 +27,7 @@ import (
 const (
 	integrationOptInEnv = "MINISANDBOX_INTEGRATION"
 	dockerHostEnv       = "MINISANDBOX_TEST_DOCKER_HOST"
+	testDataRootEnv     = "MINISANDBOX_TEST_DATA_ROOT"
 	testIDLabel         = "io.minisandbox.integration-test-id"
 	cleanupTimeout      = 30 * time.Second
 )
@@ -39,6 +40,7 @@ type dockerHarness struct {
 	dataDirectory string
 	mu            sync.Mutex
 	sandboxIDs    []string
+	imageIDs      []string
 }
 
 // newDockerHarness 在显式 opt-in 后连接 Docker 并注册 finally cleanup。
@@ -77,7 +79,7 @@ func newDockerHarness(t *testing.T) *dockerHarness {
 		t:             t,
 		client:        client,
 		testID:        testID,
-		dataDirectory: filepath.Join(t.TempDir(), "data"),
+		dataDirectory: integrationDataDirectory(t, testID),
 	}
 	if err := os.MkdirAll(harness.dataDirectory, 0o700); err != nil {
 		_ = client.Close()
@@ -94,6 +96,40 @@ func newDockerHarness(t *testing.T) *dockerHarness {
 	return harness
 }
 
+// integrationDataDirectory 返回当前测试独占且不会超出 Unix Socket 上限的数据目录。
+//
+// 默认继续使用 t.TempDir；Docker Desktop WSL 验收可显式提供 daemon 与 WSL
+// 都能访问的短根目录。自定义根目录必须是绝对路径，测试结束时只删除由随机
+// test ID 派生的直接子目录。
+func integrationDataDirectory(t *testing.T, testID string) string {
+	t.Helper()
+	root := os.Getenv(testDataRootEnv)
+	if root == "" {
+		return filepath.Join(t.TempDir(), "data")
+	}
+	if !filepath.IsAbs(root) {
+		t.Fatalf("integration data root must be absolute")
+	}
+	root = filepath.Clean(root)
+	directory := filepath.Join(root, testID[:8])
+	relative, err := filepath.Rel(root, directory)
+	if err != nil ||
+		relative != testID[:8] ||
+		filepath.IsAbs(relative) ||
+		strings.Contains(relative, string(filepath.Separator)) {
+		t.Fatalf("integration data directory escaped configured root")
+	}
+	if err := os.MkdirAll(directory, 0o700); err != nil {
+		t.Fatalf("create custom integration data directory: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.RemoveAll(directory); err != nil {
+			t.Errorf("remove custom integration data directory: %v", err)
+		}
+	})
+	return directory
+}
+
 // labels 返回当前测试唯一的资源 label。
 func (h *dockerHarness) labels() map[string]string {
 	return map[string]string{testIDLabel: h.testID}
@@ -106,15 +142,23 @@ func (h *dockerHarness) trackSandbox(sandboxID string) {
 	h.sandboxIDs = append(h.sandboxIDs, sandboxID)
 }
 
-// cleanup 按当前 test label 先删 container、再删 volume。
+// trackImage 登记当前测试创建的诊断镜像 ID，供 finally cleanup 精确删除。
+func (h *dockerHarness) trackImage(imageID string) {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	h.imageIDs = append(h.imageIDs, imageID)
+}
+
+// cleanup 按当前 test label 先删 container、再删 volume，最后删诊断镜像。
 //
 // 错误只报告失败阶段，不包含 Docker host、原始响应或 labels。
 func (h *dockerHarness) cleanup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
-	failures := make([]string, 0, 2)
+	failures := make([]string, 0, 3)
 	h.mu.Lock()
 	sandboxIDs := append([]string(nil), h.sandboxIDs...)
+	imageIDs := append([]string(nil), h.imageIDs...)
 	h.mu.Unlock()
 	filters := []string{testIDLabel + "=" + h.testID}
 	for _, sandboxID := range sandboxIDs {
@@ -166,6 +210,19 @@ func (h *dockerHarness) cleanup() error {
 					failures = append(failures, "remove volume")
 				}
 			}
+		}
+	}
+	for _, imageID := range imageIDs {
+		_, err := h.client.ImageRemove(
+			ctx,
+			imageID,
+			mobyclient.ImageRemoveOptions{
+				Force:         true,
+				PruneChildren: false,
+			},
+		)
+		if err != nil && !cerrdefs.IsNotFound(err) {
+			failures = append(failures, "remove image")
 		}
 	}
 	if len(failures) > 0 {
