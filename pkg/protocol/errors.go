@@ -1,5 +1,28 @@
 package protocol
 
+// ErrorCode 是公共 HTTP API 的稳定机器可读错误码。
+type ErrorCode string
+
+const (
+	// ErrorCodeSandboxNotRunning 表示目标 sandbox 当前不能接受 execution。
+	ErrorCodeSandboxNotRunning ErrorCode = "SANDBOX_NOT_RUNNING"
+	// ErrorCodeInvalidExecutionRequest 表示 execution 请求违反公共契约。
+	ErrorCodeInvalidExecutionRequest ErrorCode = "INVALID_EXECUTION_REQUEST"
+	// ErrorCodeExecutionNotFound 表示目标 execution 不存在或已不再保留。
+	ErrorCodeExecutionNotFound ErrorCode = "EXECUTION_NOT_FOUND"
+	// ErrorCodeExecutionLimitReached 表示当前 sandbox 的 execution 并发额度已满。
+	ErrorCodeExecutionLimitReached ErrorCode = "EXECUTION_LIMIT_REACHED"
+	// ErrorCodeShellNotFound 表示显式 shell 请求无法解析到受支持的 shell。
+	ErrorCodeShellNotFound ErrorCode = "SHELL_NOT_FOUND"
+	// ErrorCodeInvalidCWD 表示 cwd 无效或逃逸出 /workspace。
+	ErrorCodeInvalidCWD ErrorCode = "INVALID_CWD"
+	// ErrorCodeRunnerUnhealthy 表示当前 sandbox 的 runner 未通过健康验证。
+	ErrorCodeRunnerUnhealthy ErrorCode = "RUNNER_UNHEALTHY"
+	// ErrorCodeRunnerProtocolMismatch 表示控制面与 runner 的协议版本不兼容。
+	ErrorCodeRunnerProtocolMismatch ErrorCode = "RUNNER_PROTOCOL_MISMATCH"
+
+)
+
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。
 type ErrorResponse struct {
 	// Error 保存稳定错误码、安全消息、请求标识和重试语义。

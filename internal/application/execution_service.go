@@ -27,7 +27,7 @@ func NewExecutionService(gateway ExecutionGateway) *ExecutionService {
 // Execute 校验 argv 与 shell 的互斥关系，然后将命令交给当前 sandbox 的 runner。
 func (s *ExecutionService) Execute(ctx context.Context, command Execute) error {
 	if !command.Spec.Valid() {
-		return domain.ErrInvalid
+		return domain.ErrInvalidExecutionRequest
 	}
 	return s.gateway.Execute(ctx, command.SandboxID, command.Spec)
 }

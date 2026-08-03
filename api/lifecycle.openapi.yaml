@@ -120,6 +120,20 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExecutionDescriptor"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "422":
+          $ref: "#/components/responses/UnprocessableEntity"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /v1/sandboxes/{sandbox_id}/executions/{execution_id}:
     parameters:
       - $ref: "#/components/parameters/SandboxID"
@@ -133,6 +147,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExecutionStatus"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
     delete:
       operationId: cancelSandboxExecution
       responses:
@@ -140,6 +162,14 @@ paths:
           description: Cancellation of a running execution was accepted
         "204":
           description: Execution is already terminal
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
   /v1/sandboxes/{sandbox_id}/executions/{execution_id}/logs:
     parameters:
       - $ref: "#/components/parameters/SandboxID"
@@ -155,6 +185,14 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/ExecutionLogPage"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     SandboxID:
@@ -211,6 +249,18 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    UnprocessableEntity:
+      description: Execution cannot be started with the supplied semantic values
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    TooManyRequests:
+      description: Execution concurrency limit has been reached
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
   schemas:
     ErrorResponse:
       type: object
@@ -231,7 +281,7 @@ components:
       required: [code, message, request_id, retryable]
       properties:
         code:
-          type: string
+          $ref: "#/components/schemas/ErrorCode"
           description: Stable machine-readable error code
         message:
           type: string
@@ -242,6 +292,23 @@ components:
         retryable:
           type: boolean
           description: Whether retrying later may succeed without changing the request
+    ErrorCode:
+      type: string
+      enum:
+        - INVALID_REQUEST
+        - SANDBOX_NOT_FOUND
+        - SANDBOX_CONFLICT
+        - SANDBOX_NOT_RUNNING
+        - INVALID_EXECUTION_REQUEST
+        - EXECUTION_NOT_FOUND
+        - EXECUTION_LIMIT_REACHED
+        - SHELL_NOT_FOUND
+        - INVALID_CWD
+        - RUNNER_UNHEALTHY
+        - RUNNER_PROTOCOL_MISMATCH
+        - RUNTIME_UNAVAILABLE
+        - NOT_IMPLEMENTED
+        - INTERNAL_ERROR
     CreateSandboxRequest:
       type: object
       additionalProperties: false

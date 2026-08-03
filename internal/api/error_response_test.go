@@ -54,6 +54,70 @@ func TestWriteErrorMappings(t *testing.T) {
 			retryable: false,
 		},
 		{
+			name:      "invalid execution request",
+			err:       fmt.Errorf("argv=%s: %w", secret, domain.ErrInvalidExecutionRequest),
+			status:    http.StatusBadRequest,
+			code:      string(protocol.ErrorCodeInvalidExecutionRequest),
+			message:   "Execution request is invalid.",
+			retryable: false,
+		},
+		{
+			name:      "sandbox not running",
+			err:       domain.ErrSandboxNotRunning,
+			status:    http.StatusConflict,
+			code:      string(protocol.ErrorCodeSandboxNotRunning),
+			message:   "Sandbox is not ready to execute commands.",
+			retryable: true,
+		},
+		{
+			name:      "execution not found",
+			err:       domain.ErrExecutionNotFound,
+			status:    http.StatusNotFound,
+			code:      string(protocol.ErrorCodeExecutionNotFound),
+			message:   "Execution does not exist.",
+			retryable: false,
+		},
+		{
+			name:      "execution limit reached",
+			err:       domain.ErrExecutionLimitReached,
+			status:    http.StatusTooManyRequests,
+			code:      string(protocol.ErrorCodeExecutionLimitReached),
+			message:   "Execution concurrency limit has been reached.",
+			retryable: true,
+		},
+		{
+			name:      "shell not found",
+			err:       domain.ErrShellNotFound,
+			status:    http.StatusUnprocessableEntity,
+			code:      string(protocol.ErrorCodeShellNotFound),
+			message:   "Requested shell is unavailable.",
+			retryable: false,
+		},
+		{
+			name:      "invalid cwd",
+			err:       domain.ErrInvalidCWD,
+			status:    http.StatusUnprocessableEntity,
+			code:      string(protocol.ErrorCodeInvalidCWD),
+			message:   "Execution working directory is invalid.",
+			retryable: false,
+		},
+		{
+			name:      "runner unhealthy",
+			err:       domain.ErrRunnerUnhealthy,
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeRunnerUnhealthy),
+			message:   "Sandbox runner is unavailable.",
+			retryable: true,
+		},
+		{
+			name:      "runner protocol mismatch",
+			err:       domain.ErrRunnerProtocolMismatch,
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeRunnerProtocolMismatch),
+			message:   "Sandbox runner protocol is incompatible.",
+			retryable: false,
+		},
+		{
 			name:      "not found",
 			err:       fmt.Errorf("lookup context: %w", domain.ErrNotFound),
 			status:    http.StatusNotFound,
@@ -146,5 +210,30 @@ func TestWriteErrorUsesResponseRequestID(t *testing.T) {
 	}
 	if envelope.Error.RequestID != "middleware-id" {
 		t.Fatalf("request ID: got %q, want middleware-id", envelope.Error.RequestID)
+	}
+}
+
+// TestExecutionErrorsRedactInternalContext 验证execution 错误不回显命令、环境或路径。
+func TestExecutionErrorsRedactInternalContext(t *testing.T) {
+	const sensitive = `argv=["sh","-c","secret"] env=TOKEN socket=/run/private.sock nft=10.0.0.0/8`
+	errorsToMap := []error{
+		domain.ErrInvalidExecutionRequest,
+		domain.ErrSandboxNotRunning,
+		domain.ErrExecutionNotFound,
+		domain.ErrExecutionLimitReached,
+		domain.ErrShellNotFound,
+		domain.ErrInvalidCWD,
+		domain.ErrRunnerUnhealthy,
+		domain.ErrRunnerProtocolMismatch,
+	}
+	for _, mapped := range errorsToMap {
+		response := httptest.NewRecorder()
+		request := httptest.NewRequest(http.MethodPost, "/", nil)
+		writeError(response, request, fmt.Errorf("%s: %w", sensitive, mapped))
+		if strings.Contains(response.Body.String(), sensitive) ||
+			strings.Contains(response.Body.String(), "secret") ||
+			strings.Contains(response.Body.String(), "/run/private.sock") {
+			t.Fatalf("%v leaked sensitive context: %s", mapped, response.Body.String())
+		}
 	}
 }

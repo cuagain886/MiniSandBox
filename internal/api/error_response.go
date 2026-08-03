@@ -73,6 +73,62 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 // mapError 按 errors.Is/As 分类内部错误并返回固定公共语义。
 func mapError(err error) errorMapping {
 	switch {
+	case errors.Is(err, domain.ErrInvalidExecutionRequest):
+		return errorMapping{
+			status:    http.StatusBadRequest,
+			code:      string(protocol.ErrorCodeInvalidExecutionRequest),
+			message:   "Execution request is invalid.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrSandboxNotRunning):
+		return errorMapping{
+			status:    http.StatusConflict,
+			code:      string(protocol.ErrorCodeSandboxNotRunning),
+			message:   "Sandbox is not ready to execute commands.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrExecutionNotFound):
+		return errorMapping{
+			status:    http.StatusNotFound,
+			code:      string(protocol.ErrorCodeExecutionNotFound),
+			message:   "Execution does not exist.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrExecutionLimitReached):
+		return errorMapping{
+			status:    http.StatusTooManyRequests,
+			code:      string(protocol.ErrorCodeExecutionLimitReached),
+			message:   "Execution concurrency limit has been reached.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrShellNotFound):
+		return errorMapping{
+			status:    http.StatusUnprocessableEntity,
+			code:      string(protocol.ErrorCodeShellNotFound),
+			message:   "Requested shell is unavailable.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrInvalidCWD):
+		return errorMapping{
+			status:    http.StatusUnprocessableEntity,
+			code:      string(protocol.ErrorCodeInvalidCWD),
+			message:   "Execution working directory is invalid.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrRunnerUnhealthy):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeRunnerUnhealthy),
+			message:   "Sandbox runner is unavailable.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrRunnerProtocolMismatch):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeRunnerProtocolMismatch),
+			message:   "Sandbox runner protocol is incompatible.",
+			retryable: false,
+		}
 	case errors.Is(err, domain.ErrInvalid):
 		return errorMapping{
 			status:    http.StatusBadRequest,

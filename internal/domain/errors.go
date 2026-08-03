@@ -11,4 +11,21 @@ var (
 	ErrInvalid = errors.New("invalid request")
 	// ErrNotImplemented 表示初始化骨架尚未实现对应能力。
 	ErrNotImplemented = errors.New("not implemented")
+	// ErrSandboxNotRunning 表示 sandbox 当前状态不允许接受 execution。
+	ErrSandboxNotRunning = errors.New("sandbox not running")
+	// ErrInvalidExecutionRequest 表示 execution 请求违反协议或领域不变量。
+	ErrInvalidExecutionRequest = errors.New("invalid execution request")
+	// ErrExecutionNotFound 表示 execution 不存在或已超过保留期。
+	ErrExecutionNotFound = errors.New("execution not found")
+	// ErrExecutionLimitReached 表示 sandbox 当前 execution 并发额度已满。
+	ErrExecutionLimitReached = errors.New("execution limit reached")
+	// ErrShellNotFound 表示显式 shell 请求无法解析到受支持的 shell。
+	ErrShellNotFound = errors.New("shell not found")
+	// ErrInvalidCWD 表示 cwd 无效或逃逸出 workspace 根目录。
+	ErrInvalidCWD = errors.New("invalid cwd")
+	// ErrRunnerUnhealthy 表示 runner 未通过当前请求所需的健康验证。
+	ErrRunnerUnhealthy = errors.New("runner unhealthy")
+	// ErrRunnerProtocolMismatch 表示 runner 与控制面的协议版本不兼容。
+	ErrRunnerProtocolMismatch = errors.New("runner protocol mismatch")
+
 )
