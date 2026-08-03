@@ -68,6 +68,14 @@ const (
 type CreateSandboxRequest struct {
 	// Image 是 sandbox 使用的容器镜像引用。
 	Image string `json:"image"`
+	// Network 是可选网络请求；缺失时等价于 outbound=false。
+	Network *SandboxNetworkRequest `json:"network,omitempty"`
+}
+
+// SandboxNetworkRequest 描述客户端唯一可选择的 sandbox 网络能力。
+type SandboxNetworkRequest struct {
+	// Outbound 表示是否请求受管公网出站能力；默认 false。
+	Outbound bool `json:"outbound"`
 }
 
 // Sandbox 是生命周期 API 返回的公共资源描述。

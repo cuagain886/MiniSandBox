@@ -45,6 +45,8 @@ paths:
                 $ref: "#/components/schemas/Sandbox"
         "400":
           $ref: "#/components/responses/BadRequest"
+        "403":
+          $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
@@ -231,6 +233,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    Forbidden:
+      description: Server policy forbids the requested capability
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
     Conflict:
       description: Request conflicts with current sandbox state
       content:
@@ -306,6 +314,11 @@ components:
         - INVALID_CWD
         - RUNNER_UNHEALTHY
         - RUNNER_PROTOCOL_MISMATCH
+        - OUTBOUND_NOT_ALLOWED
+        - EGRESS_IMAGE_UNAVAILABLE
+        - EGRESS_POLICY_INVALID
+        - EGRESS_NOT_READY
+        - EGRESS_UNHEALTHY
         - RUNTIME_UNAVAILABLE
         - NOT_IMPLEMENTED
         - INTERNAL_ERROR
@@ -316,6 +329,15 @@ components:
       properties:
         image:
           type: string
+        network:
+          $ref: "#/components/schemas/SandboxNetworkRequest"
+    SandboxNetworkRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        outbound:
+          type: boolean
+          default: false
     ExecuteRequest:
       type: object
       additionalProperties: false

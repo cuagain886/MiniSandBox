@@ -11,7 +11,7 @@ import (
 	"minisandbox/pkg/protocol"
 )
 
-// TestCreateSandboxRequestMapping 验证 SDK 只发送 Phase 1 支持的创建字段和路径。
+// TestCreateSandboxRequestMapping 验证 SDK 发送 image 和可选 outbound 字段。
 func TestCreateSandboxRequestMapping(t *testing.T) {
 	createdAt := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
 	updatedAt := createdAt.Add(time.Second)
@@ -38,11 +38,14 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 			http.Error(response, "invalid request", http.StatusBadRequest)
 			return
 		}
-		if got, want := len(body), 1; got != want {
+		if got, want := len(body), 2; got != want {
 			t.Errorf("unexpected request field count: got %d, want %d", got, want)
 		}
 		if got := string(body["image"]); got != `"alpine:3.22"` {
 			t.Errorf("unexpected image field: %s", got)
+		}
+		if got := string(body["network"]); got != `{"outbound":true}` {
+			t.Errorf("unexpected network field: %s", got)
 		}
 
 		response.Header().Set("Content-Type", "application/json")
@@ -61,7 +64,12 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 	client := NewClient(server.URL, server.Client())
 	sandbox, err := client.CreateSandbox(
 		context.Background(),
-		protocol.CreateSandboxRequest{Image: "alpine:3.22"},
+		protocol.CreateSandboxRequest{
+			Image: "alpine:3.22",
+			Network: &protocol.SandboxNetworkRequest{
+				Outbound: true,
+			},
+		},
 	)
 	if err != nil {
 		t.Fatalf("create sandbox: %v", err)

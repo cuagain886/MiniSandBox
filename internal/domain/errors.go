@@ -27,5 +27,14 @@ var (
 	ErrRunnerUnhealthy = errors.New("runner unhealthy")
 	// ErrRunnerProtocolMismatch 表示 runner 与控制面的协议版本不兼容。
 	ErrRunnerProtocolMismatch = errors.New("runner protocol mismatch")
-
+	// ErrOutboundNotAllowed 表示服务端策略不允许创建 outbound sandbox。
+	ErrOutboundNotAllowed = errors.New("outbound not allowed")
+	// ErrEgressImageUnavailable 表示固定 egress 镜像暂时不可取得或验证。
+	ErrEgressImageUnavailable = errors.New("egress image unavailable")
+	// ErrEgressPolicyInvalid 表示服务端 egress 策略不能安全编译或验证。
+	ErrEgressPolicyInvalid = errors.New("egress policy invalid")
+	// ErrEgressNotReady 表示 egress sidecar 尚未完成启动证明。
+	ErrEgressNotReady = errors.New("egress not ready")
+	// ErrEgressUnhealthy 表示既有 egress sidecar 的安全证明已失效。
+	ErrEgressUnhealthy = errors.New("egress unhealthy")
 )

@@ -129,6 +129,41 @@ func mapError(err error) errorMapping {
 			message:   "Sandbox runner protocol is incompatible.",
 			retryable: false,
 		}
+	case errors.Is(err, domain.ErrOutboundNotAllowed):
+		return errorMapping{
+			status:    http.StatusForbidden,
+			code:      string(protocol.ErrorCodeOutboundNotAllowed),
+			message:   "Outbound network access is not allowed.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrEgressImageUnavailable):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressImageUnavailable),
+			message:   "Sandbox egress image is unavailable.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrEgressPolicyInvalid):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressPolicyInvalid),
+			message:   "Sandbox egress policy is invalid.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrEgressNotReady):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressNotReady),
+			message:   "Sandbox egress is not ready.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrEgressUnhealthy):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressUnhealthy),
+			message:   "Sandbox egress is unhealthy.",
+			retryable: true,
+		}
 	case errors.Is(err, domain.ErrInvalid):
 		return errorMapping{
 			status:    http.StatusBadRequest,

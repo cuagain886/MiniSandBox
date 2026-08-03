@@ -20,7 +20,16 @@ const (
 	ErrorCodeRunnerUnhealthy ErrorCode = "RUNNER_UNHEALTHY"
 	// ErrorCodeRunnerProtocolMismatch 表示控制面与 runner 的协议版本不兼容。
 	ErrorCodeRunnerProtocolMismatch ErrorCode = "RUNNER_PROTOCOL_MISMATCH"
-
+	// ErrorCodeOutboundNotAllowed 表示服务端策略未允许创建 outbound sandbox。
+	ErrorCodeOutboundNotAllowed ErrorCode = "OUTBOUND_NOT_ALLOWED"
+	// ErrorCodeEgressImageUnavailable 表示固定 digest 的 egress 镜像暂时不可取得。
+	ErrorCodeEgressImageUnavailable ErrorCode = "EGRESS_IMAGE_UNAVAILABLE"
+	// ErrorCodeEgressPolicyInvalid 表示服务端 egress 策略无法安全编译或验证。
+	ErrorCodeEgressPolicyInvalid ErrorCode = "EGRESS_POLICY_INVALID"
+	// ErrorCodeEgressNotReady 表示 egress sidecar 尚未完成启动证明。
+	ErrorCodeEgressNotReady ErrorCode = "EGRESS_NOT_READY"
+	// ErrorCodeEgressUnhealthy 表示已创建 sandbox 的 egress 安全证明失效。
+	ErrorCodeEgressUnhealthy ErrorCode = "EGRESS_UNHEALTHY"
 )
 
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。

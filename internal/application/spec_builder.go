@@ -32,6 +32,7 @@ func NewSandboxSpecBuilder(
 func (b SandboxSpecBuilder) Build(command CreateSandbox) (domain.SandboxSpec, error) {
 	spec := b.defaults
 	spec.Image = command.Image
+	spec.Network.Outbound = command.Outbound
 	if err := spec.Validate(b.bounds); err != nil {
 		return domain.SandboxSpec{}, err
 	}

@@ -6,7 +6,7 @@ import (
 	"testing"
 )
 
-// validSpec 返回满足全部 Phase 1 校验规则的 resolved spec 样例。
+// validSpec 返回满足当前阶段全部校验规则的 resolved spec 样例。
 func validSpec() SandboxSpec {
 	return SandboxSpec{
 		Image: "alpine:3.22",
@@ -38,7 +38,7 @@ func testBounds() ResourceBounds {
 	}
 }
 
-// TestSandboxSpecValidate 逐条验证 Phase 1 校验规则的拒绝行为。
+// TestSandboxSpecValidate 逐条验证当前阶段校验规则的拒绝行为。
 func TestSandboxSpecValidate(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -98,11 +98,6 @@ func TestSandboxSpecValidate(t *testing.T) {
 			field:  "spec.workspace.persistent",
 		},
 		{
-			name:   "outbound network",
-			mutate: func(s *SandboxSpec) { s.Network.Outbound = true },
-			field:  "spec.network.outbound",
-		},
-		{
 			name:   "unsupported os",
 			mutate: func(s *SandboxSpec) { s.Platform.OS = "windows" },
 			field:  "spec.platform.os",
@@ -134,6 +129,15 @@ func TestSandboxSpecValidate(t *testing.T) {
 				t.Fatalf("unexpected field: got %s, want %s", got, want)
 			}
 		})
+	}
+}
+
+// TestSandboxSpecValidateAllowsOutboundContract 验证 Phase 2 resolved spec 可表达 outbound。
+func TestSandboxSpecValidateAllowsOutboundContract(t *testing.T) {
+	spec := validSpec()
+	spec.Network.Outbound = true
+	if err := spec.Validate(testBounds()); err != nil {
+		t.Fatalf("validate outbound spec: %v", err)
 	}
 }
 

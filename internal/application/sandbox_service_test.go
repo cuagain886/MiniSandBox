@@ -170,6 +170,25 @@ func TestSandboxServiceCreateValidationError(t *testing.T) {
 	}
 }
 
+// TestSandboxServiceCreateRejectsOutboundUntilRuntimeGate 验证契约先发布期间不会伪造出站成功。
+func TestSandboxServiceCreateRejectsOutboundUntilRuntimeGate(t *testing.T) {
+	storeFake, idGenerator, clock, builder, waker :=
+		newSandboxServiceTestDependencies()
+	service := NewSandboxService(storeFake, idGenerator, clock, builder, waker)
+
+	got, err := service.Create(context.Background(), CreateSandbox{
+		Image:    "alpine:3.22",
+		Outbound: true,
+	})
+	if !errors.Is(err, domain.ErrOutboundNotAllowed) {
+		t.Fatalf("create outbound sandbox: got %v, want ErrOutboundNotAllowed", err)
+	}
+	if !reflect.DeepEqual(got, domain.Sandbox{}) || idGenerator.calls != 0 ||
+		clock.calls != 0 || len(storeFake.CreateCalls()) != 0 || len(waker.WakeCalls()) != 0 {
+		t.Fatalf("outbound rejection triggered side effects: %#v", got)
+	}
+}
+
 // TestSandboxServiceCreateIDError 验证随机 ID 失败不会读取时间或持久化。
 func TestSandboxServiceCreateIDError(t *testing.T) {
 	storeFake, idGenerator, clock, builder, waker :=

@@ -25,7 +25,7 @@ type ResourceBounds struct {
 	MaxPIDs int64
 }
 
-// SpecFieldError 表示 resolved spec 中单个字段违反 Phase 1 校验规则。
+// SpecFieldError 表示 resolved spec 中单个字段违反当前阶段校验规则。
 //
 // Field 使用稳定的字段路径(如 spec.image)定位问题;Message 只描述规则
 // 本身,绝不回显字段值,避免镜像引用等潜在敏感内容进入日志或 API 响应。
@@ -46,7 +46,7 @@ func (e *SpecFieldError) Unwrap() error {
 	return ErrInvalid
 }
 
-// Validate 按 Phase 1 规则校验 resolved spec,返回第一处违规。
+// Validate 按当前阶段规则校验 resolved spec,返回第一处违规。
 //
 // 校验发生在期望状态持久化之前;bounds 来自服务端配置,不由客户端提供。
 // 返回的错误只定位字段并说明规则,不携带字段原始值。
@@ -94,12 +94,6 @@ func (s SandboxSpec) Validate(bounds ResourceBounds) error {
 		return &SpecFieldError{
 			Field:   "spec.workspace.persistent",
 			Message: "persistent workspace is not supported in Phase 1",
-		}
-	}
-	if s.Network.Outbound {
-		return &SpecFieldError{
-			Field:   "spec.network.outbound",
-			Message: "outbound network is not supported in Phase 1",
 		}
 	}
 	if s.Platform.OS != "linux" {

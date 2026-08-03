@@ -39,7 +39,7 @@ type errorDetailFixture struct {
 	Retryable *bool  `json:"retryable"`
 }
 
-// TestLifecycleFixtures 离线校验 Phase 1 生命周期 fixture 的字段、枚举和错误 envelope。
+// TestLifecycleFixtures 离线校验当前生命周期 fixture 的字段、枚举和错误 envelope。
 func TestLifecycleFixtures(t *testing.T) {
 	t.Run("fixture set", func(t *testing.T) {
 		entries, err := os.ReadDir(lifecycleFixtureDir(t))
@@ -54,6 +54,8 @@ func TestLifecycleFixtures(t *testing.T) {
 		}
 		expected := []string{
 			"create-accepted.json",
+			"create-request-network-false.json",
+			"create-request-network-true.json",
 			"create-request.json",
 			"delete-not-found.json",
 			"get-running.json",
@@ -63,6 +65,25 @@ func TestLifecycleFixtures(t *testing.T) {
 		slices.Sort(actual)
 		if !slices.Equal(actual, expected) {
 			t.Fatalf("unexpected fixture set: got %v, want %v", actual, expected)
+		}
+	})
+
+	t.Run("create request network variants", func(t *testing.T) {
+		omitted := decodeLifecycleFixture[protocol.CreateSandboxRequest](t, "create-request.json")
+		if omitted.Network != nil {
+			t.Fatalf("omitted network must remain absent: %#v", omitted.Network)
+		}
+		for _, test := range []struct {
+			name     string
+			outbound bool
+		}{
+			{name: "create-request-network-false.json", outbound: false},
+			{name: "create-request-network-true.json", outbound: true},
+		} {
+			request := decodeLifecycleFixture[protocol.CreateSandboxRequest](t, test.name)
+			if request.Network == nil || request.Network.Outbound != test.outbound {
+				t.Fatalf("%s network: %#v", test.name, request.Network)
+			}
 		}
 	})
 

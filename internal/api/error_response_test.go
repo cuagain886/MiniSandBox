@@ -118,6 +118,46 @@ func TestWriteErrorMappings(t *testing.T) {
 			retryable: false,
 		},
 		{
+			name:      "outbound not allowed",
+			err:       domain.ErrOutboundNotAllowed,
+			status:    http.StatusForbidden,
+			code:      string(protocol.ErrorCodeOutboundNotAllowed),
+			message:   "Outbound network access is not allowed.",
+			retryable: false,
+		},
+		{
+			name:      "egress image unavailable",
+			err:       domain.ErrEgressImageUnavailable,
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressImageUnavailable),
+			message:   "Sandbox egress image is unavailable.",
+			retryable: true,
+		},
+		{
+			name:      "egress policy invalid",
+			err:       fmt.Errorf("nft=%s: %w", secret, domain.ErrEgressPolicyInvalid),
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressPolicyInvalid),
+			message:   "Sandbox egress policy is invalid.",
+			retryable: false,
+		},
+		{
+			name:      "egress not ready",
+			err:       domain.ErrEgressNotReady,
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressNotReady),
+			message:   "Sandbox egress is not ready.",
+			retryable: true,
+		},
+		{
+			name:      "egress unhealthy",
+			err:       domain.ErrEgressUnhealthy,
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeEgressUnhealthy),
+			message:   "Sandbox egress is unhealthy.",
+			retryable: true,
+		},
+		{
 			name:      "not found",
 			err:       fmt.Errorf("lookup context: %w", domain.ErrNotFound),
 			status:    http.StatusNotFound,
@@ -213,8 +253,8 @@ func TestWriteErrorUsesResponseRequestID(t *testing.T) {
 	}
 }
 
-// TestExecutionErrorsRedactInternalContext 验证execution 错误不回显命令、环境或路径。
-func TestExecutionErrorsRedactInternalContext(t *testing.T) {
+// TestExecutionAndOutboundErrorsRedactInternalContext 验证专用错误不回显命令、环境或路径。
+func TestExecutionAndOutboundErrorsRedactInternalContext(t *testing.T) {
 	const sensitive = `argv=["sh","-c","secret"] env=TOKEN socket=/run/private.sock nft=10.0.0.0/8`
 	errorsToMap := []error{
 		domain.ErrInvalidExecutionRequest,
@@ -225,6 +265,11 @@ func TestExecutionErrorsRedactInternalContext(t *testing.T) {
 		domain.ErrInvalidCWD,
 		domain.ErrRunnerUnhealthy,
 		domain.ErrRunnerProtocolMismatch,
+		domain.ErrOutboundNotAllowed,
+		domain.ErrEgressImageUnavailable,
+		domain.ErrEgressPolicyInvalid,
+		domain.ErrEgressNotReady,
+		domain.ErrEgressUnhealthy,
 	}
 	for _, mapped := range errorsToMap {
 		response := httptest.NewRecorder()

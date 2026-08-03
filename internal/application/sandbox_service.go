@@ -62,6 +62,11 @@ func (s *SandboxService) Create(
 	ctx context.Context,
 	command CreateSandbox,
 ) (domain.Sandbox, error) {
+	// P2-005 只冻结并贯通 outbound 契约；在后续配置门禁和 sidecar runtime
+	// 完成前拒绝实际创建，避免把 NetworkMode=none 伪装成 outbound 成功。
+	if command.Outbound {
+		return domain.Sandbox{}, domain.ErrOutboundNotAllowed
+	}
 	spec, err := s.specBuilder.Build(command)
 	if err != nil {
 		return domain.Sandbox{}, err

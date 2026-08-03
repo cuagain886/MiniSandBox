@@ -10,11 +10,13 @@ import (
 
 // CreateSandbox 表示创建 sandbox 的应用层命令。
 //
-// Phase 1 只接受镜像引用；资源、workspace、网络和平台全部来自服务端安全
-// 默认值，不接受客户端宿主机路径或 Docker 配置。
+// Phase 2 除镜像外只接受 outbound 布尔意图；资源、workspace、平台以及任何
+// Docker/sidecar 细节仍全部来自服务端安全默认值。
 type CreateSandbox struct {
 	// Image 是用户请求的容器镜像引用，不能为空。
 	Image string
+	// Outbound 表示用户是否请求受管公网出站能力；缺失公共字段时为 false。
+	Outbound bool
 }
 
 // DeleteSandbox 表示将指定 sandbox 的期望状态设置为 Terminated。

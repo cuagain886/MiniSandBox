@@ -1,0 +1,6 @@
+{
+  "image": "alpine:3.22",
+  "network": {
+    "outbound": false
+  }
+}

@@ -322,6 +322,35 @@ func TestCreateSandboxHandlerAccepted(t *testing.T) {
 	}
 }
 
+// TestCreateSandboxHandlerMapsOutbound 验证可选 public network 字段只映射布尔意图。
+func TestCreateSandboxHandlerMapsOutbound(t *testing.T) {
+	service := &fakeLifecycleService{
+		createResult: domain.Sandbox{
+			ID:            "00010203-0405-4607-8809-0a0b0c0d0e0f",
+			Spec:          domain.SandboxSpec{Image: "alpine:3.22"},
+			ObservedState: domain.StatePending,
+			Reason:        string(protocol.SandboxReasonCreateAccepted),
+			Message:       "Sandbox creation has been accepted.",
+			CreatedAt:     time.Now(),
+			UpdatedAt:     time.Now(),
+		},
+	}
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/v1/sandboxes",
+		strings.NewReader(`{"image":"alpine:3.22","network":{"outbound":true}}`),
+	)
+	response := httptest.NewRecorder()
+	NewRouter(BuildInfo{Version: "test"}, RouterDependencies{Lifecycle: service}).
+		ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("status: got %d, want %d", response.Code, http.StatusAccepted)
+	}
+	if len(service.createCalls) != 1 || !service.createCalls[0].Outbound {
+		t.Fatalf("outbound mapping: %#v", service.createCalls)
+	}
+}
+
 // TestCreateSandboxHandlerRejectsInvalidBodies 验证严格 JSON 和 body 上限。
 func TestCreateSandboxHandlerRejectsInvalidBodies(t *testing.T) {
 	tests := []struct {
@@ -332,6 +361,14 @@ func TestCreateSandboxHandlerRejectsInvalidBodies(t *testing.T) {
 		{
 			name: "unknown field",
 			body: []byte(`{"image":"alpine:3.22","privileged":true}`),
+		},
+		{
+			name: "non boolean outbound",
+			body: []byte(`{"image":"alpine:3.22","network":{"outbound":"yes"}}`),
+		},
+		{
+			name: "unknown network field",
+			body: []byte(`{"image":"alpine:3.22","network":{"cidr":"0.0.0.0/0"}}`),
 		},
 		{
 			name: "multiple documents",

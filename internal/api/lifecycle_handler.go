@@ -14,8 +14,8 @@ import (
 
 // maxCreateSandboxBodyBytes 是创建请求允许的最大 JSON body 字节数。
 //
-// Phase 1 只有一个最长 512 字节的 image 字段，16 KiB 足以容纳合法请求，
-// 同时在 JSON 解码前限制恶意输入占用的内存和读取时间。
+// 当前创建请求只有最长 512 字节的 image 和一个布尔网络对象，16 KiB 足以
+// 容纳合法请求，同时在 JSON 解码前限制恶意输入占用的内存和读取时间。
 const maxCreateSandboxBodyBytes int64 = 16 << 10
 
 func registerLifecycleRoutes(mux *http.ServeMux, service LifecycleService) {
@@ -146,9 +146,16 @@ func createSandboxHandler(service LifecycleService) http.HandlerFunc {
 			return
 		}
 
+		outbound := false
+		if request.Network != nil {
+			outbound = request.Network.Outbound
+		}
 		sandbox, err := service.Create(
 			r.Context(),
-			application.CreateSandbox{Image: request.Image},
+			application.CreateSandbox{
+				Image:    request.Image,
+				Outbound: outbound,
+			},
 		)
 		if err != nil {
 			writeError(w, r, err)
