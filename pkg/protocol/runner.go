@@ -1,7 +1,5 @@
 package protocol
 
-import "time"
-
 // ExecuteRequest 是发送给 runnerd 的命令执行请求。
 type ExecuteRequest struct {
 	// Argv 是不经过 shell 解析的参数数组，与 Shell 必须二选一。
@@ -16,4 +14,50 @@ type ExecuteRequest struct {
 	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
 	// Background 表示请求创建可通过 status、logs 和 cancel 管理的后台执行。
 	Background bool `json:"background,omitempty"`
+}
+
+// ExecutionState 是后台 execution 查询接口返回的稳定状态枚举。
+type ExecutionState string
+
+const (
+	// ExecutionStatePending 表示请求已接受但用户进程尚未成功启动。
+	ExecutionStatePending ExecutionState = "Pending"
+	// ExecutionStateRunning 表示用户进程已经启动且尚未产生终止事件。
+	ExecutionStateRunning ExecutionState = "Running"
+	// ExecutionStateExited 表示进程完成 wait；非零退出码也属于此状态。
+	ExecutionStateExited ExecutionState = "Exited"
+	// ExecutionStateFailed 表示执行校验、启动或 runner 内部处理失败。
+	ExecutionStateFailed ExecutionState = "Failed"
+	// ExecutionStateCancelled 表示显式取消、前台断开或 runner 关闭赢得终态竞争。
+	ExecutionStateCancelled ExecutionState = "Cancelled"
+	// ExecutionStateTimedOut 表示 execution deadline 赢得终态竞争。
+	ExecutionStateTimedOut ExecutionState = "TimedOut"
+)
+
+// ExecutionDescriptor 是后台创建成功时返回的最小稳定描述符。
+type ExecutionDescriptor struct {
+	// ExecutionID 是 status、logs 和 cancel 操作使用的稳定标识。
+	ExecutionID string `json:"execution_id"`
+	// State 是创建响应时的 execution 状态，通常为 Pending 或 Running。
+	State ExecutionState `json:"state"`
+}
+
+// ExecutionStatus 描述后台 execution 的当前状态和可选终止事件。
+type ExecutionStatus struct {
+	// ExecutionID 是被查询的稳定 execution 标识。
+	ExecutionID string `json:"execution_id"`
+	// State 是查询时最近一次观测到的 execution 状态。
+	State ExecutionState `json:"state"`
+	// TerminalEvent 仅在 execution 已终止时出现，并且必须是四种终止事件之一。
+	TerminalEvent *ExecutionEvent `json:"terminal_event,omitempty"`
+}
+
+// ExecutionLogPage 是按事件 sequence 游标读取的一页后台日志。
+type ExecutionLogPage struct {
+	// Events 按 sequence 严格递增排列，且只包含 cursor 之后的完整事件。
+	Events []ExecutionEvent `json:"events"`
+	// NextCursor 是本页最后一个事件的 sequence；空页保持请求 cursor。
+	NextCursor uint64 `json:"next_cursor"`
+	// Complete 表示日志中已经包含唯一终止事件，不表示日志永久保留。
+	Complete bool `json:"complete"`
 }

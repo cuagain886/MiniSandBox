@@ -1,7 +1,11 @@
 package sdk
 
 import (
+	"context"
 	"fmt"
+	"net/http"
+	"net/url"
+	"strconv"
 	"time"
 
 	"minisandbox/pkg/protocol"
@@ -39,4 +43,79 @@ func (r ExecuteRequest) wire(background bool) (protocol.ExecuteRequest, error) {
 		TimeoutSeconds: int64(r.Timeout / time.Second),
 		Background:     background,
 	}, nil
+}
+
+// StartBackgroundExecution 创建后台 execution 并返回其稳定描述符。
+func (c *Client) StartBackgroundExecution(
+	ctx context.Context,
+	sandboxID string,
+	request ExecuteRequest,
+) (protocol.ExecutionDescriptor, error) {
+	wire, err := request.wire(true)
+	if err != nil {
+		return protocol.ExecutionDescriptor{}, err
+	}
+	var descriptor protocol.ExecutionDescriptor
+	err = c.doJSON(
+		ctx,
+		http.MethodPost,
+		executionCollectionPath(sandboxID),
+		wire,
+		&descriptor,
+	)
+	return descriptor, err
+}
+
+// GetExecution 返回指定 sandbox 中后台 execution 的当前状态。
+func (c *Client) GetExecution(
+	ctx context.Context,
+	sandboxID string,
+	executionID string,
+) (protocol.ExecutionStatus, error) {
+	var status protocol.ExecutionStatus
+	err := c.doJSON(
+		ctx,
+		http.MethodGet,
+		executionResourcePath(sandboxID, executionID),
+		nil,
+		&status,
+	)
+	return status, err
+}
+
+// CancelExecution 请求取消运行中的 execution；终态 execution 的 204 也视为成功。
+func (c *Client) CancelExecution(
+	ctx context.Context,
+	sandboxID string,
+	executionID string,
+) error {
+	return c.doJSON(
+		ctx,
+		http.MethodDelete,
+		executionResourcePath(sandboxID, executionID),
+		nil,
+		nil,
+	)
+}
+
+// GetExecutionLogs 从最后已读 sequence 之后读取一页后台 execution 事件。
+func (c *Client) GetExecutionLogs(
+	ctx context.Context,
+	sandboxID string,
+	executionID string,
+	cursor uint64,
+) (protocol.ExecutionLogPage, error) {
+	var page protocol.ExecutionLogPage
+	path := executionResourcePath(sandboxID, executionID) +
+		"/logs?cursor=" + strconv.FormatUint(cursor, 10)
+	err := c.doJSON(ctx, http.MethodGet, path, nil, &page)
+	return page, err
+}
+
+func executionCollectionPath(sandboxID string) string {
+	return "/v1/sandboxes/" + url.PathEscape(sandboxID) + "/executions"
+}
+
+func executionResourcePath(sandboxID, executionID string) string {
+	return executionCollectionPath(sandboxID) + "/" + url.PathEscape(executionID)
 }

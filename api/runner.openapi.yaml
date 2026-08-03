@@ -31,26 +31,70 @@ paths:
                   background: false
       responses:
         "200":
-          description: Execution events
+          description: Foreground execution event stream ending in exactly one terminal event
           content:
             text/event-stream:
               schema:
                 type: string
+                description: SSE frames whose data JSON conforms to ExecutionEvent
+        "202":
+          description: Background execution was accepted
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionDescriptor"
   /v1/executions/{execution_id}:
     parameters:
-      - name: execution_id
-        in: path
-        required: true
-        schema:
-          type: string
+      - $ref: "#/components/parameters/ExecutionID"
+    get:
+      operationId: getExecution
+      responses:
+        "200":
+          description: Current execution state
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionStatus"
     delete:
       operationId: cancelExecution
       responses:
         "202":
-          description: Cancellation was accepted
+          description: Cancellation of a running execution was accepted
         "204":
-          description: Execution is already complete
+          description: Execution is already terminal
+  /v1/executions/{execution_id}/logs:
+    parameters:
+      - $ref: "#/components/parameters/ExecutionID"
+    get:
+      operationId: getExecutionLogs
+      parameters:
+        - $ref: "#/components/parameters/LogCursor"
+      responses:
+        "200":
+          description: Execution events after the supplied sequence cursor
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ExecutionLogPage"
 components:
+  parameters:
+    ExecutionID:
+      name: execution_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+    LogCursor:
+      name: cursor
+      in: query
+      required: false
+      description: Last event sequence already read; omitted is equivalent to zero
+      schema:
+        type: integer
+        format: int64
+        minimum: 0
+        default: 0
   schemas:
     ExecuteRequest:
       type: object
@@ -85,6 +129,44 @@ components:
       oneOf:
         - required: [argv]
         - required: [shell]
+    ExecutionState:
+      type: string
+      enum: [Pending, Running, Exited, Failed, Cancelled, TimedOut]
+    ExecutionDescriptor:
+      type: object
+      additionalProperties: false
+      required: [execution_id, state]
+      properties:
+        execution_id:
+          type: string
+        state:
+          $ref: "#/components/schemas/ExecutionState"
+    ExecutionStatus:
+      type: object
+      additionalProperties: false
+      required: [execution_id, state]
+      properties:
+        execution_id:
+          type: string
+        state:
+          $ref: "#/components/schemas/ExecutionState"
+        terminal_event:
+          $ref: "#/components/schemas/TerminalExecutionEvent"
+    ExecutionLogPage:
+      type: object
+      additionalProperties: false
+      required: [events, next_cursor, complete]
+      properties:
+        events:
+          type: array
+          items:
+            $ref: "#/components/schemas/ExecutionEvent"
+        next_cursor:
+          type: integer
+          format: int64
+          minimum: 0
+        complete:
+          type: boolean
     ExecutionEvent:
       oneOf:
         - $ref: "#/components/schemas/StartedEvent"
