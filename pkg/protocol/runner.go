@@ -17,19 +17,3 @@ type ExecuteRequest struct {
 	// Background 表示请求创建可通过 status、logs 和 cancel 管理的后台执行。
 	Background bool `json:"background,omitempty"`
 }
-
-// ExecuteAccepted 表示 runner 已接受并分配了可追踪的执行 ID。
-type ExecuteAccepted struct {
-	// ExecutionID 是执行流、取消请求和日志关联使用的稳定标识。
-	ExecutionID string `json:"execution_id"`
-}
-
-// ExitResult 描述进程组终止后的确定结果。
-type ExitResult struct {
-	// ExitCode 是主进程退出码；被信号终止时由 runner 映射为稳定值。
-	ExitCode int `json:"exit_code"`
-	// TimedOut 表示执行因超时触发了进程组终止。
-	TimedOut bool `json:"timed_out,omitempty"`
-	// Canceled 表示执行因调用方显式取消而终止。
-	Canceled bool `json:"canceled,omitempty"`
-}

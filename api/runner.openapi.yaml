@@ -85,3 +85,110 @@ components:
       oneOf:
         - required: [argv]
         - required: [shell]
+    ExecutionEvent:
+      oneOf:
+        - $ref: "#/components/schemas/StartedEvent"
+        - $ref: "#/components/schemas/StdoutEvent"
+        - $ref: "#/components/schemas/StderrEvent"
+        - $ref: "#/components/schemas/OutputLimitReachedEvent"
+        - $ref: "#/components/schemas/ExitedEvent"
+        - $ref: "#/components/schemas/FailedEvent"
+        - $ref: "#/components/schemas/CancelledEvent"
+        - $ref: "#/components/schemas/TimedOutEvent"
+      discriminator:
+        propertyName: type
+    TerminalExecutionEvent:
+      oneOf:
+        - $ref: "#/components/schemas/ExitedEvent"
+        - $ref: "#/components/schemas/FailedEvent"
+        - $ref: "#/components/schemas/CancelledEvent"
+        - $ref: "#/components/schemas/TimedOutEvent"
+      discriminator:
+        propertyName: type
+    StartedEvent:
+      $ref: "#/components/schemas/ControlEvent"
+    OutputLimitReachedEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: output_limit_reached}
+    ControlEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: started}
+    StdoutEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type, data_base64]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: stdout}
+        data_base64: {type: string, format: byte}
+    StderrEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type, data_base64]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: stderr}
+        data_base64: {type: string, format: byte}
+    ExitedEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type, exit_code, duration_ms, output_truncated]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: exited}
+        exit_code: {type: integer}
+        duration_ms: {type: integer, format: int64, minimum: 0}
+        output_truncated: {type: boolean}
+    FailedEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type, error_code, message, duration_ms, output_truncated]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: failed}
+        error_code: {type: string}
+        message: {type: string}
+        duration_ms: {type: integer, format: int64, minimum: 0}
+        output_truncated: {type: boolean}
+    CancelledEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type, duration_ms, output_truncated]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: cancelled}
+        duration_ms: {type: integer, format: int64, minimum: 0}
+        output_truncated: {type: boolean}
+    TimedOutEvent:
+      type: object
+      additionalProperties: false
+      required: [execution_id, sequence, timestamp, type, duration_ms, output_truncated]
+      properties:
+        execution_id: {type: string}
+        sequence: {type: integer, format: int64, minimum: 1}
+        timestamp: {type: string, format: date-time}
+        type: {type: string, const: timed_out}
+        duration_ms: {type: integer, format: int64, minimum: 0}
+        output_truncated: {type: boolean}
