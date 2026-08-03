@@ -6,40 +6,40 @@
 
 ## 仓库地图
 
-| 路径 | 职责 |
-|---|---|
-| `cmd/sandboxd/` | 宿主机生命周期控制面入口 |
-| `cmd/runnerd/` | sandbox 容器内执行数据面入口 |
-| `cmd/sandbox-init/` | 容器 PID 1、信号转发与孤儿回收入口 |
-| `api/` | 对外生命周期 API 和内部 runner API 的 OpenAPI 契约 |
-| `internal/api/` | HTTP decode、鉴权、中间件和错误映射 |
-| `internal/application/` | 生命周期与执行用例编排 |
-| `internal/domain/` | 不依赖 HTTP、Docker、SQLite 的领域模型 |
-| `internal/runtime/` | runtime 接口及 Docker adapter |
-| `internal/store/` | 持久化接口及 SQLite adapter |
-| `internal/reconcile/` | 期望状态收敛、调度、TTL 与 keyed lock |
-| `internal/runner/` | 命令执行、进程组、输出、取消与后台任务 |
-| `internal/runnerclient/` | `sandboxd` 到 `runnerd` 的 Unix Socket 客户端 |
-| `internal/embedded/` | 注入容器的静态 runner/init 构建产物 |
-| `pkg/protocol/` | 稳定的 HTTP/SSE wire model |
-| `sdk/go/` | 面向用户的 Go SDK |
-| `tests/` | contract、integration 和 security 测试 |
-| `configs/` | 可运行的示例配置 |
-| `docs/` | 架构、设计与长篇说明 |
-| `OpenSandbox/` | 只读参考源码，不属于本仓库提交内容 |
+| 路径                     | 职责                                               |
+| ------------------------ | -------------------------------------------------- |
+| `cmd/sandboxd/`          | 宿主机生命周期控制面入口                           |
+| `cmd/runnerd/`           | sandbox 容器内执行数据面入口                       |
+| `cmd/sandbox-init/`      | 容器 PID 1、信号转发与孤儿回收入口                 |
+| `api/`                   | 对外生命周期 API 和内部 runner API 的 OpenAPI 契约 |
+| `internal/api/`          | HTTP decode、鉴权、中间件和错误映射                |
+| `internal/application/`  | 生命周期与执行用例编排                             |
+| `internal/domain/`       | 不依赖 HTTP、Docker、SQLite 的领域模型             |
+| `internal/runtime/`      | runtime 接口及 Docker adapter                      |
+| `internal/store/`        | 持久化接口及 SQLite adapter                        |
+| `internal/reconcile/`    | 期望状态收敛、调度、TTL 与 keyed lock              |
+| `internal/runner/`       | 命令执行、进程组、输出、取消与后台任务             |
+| `internal/runnerclient/` | `sandboxd` 到 `runnerd` 的 Unix Socket 客户端      |
+| `internal/embedded/`     | 注入容器的静态 runner/init 构建产物                |
+| `pkg/protocol/`          | 稳定的 HTTP/SSE wire model                         |
+| `sdk/go/`                | 面向用户的 Go SDK                                  |
+| `tests/`                 | contract、integration 和 security 测试             |
+| `configs/`               | 可运行的示例配置                                   |
+| `docs/`                  | 架构、设计与长篇说明                               |
+| `OpenSandbox/`           | 只读参考源码，不属于本仓库提交内容                 |
 
 ## 单一事实源
 
 不同内容必须有明确的 source of truth：
 
-| 内容 | Source of truth | 同步要求 |
-|---|---|---|
-| 公共 HTTP/SSE 契约 | `api/*.openapi.yaml` | 同步 handler、`pkg/protocol`、SDK、文档和 contract tests |
-| 架构与安全边界 | `docs/all-go-agent-sandbox-runtime-design.md` | 同步受影响的接口、实现、配置和 security tests |
-| 领域状态与不变量 | `internal/domain/` | wire model 通过显式转换适配，不把领域对象直接当 API DTO |
-| 配置字段和默认值 | 配置模型代码 | 同步 `configs/sandboxd.example.yaml` 和用户文档 |
-| Docker labels | `internal/runtime/docker/labels.go` | 同步创建、发现、恢复、清理逻辑和测试 |
-| 嵌入式 Linux 二进制 | `cmd/runnerd/`、`cmd/sandbox-init/` | 通过构建流程生成，不能直接修改二进制解决问题 |
+| 内容                | Source of truth                               | 同步要求                                                 |
+| ------------------- | --------------------------------------------- | -------------------------------------------------------- |
+| 公共 HTTP/SSE 契约  | `api/*.openapi.yaml`                          | 同步 handler、`pkg/protocol`、SDK、文档和 contract tests |
+| 架构与安全边界      | `docs/all-go-agent-sandbox-runtime-design.md` | 同步受影响的接口、实现、配置和 security tests            |
+| 领域状态与不变量    | `internal/domain/`                            | wire model 通过显式转换适配，不把领域对象直接当 API DTO  |
+| 配置字段和默认值    | 配置模型代码                                  | 同步 `configs/sandboxd.example.yaml` 和用户文档          |
+| Docker labels       | `internal/runtime/docker/labels.go`           | 同步创建、发现、恢复、清理逻辑和测试                     |
+| 嵌入式 Linux 二进制 | `cmd/runnerd/`、`cmd/sandbox-init/`           | 通过构建流程生成，不能直接修改二进制解决问题             |
 
 公共接口优先采用向后兼容的增量修改。修改 OpenAPI 后，应在同一变更中更新所有实际受影响的消费者；无法验证的消费者必须在交付说明中明确列出。
 
