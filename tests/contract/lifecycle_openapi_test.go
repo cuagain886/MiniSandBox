@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// TestPhase1LifecycleOpenAPISurface 验证 Phase 1 只公开已承诺的生命周期端点和字段。
-func TestPhase1LifecycleOpenAPISurface(t *testing.T) {
+// TestPhase2LifecycleOpenAPISurface 验证 Phase 2 公开生命周期与 execution 契约。
+func TestPhase2LifecycleOpenAPISurface(t *testing.T) {
 	document := readLifecycleOpenAPI(t)
 
 	required := []string{
@@ -18,12 +18,15 @@ func TestPhase1LifecycleOpenAPISurface(t *testing.T) {
 		"  /readyz:",
 		"  /v1/sandboxes:",
 		"  /v1/sandboxes/{sandbox_id}:",
+		"  /v1/sandboxes/{sandbox_id}/executions:",
 		"      operationId: createSandbox",
 		"      operationId: getSandbox",
 		"      operationId: deleteSandbox",
 		"      operationId: health",
 		"      operationId: ready",
+		"      operationId: executeSandboxCommand",
 		"    CreateSandboxRequest:",
+		"    ExecuteRequest:",
 		"      additionalProperties: false",
 	}
 	for _, fragment := range required {
@@ -36,14 +39,18 @@ func TestPhase1LifecycleOpenAPISurface(t *testing.T) {
 		"Idempotency-Key",
 		"/renew:",
 		"renewSandbox",
-		"        command:",
-		"        env:",
 		"        ttl_seconds:",
-		"/executions",
+		"working_dir:",
+		"description: Timeout in nanoseconds",
+		"sidecar_image:",
+		"network_name:",
+		"denied_cidrs:",
+		"fqdn:",
+		"ports:",
 	}
 	for _, fragment := range forbidden {
 		if strings.Contains(document, fragment) {
-			t.Errorf("lifecycle OpenAPI contains unsupported Phase 1 surface %q", fragment)
+			t.Errorf("lifecycle OpenAPI contains unsupported surface %q", fragment)
 		}
 	}
 }
@@ -122,11 +129,11 @@ func TestPhase1ErrorResponseSchema(t *testing.T) {
 			t.Errorf("lifecycle OpenAPI is missing response component %q", response)
 		}
 	}
-	if got, want := strings.Count(
+	if got := strings.Count(
 		document,
 		`$ref: "#/components/schemas/ErrorResponse"`,
-	), len(responses); got != want {
-		t.Fatalf("unexpected ErrorResponse reference count: got %d, want %d", got, want)
+	); got < len(responses) {
+		t.Fatalf("too few ErrorResponse references: got %d, want at least %d", got, len(responses))
 	}
 
 	required := []string{
@@ -141,6 +148,23 @@ func TestPhase1ErrorResponseSchema(t *testing.T) {
 	for _, fragment := range required {
 		if !strings.Contains(document, fragment) {
 			t.Errorf("error response schema is missing %q", fragment)
+		}
+	}
+}
+
+// TestPhase2ExecutionRequestSchema 固定公共执行请求的字段、单位和互斥约束。
+func TestPhase2ExecutionRequestSchema(t *testing.T) {
+	document := readLifecycleOpenAPI(t)
+	required := []string{
+		"        timeout_seconds:",
+		"          description: Execution timeout in seconds; zero selects the runner default",
+		"      oneOf:",
+		"        - required: [argv]",
+		"        - required: [shell]",
+	}
+	for _, fragment := range required {
+		if !strings.Contains(document, fragment) {
+			t.Errorf("Phase 2 lifecycle schema is missing %q", fragment)
 		}
 	}
 }

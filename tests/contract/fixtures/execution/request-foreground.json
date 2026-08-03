@@ -1,0 +1,7 @@
+{
+  "argv": ["go", "test", "./..."],
+  "cwd": "/workspace",
+  "env": {"CI": "true"},
+  "timeout_seconds": 120,
+  "background": false
+}

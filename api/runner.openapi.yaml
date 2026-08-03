@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MiniSandbox Runner API
-  version: 0.1.0
+  version: 0.2.0
 servers:
   - url: http://runner
 paths:
@@ -20,6 +20,15 @@ paths:
           application/json:
             schema:
               $ref: "#/components/schemas/ExecuteRequest"
+            examples:
+              foregroundArgv:
+                value:
+                  argv: [go, test, ./...]
+                  cwd: /workspace
+                  env:
+                    CI: "true"
+                  timeout_seconds: 120
+                  background: false
       responses:
         "200":
           description: Execution events
@@ -45,24 +54,34 @@ components:
   schemas:
     ExecuteRequest:
       type: object
+      additionalProperties: false
       properties:
         argv:
           type: array
+          minItems: 1
+          prefixItems:
+            - type: string
+              minLength: 1
           items:
             type: string
         shell:
           type: string
+          minLength: 1
+        cwd:
+          type: string
+          description: Container path below /workspace; defaults to /workspace
         env:
           type: object
           additionalProperties:
             type: string
-        working_dir:
-          type: string
-        timeout:
+        timeout_seconds:
           type: integer
           format: int64
-          description: Timeout in nanoseconds
+          minimum: 0
+          description: Execution timeout in seconds; zero selects the runner default
+        background:
+          type: boolean
+          default: false
       oneOf:
         - required: [argv]
         - required: [shell]
-

@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MiniSandbox Lifecycle API
-  version: 0.1.0
+  version: 0.2.0
 servers:
   - url: http://127.0.0.1:8080
 paths:
@@ -86,6 +86,34 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/executions:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    post:
+      operationId: executeSandboxCommand
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/ExecuteRequest"
+            examples:
+              foregroundArgv:
+                value:
+                  argv: [go, test, ./...]
+                  cwd: /workspace
+                  env:
+                    CI: "true"
+                  timeout_seconds: 120
+                  background: false
+      responses:
+        "200":
+          description: Foreground execution event stream ending in exactly one terminal event
+          content:
+            text/event-stream:
+              schema:
+                type: string
+                description: SSE frames whose data JSON conforms to ExecutionEvent
 components:
   parameters:
     SandboxID:
@@ -163,6 +191,39 @@ components:
       properties:
         image:
           type: string
+    ExecuteRequest:
+      type: object
+      additionalProperties: false
+      properties:
+        argv:
+          type: array
+          minItems: 1
+          prefixItems:
+            - type: string
+              minLength: 1
+          items:
+            type: string
+        shell:
+          type: string
+          minLength: 1
+        cwd:
+          type: string
+          description: Container path below /workspace; defaults to /workspace
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Execution timeout in seconds; zero selects the runner default
+        background:
+          type: boolean
+          default: false
+      oneOf:
+        - required: [argv]
+        - required: [shell]
     ReadinessStatus:
       type: string
       enum: [ready, not_ready]

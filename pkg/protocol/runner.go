@@ -10,10 +10,12 @@ type ExecuteRequest struct {
 	Shell string `json:"shell,omitempty"`
 	// Env 是本次用户命令的附加环境变量，runner 内部变量必须在合并前过滤。
 	Env map[string]string `json:"env,omitempty"`
-	// WorkingDir 是 sandbox 容器内的执行目录。
-	WorkingDir string `json:"working_dir,omitempty"`
-	// Timeout 是执行超时，Go JSON wire 值当前以纳秒表示。
-	Timeout time.Duration `json:"timeout,omitempty"`
+	// Cwd 是 sandbox 容器内的执行目录；缺失时由 runner 使用 /workspace。
+	Cwd string `json:"cwd,omitempty"`
+	// TimeoutSeconds 是执行超时秒数；零表示使用服务端默认值。
+	TimeoutSeconds int64 `json:"timeout_seconds,omitempty"`
+	// Background 表示请求创建可通过 status、logs 和 cancel 管理的后台执行。
+	Background bool `json:"background,omitempty"`
 }
 
 // ExecuteAccepted 表示 runner 已接受并分配了可追踪的执行 ID。
