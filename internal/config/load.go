@@ -22,6 +22,7 @@ type fileConfig struct {
 	Runtime   *fileRuntime   `yaml:"runtime"`
 	Limits    *fileLimits    `yaml:"limits"`
 	Runner    *fileRunner    `yaml:"runner"`
+	Security  *fileSecurity  `yaml:"security"`
 	Reconcile *fileReconcile `yaml:"reconcile"`
 }
 
@@ -92,6 +93,12 @@ type fileRunner struct {
 	CompletedRetention      *string `yaml:"completed_retention"`
 	MaxRetainedExecutions   *int    `yaml:"max_retained_executions"`
 	SSEWriteTimeout         *string `yaml:"sse_write_timeout"`
+}
+
+// fileSecurity 对应 security 分组的文件字段。
+type fileSecurity struct {
+	RunnerMasterKeyFile *string `yaml:"runner_master_key_file"`
+	AllowOutbound       *bool   `yaml:"allow_outbound"`
 }
 
 // fileReconcile 对应 reconcile 分组的文件字段。
@@ -261,6 +268,14 @@ func (f fileConfig) apply(base Config) (Config, error) {
 		); err != nil {
 			return Config{}, err
 		}
+	}
+
+	if f.Security != nil {
+		override(
+			&cfg.Security.RunnerMasterKeyFile,
+			f.Security.RunnerMasterKeyFile,
+		)
+		override(&cfg.Security.AllowOutbound, f.Security.AllowOutbound)
 	}
 
 	if f.Reconcile != nil {

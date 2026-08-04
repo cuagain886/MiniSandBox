@@ -67,6 +67,10 @@ func TestDefaultSnapshot(t *testing.T) {
 			MaxRetainedExecutions:   100,
 			SSEWriteTimeout:         15 * time.Second,
 		},
+		Security: SecurityConfig{
+			RunnerMasterKeyFile: "/etc/minisandbox/runner-master-key",
+			AllowOutbound:       false,
+		},
 		Reconcile: ReconcileConfig{
 			Interval:           2 * time.Second,
 			RunnerReadyTimeout: 30 * time.Second,

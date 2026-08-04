@@ -54,3 +54,7 @@ runner:
   completed_retention: "1h"
   max_retained_executions: 100
   sse_write_timeout: "15s"
+
+security:
+  runner_master_key_file: "/etc/minisandbox/runner-master-key"
+  allow_outbound: false

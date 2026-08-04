@@ -119,6 +119,9 @@ runner:
   completed_retention: "30m"
   max_retained_executions: 25
   sse_write_timeout: "4s"
+security:
+  runner_master_key_file: "/run/secrets/runner-key"
+  allow_outbound: true
 reconcile:
   interval: "5s"
   runner_ready_timeout: "20s"
@@ -185,6 +188,10 @@ reconcile:
 			CompletedRetention:      30 * time.Minute,
 			MaxRetainedExecutions:   25,
 			SSEWriteTimeout:         4 * time.Second,
+		},
+		Security: SecurityConfig{
+			RunnerMasterKeyFile: "/run/secrets/runner-key",
+			AllowOutbound:       true,
 		},
 		Reconcile: ReconcileConfig{
 			Interval:           5 * time.Second,

@@ -218,6 +218,100 @@ func TestValidateRejections(t *testing.T) {
 	}
 }
 
+// TestValidateRunnerRejections 逐项锁定 runner 身份、路径和有界限制的
+// fail-closed 规则，避免零值或过大配置绕过启动校验。
+func TestValidateRunnerRejections(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		field  string
+	}{
+		{"root execution uid", func(c *Config) { c.Runner.ExecutionUID = 0 }, "runner.execution_uid"},
+		{"root execution gid", func(c *Config) { c.Runner.ExecutionGID = 0 }, "runner.execution_gid"},
+		{"cwd outside workspace", func(c *Config) { c.Runner.DefaultCWD = "/tmp" }, "runner.default_cwd"},
+		{"default timeout zero", func(c *Config) { c.Runner.DefaultTimeout = 0 }, "runner.default_timeout"},
+		{"default timeout above max", func(c *Config) { c.Runner.DefaultTimeout = 2 * time.Hour; c.Runner.MaxTimeout = time.Hour }, "runner.default_timeout"},
+		{"max timeout zero", func(c *Config) { c.Runner.MaxTimeout = 0 }, "runner.max_timeout"},
+		{"max timeout unbounded", func(c *Config) { c.Runner.MaxTimeout = 24*time.Hour + time.Second }, "runner.max_timeout"},
+		{"termination grace zero", func(c *Config) { c.Runner.TerminationGrace = 0 }, "runner.termination_grace"},
+		{"termination grace unbounded", func(c *Config) { c.Runner.TerminationGrace = time.Minute + time.Millisecond }, "runner.termination_grace"},
+		{"concurrency zero", func(c *Config) { c.Runner.MaxConcurrentExecutions = 0 }, "runner.max_concurrent_executions"},
+		{"concurrency unbounded", func(c *Config) { c.Runner.MaxConcurrentExecutions = 257 }, "runner.max_concurrent_executions"},
+		{"request bytes zero", func(c *Config) { c.Runner.MaxRequestBytes = 0 }, "runner.max_request_bytes"},
+		{"request bytes unbounded", func(c *Config) { c.Runner.MaxRequestBytes = 16<<20 + 1 }, "runner.max_request_bytes"},
+		{"output bytes zero", func(c *Config) { c.Runner.MaxOutputBytes = 0 }, "runner.max_output_bytes"},
+		{"output bytes unbounded", func(c *Config) { c.Runner.MaxOutputBytes = 1<<30 + 1 }, "runner.max_output_bytes"},
+		{"env vars zero", func(c *Config) { c.Runner.MaxEnvVars = 0 }, "runner.max_env_vars"},
+		{"env vars unbounded", func(c *Config) { c.Runner.MaxEnvVars = 4097 }, "runner.max_env_vars"},
+		{"env key bytes zero", func(c *Config) { c.Runner.MaxEnvKeyBytes = 0 }, "runner.max_env_key_bytes"},
+		{"env key bytes unbounded", func(c *Config) { c.Runner.MaxEnvKeyBytes = 1025 }, "runner.max_env_key_bytes"},
+		{"env value bytes zero", func(c *Config) { c.Runner.MaxEnvValueBytes = 0 }, "runner.max_env_value_bytes"},
+		{"env value bytes unbounded", func(c *Config) { c.Runner.MaxEnvValueBytes = 1<<20 + 1 }, "runner.max_env_value_bytes"},
+		{"env total bytes zero", func(c *Config) { c.Runner.MaxEnvTotalBytes = 0 }, "runner.max_env_total_bytes"},
+		{"env total bytes unbounded", func(c *Config) { c.Runner.MaxEnvTotalBytes = 16<<20 + 1 }, "runner.max_env_total_bytes"},
+		{"env total cannot hold entry", func(c *Config) { c.Runner.MaxEnvTotalBytes = 100 }, "runner.max_env_total_bytes"},
+		{"env total exceeds request", func(c *Config) { c.Runner.MaxRequestBytes = 1024; c.Runner.MaxEnvTotalBytes = 2048 }, "runner.max_env_total_bytes"},
+		{"log events zero", func(c *Config) { c.Runner.MaxLogPageEvents = 0 }, "runner.max_log_page_events"},
+		{"log events unbounded", func(c *Config) { c.Runner.MaxLogPageEvents = 4097 }, "runner.max_log_page_events"},
+		{"log page bytes zero", func(c *Config) { c.Runner.MaxLogPageBytes = 0 }, "runner.max_log_page_bytes"},
+		{"log page bytes unbounded", func(c *Config) { c.Runner.MaxLogPageBytes = 64<<20 + 1 }, "runner.max_log_page_bytes"},
+		{"log page exceeds output", func(c *Config) { c.Runner.MaxOutputBytes = 1024; c.Runner.MaxLogPageBytes = 2048 }, "runner.max_log_page_bytes"},
+		{"retention zero", func(c *Config) { c.Runner.CompletedRetention = 0 }, "runner.completed_retention"},
+		{"retention unbounded", func(c *Config) { c.Runner.CompletedRetention = 7*24*time.Hour + time.Second }, "runner.completed_retention"},
+		{"retained executions zero", func(c *Config) { c.Runner.MaxRetainedExecutions = 0 }, "runner.max_retained_executions"},
+		{"retained executions unbounded", func(c *Config) { c.Runner.MaxRetainedExecutions = 10_001 }, "runner.max_retained_executions"},
+		{"sse timeout zero", func(c *Config) { c.Runner.SSEWriteTimeout = 0 }, "runner.sse_write_timeout"},
+		{"sse timeout unbounded", func(c *Config) { c.Runner.SSEWriteTimeout = time.Minute + time.Millisecond }, "runner.sse_write_timeout"},
+		{"master key path relative", func(c *Config) { c.Security.RunnerMasterKeyFile = "runner.key" }, "security.runner_master_key_file"},
+		{"outbound enabled before egress gate", func(c *Config) { c.Security.AllowOutbound = true }, "security.allow_outbound"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			test.mutate(&cfg)
+			var fieldErr *FieldError
+			if err := cfg.Validate(); !errors.As(err, &fieldErr) {
+				t.Fatalf("expected FieldError, got %v", err)
+			}
+			if got := fieldErr.Field; got != test.field {
+				t.Fatalf("unexpected field: got %s, want %s", got, test.field)
+			}
+		})
+	}
+}
+
+// TestValidateRunnerSocketOwner 验证 execution UID/GID 不能复用控制面
+// Unix Socket 的数字所有者身份。
+func TestValidateRunnerSocketOwner(t *testing.T) {
+	tests := []struct {
+		name  string
+		uid   uint32
+		gid   uint32
+		field string
+	}{
+		{"distinct identity", 2000, 2001, ""},
+		{"same uid", 1000, 2001, "runner.execution_uid"},
+		{"same gid", 2000, 1000, "runner.execution_gid"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			err := Default().ValidateRunnerSocketOwner(test.uid, test.gid)
+			if test.field == "" {
+				if err != nil {
+					t.Fatalf("distinct identity rejected: %v", err)
+				}
+				return
+			}
+			var fieldErr *FieldError
+			if !errors.As(err, &fieldErr) || fieldErr.Field != test.field {
+				t.Fatalf("unexpected error: %v", err)
+			}
+		})
+	}
+}
+
 // TestValidateAccepts 验证安全默认值与合法边界取值可以通过校验。
 func TestValidateAccepts(t *testing.T) {
 	tests := []struct {

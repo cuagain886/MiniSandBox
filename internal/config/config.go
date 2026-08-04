@@ -30,6 +30,8 @@ type Config struct {
 	Limits LimitsConfig
 	// Runner 是容器内执行身份、路径与有界资源限制配置。
 	Runner RunnerConfig
+	// Security 是内部鉴权材料路径与平台网络能力开关。
+	Security SecurityConfig
 	// Reconcile 是期望状态收敛的节奏与超时配置。
 	Reconcile ReconcileConfig
 }
@@ -127,6 +129,14 @@ type RunnerConfig struct {
 	SSEWriteTimeout time.Duration
 }
 
+// SecurityConfig 描述不能由 sandbox 请求覆盖的平台安全配置。
+type SecurityConfig struct {
+	// RunnerMasterKeyFile 是 sandboxd 读取 runner 派生密钥所需主密钥的绝对路径。
+	RunnerMasterKeyFile string
+	// AllowOutbound 表示平台是否允许请求启用受管 outbound；默认关闭。
+	AllowOutbound bool
+}
+
 // ReconcileConfig 描述期望状态收敛循环的节奏与阶段超时。
 type ReconcileConfig struct {
 	// Interval 是周期性扫描待收敛 sandbox 的间隔。
@@ -197,6 +207,10 @@ func Default() Config {
 			CompletedRetention:      time.Hour,
 			MaxRetainedExecutions:   100,
 			SSEWriteTimeout:         15 * time.Second,
+		},
+		Security: SecurityConfig{
+			RunnerMasterKeyFile: "/etc/minisandbox/runner-master-key",
+			AllowOutbound:       false,
 		},
 		Reconcile: ReconcileConfig{
 			Interval:           2 * time.Second,
