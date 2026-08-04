@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+
+	"minisandbox/internal/runnerbootstrap"
 )
 
 const (
@@ -12,12 +14,13 @@ const (
 	testWorkspace = "minisandbox-workspace-" + testSandboxID
 )
 
-// TestLabelsRoundTrip 验证固定六键契约可以无损编解码。
+// TestLabelsRoundTrip 验证固定恢复与 runner 版本契约可以无损编解码。
 func TestLabelsRoundTrip(t *testing.T) {
 	metadata := ManagedLabels{
-		SandboxID: testSandboxID,
-		SpecHash:  testSpecHash,
-		Workspace: testWorkspace,
+		SandboxID:             testSandboxID,
+		SpecHash:              testSpecHash,
+		Workspace:             testWorkspace,
+		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
 	}
 	labels, err := EncodeLabels(metadata)
 	if err != nil {
@@ -65,6 +68,9 @@ func TestParseLabelsRejectsUnsupportedAndInvalidValues(t *testing.T) {
 	}{
 		{name: "not managed", key: LabelManaged, value: "false"},
 		{name: "unknown schema", key: LabelSchemaVersion, value: "2"},
+		{name: "old runner protocol", key: LabelRunnerProtocolVersion, value: "0"},
+		{name: "future runner protocol", key: LabelRunnerProtocolVersion, value: "2"},
+		{name: "non-integer runner protocol", key: LabelRunnerProtocolVersion, value: "v1"},
 		{name: "phase one expiry", key: LabelExpiresAt, value: "2030-01-01T00:00:00Z"},
 		{name: "invalid id", key: LabelSandboxID, value: "../sandbox"},
 		{name: "invalid hash", key: LabelSpecHash, value: strings.Repeat("g", 64)},
@@ -114,9 +120,10 @@ func TestEncodeLabelsContainsNoSecretSurface(t *testing.T) {
 func validTestLabels(t *testing.T) map[string]string {
 	t.Helper()
 	labels, err := EncodeLabels(ManagedLabels{
-		SandboxID: testSandboxID,
-		SpecHash:  testSpecHash,
-		Workspace: testWorkspace,
+		SandboxID:             testSandboxID,
+		SpecHash:              testSpecHash,
+		Workspace:             testWorkspace,
+		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
 	})
 	if err != nil {
 		t.Fatalf("encode valid labels: %v", err)

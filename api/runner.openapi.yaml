@@ -11,6 +11,10 @@ paths:
       responses:
         "200":
           description: Runner is healthy
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/RunnerHealth"
   /v1/executions:
     post:
       operationId: execute
@@ -171,6 +175,27 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    RunnerHealth:
+      type: object
+      additionalProperties: false
+      required: [status, service, version, protocol_version, netns_identity]
+      properties:
+        status:
+          type: string
+          const: ok
+        service:
+          type: string
+          const: runnerd
+        version:
+          type: string
+          minLength: 1
+        protocol_version:
+          type: integer
+          minimum: 1
+          description: Must exactly match the managed container label and control plane version
+        netns_identity:
+          type: string
+          pattern: '^linux-netns:[1-9][0-9]*:[1-9][0-9]*$'
     ExecuteRequest:
       type: object
       additionalProperties: false

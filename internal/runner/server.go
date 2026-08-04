@@ -11,19 +11,43 @@ import (
 	"net"
 	"net/http"
 	"time"
+
+	"minisandbox/internal/runnerbootstrap"
+	"minisandbox/pkg/protocol"
 )
 
 // NewServer 创建 runnerd 内部 HTTP handler。
 //
 // handler 只暴露当前 sandbox 的健康检查和执行资源，不接受 sandbox ID。
 func NewServer(version, token string) http.Handler {
+	return newServer(version, token, currentNetNSIdentity)
+}
+
+// newServer 允许测试注入 netns 读取器，生产路径始终读取当前进程的
+// `/proc/self/ns/net`，不得接受请求或环境覆盖 identity。
+func newServer(
+	version,
+	token string,
+	readNetNSIdentity func() (string, error),
+) http.Handler {
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
-		_ = json.NewEncoder(w).Encode(map[string]string{
-			"status":  "ok",
-			"service": "runnerd",
-			"version": version,
+		identity, err := readNetNSIdentity()
+		if err != nil {
+			w.WriteHeader(http.StatusServiceUnavailable)
+			_ = json.NewEncoder(w).Encode(map[string]string{
+				"code":    "netns_identity_unavailable",
+				"message": "runner network namespace identity is unavailable",
+			})
+			return
+		}
+		_ = json.NewEncoder(w).Encode(protocol.RunnerHealth{
+			Status:          "ok",
+			Service:         "runnerd",
+			Version:         version,
+			ProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
+			NetNSIdentity:   identity,
 		})
 	})
 	mux.HandleFunc("POST /v1/executions", notImplemented)

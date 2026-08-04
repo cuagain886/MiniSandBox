@@ -20,6 +20,8 @@ const (
 	FailureReasonContainerStartFailed = "CONTAINER_START_FAILED"
 	// FailureReasonRunnerUnhealthy 表示 runner 未在时限内就绪。
 	FailureReasonRunnerUnhealthy = "RUNNER_UNHEALTHY"
+	// FailureReasonRunnerProtocolMismatch 表示容器 label 与 runner health 版本不兼容。
+	FailureReasonRunnerProtocolMismatch = "RUNNER_PROTOCOL_MISMATCH"
 	// FailureReasonSpecDrift 表示实际资源身份或 spec hash 与 Store 不一致。
 	FailureReasonSpecDrift = "SPEC_DRIFT"
 	// FailureReasonCleanupPending 表示受管资源尚未完全清理。
@@ -78,6 +80,11 @@ var failureCatalog = map[string]Failure{
 		Reason:    FailureReasonRunnerUnhealthy,
 		Message:   "Sandbox runner is unhealthy.",
 		Retryable: true,
+	},
+	FailureReasonRunnerProtocolMismatch: {
+		Reason:    FailureReasonRunnerProtocolMismatch,
+		Message:   "Sandbox runner protocol is incompatible.",
+		Retryable: false,
 	},
 	FailureReasonSpecDrift: {
 		Reason:    FailureReasonSpecDrift,

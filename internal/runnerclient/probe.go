@@ -117,7 +117,11 @@ func NewRunnerProbe(
 }
 
 // Probe 只从规范 sandbox ID 推导 socket path 并请求固定 `/healthz`。
-func (p *Probe) Probe(ctx context.Context, sandboxID string) error {
+func (p *Probe) Probe(
+	ctx context.Context,
+	sandboxID string,
+	expectedProtocolVersion int,
+) error {
 	socketPath, err := p.socketPath(sandboxID)
 	if err != nil {
 		return err
@@ -130,9 +134,13 @@ func (p *Probe) Probe(ctx context.Context, sandboxID string) error {
 	// 30 秒默认值会在配置更大时提前终止并被误分类为 unhealthy。
 	client.httpClient.Timeout = 0
 	for {
-		err = client.Health(operationContext)
+		_, err = client.Health(operationContext, expectedProtocolVersion)
 		if err == nil {
 			return nil
+		}
+		var protocolMismatch *ProtocolMismatchError
+		if errors.As(err, &protocolMismatch) {
+			return err
 		}
 		if contextErr := operationContext.Err(); contextErr != nil {
 			return probeContextError(contextErr, err)

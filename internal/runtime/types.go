@@ -35,6 +35,8 @@ type ActualSandbox struct {
 	SpecHash string
 	// Workspace 是受管 named volume 的确定性名称，不包含宿主机路径。
 	Workspace string
+	// RunnerProtocolVersion 是受管容器 label 声明并经 adapter 验证的整数版本。
+	RunnerProtocolVersion int
 	// DiscoveryIssue 是启动扫描发现损坏资源时使用的安全诊断代码。
 	//
 	// 普通 Inspect 成功或 Missing 时为空；内容不得包含原始 labels 或路径。

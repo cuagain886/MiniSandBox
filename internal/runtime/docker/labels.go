@@ -2,7 +2,10 @@ package docker
 
 import (
 	"errors"
+	"strconv"
 	"strings"
+
+	"minisandbox/internal/runnerbootstrap"
 )
 
 const (
@@ -18,6 +21,8 @@ const (
 	LabelExpiresAt = "minisandbox.io/expires-at"
 	// LabelWorkspace 保存受管 workspace volume 的确定性名称。
 	LabelWorkspace = "minisandbox.io/workspace"
+	// LabelRunnerProtocolVersion 保存容器内 runner 的非秘密整数协议版本。
+	LabelRunnerProtocolVersion = "minisandbox.io/runner-protocol-version"
 
 	labelManagedValue       = "true"
 	labelSchemaVersionValue = "1"
@@ -32,6 +37,7 @@ var managedLabelKeys = [...]string{
 	LabelSpecHash,
 	LabelExpiresAt,
 	LabelWorkspace,
+	LabelRunnerProtocolVersion,
 }
 
 // ManagedLabels 是恢复 sandbox 所需的安全 Docker label 元数据。
@@ -45,6 +51,9 @@ type ManagedLabels struct {
 	SpecHash string
 	// Workspace 是受管 named volume 的确定性名称。
 	Workspace string
+	// RunnerProtocolVersion 是容器声明的 runner 内部协议版本；编码时零值表示
+	// 使用当前版本，解析结果始终是经过精确匹配的当前版本。
+	RunnerProtocolVersion int
 }
 
 // EncodeLabels 校验恢复元数据并生成 schema version 1 的完整 label 集合。
@@ -59,6 +68,9 @@ func EncodeLabels(metadata ManagedLabels) (map[string]string, error) {
 		LabelSpecHash:      metadata.SpecHash,
 		LabelExpiresAt:     "",
 		LabelWorkspace:     metadata.Workspace,
+		LabelRunnerProtocolVersion: strconv.Itoa(
+			runnerbootstrap.CurrentProtocolVersion,
+		),
 	}, nil
 }
 
@@ -85,11 +97,19 @@ func ParseLabels(labels map[string]string) (ManagedLabels, error) {
 	if labels[LabelExpiresAt] != "" {
 		return ManagedLabels{}, labelError(LabelExpiresAt, "must be empty in Phase 1")
 	}
+	protocolVersion, err := strconv.Atoi(labels[LabelRunnerProtocolVersion])
+	if err != nil || protocolVersion != runnerbootstrap.CurrentProtocolVersion {
+		return ManagedLabels{}, labelError(
+			LabelRunnerProtocolVersion,
+			"is not supported",
+		)
+	}
 
 	metadata := ManagedLabels{
-		SandboxID: labels[LabelSandboxID],
-		SpecHash:  labels[LabelSpecHash],
-		Workspace: labels[LabelWorkspace],
+		SandboxID:             labels[LabelSandboxID],
+		SpecHash:              labels[LabelSpecHash],
+		Workspace:             labels[LabelWorkspace],
+		RunnerProtocolVersion: protocolVersion,
 	}
 	if err := validateManagedLabels(metadata); err != nil {
 		return ManagedLabels{}, err
@@ -99,6 +119,9 @@ func ParseLabels(labels map[string]string) (ManagedLabels, error) {
 
 // validateManagedLabels 校验所有可变恢复字段，不接触 Docker。
 func validateManagedLabels(metadata ManagedLabels) error {
+	if metadata.RunnerProtocolVersion != 0 && metadata.RunnerProtocolVersion != runnerbootstrap.CurrentProtocolVersion {
+		return labelError(LabelRunnerProtocolVersion, "is not supported")
+	}
 	if !validSandboxID(metadata.SandboxID) {
 		return labelError(LabelSandboxID, "is not a canonical UUID v4")
 	}

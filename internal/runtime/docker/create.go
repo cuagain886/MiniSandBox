@@ -12,6 +12,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"minisandbox/internal/domain"
+	"minisandbox/internal/runnerbootstrap"
 )
 
 const (
@@ -63,9 +64,10 @@ func buildContainerCreateOptions(
 		)
 	}
 	labels, err := EncodeLabels(ManagedLabels{
-		SandboxID: sandbox.ID,
-		SpecHash:  sandbox.SpecHash,
-		Workspace: names.Workspace,
+		SandboxID:             sandbox.ID,
+		SpecHash:              sandbox.SpecHash,
+		Workspace:             names.Workspace,
+		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
 	})
 	if err != nil {
 		return mobyclient.ContainerCreateOptions{}, err
@@ -127,9 +129,10 @@ func ensureStoppedContainer(
 		return ContainerEnsureResult{}, err
 	}
 	expected := ManagedLabels{
-		SandboxID: sandbox.ID,
-		SpecHash:  sandbox.SpecHash,
-		Workspace: names.Workspace,
+		SandboxID:             sandbox.ID,
+		SpecHash:              sandbox.SpecHash,
+		Workspace:             names.Workspace,
+		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
 	}
 
 	inspection, err := engine.ContainerInspect(

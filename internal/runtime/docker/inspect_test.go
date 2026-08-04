@@ -97,11 +97,12 @@ func TestRuntimeInspectMapsContainerStates(t *testing.T) {
 				t.Fatalf("inspect: %v", err)
 			}
 			want := runtimeport.ActualSandbox{
-				ID:        testSandboxID,
-				RuntimeID: "container-id",
-				State:     tt.wantActual,
-				SpecHash:  testSpecHash,
-				Workspace: testWorkspace,
+				ID:                    testSandboxID,
+				RuntimeID:             "container-id",
+				State:                 tt.wantActual,
+				SpecHash:              testSpecHash,
+				Workspace:             testWorkspace,
+				RunnerProtocolVersion: 1,
 			}
 			if actual != want {
 				t.Fatalf("actual: got %#v, want %#v", actual, want)

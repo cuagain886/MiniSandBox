@@ -11,6 +11,7 @@ import (
 	mobyvolume "github.com/moby/moby/api/types/volume"
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
+	"minisandbox/internal/runnerbootstrap"
 	runtimeport "minisandbox/internal/runtime"
 )
 
@@ -88,9 +89,10 @@ func ensureWorkspaceVolume(
 ) (WorkspaceVolumeResult, error) {
 	name := workspaceName(sandboxID)
 	expected := ManagedLabels{
-		SandboxID: sandboxID,
-		SpecHash:  specHash,
-		Workspace: name,
+		SandboxID:             sandboxID,
+		SpecHash:              specHash,
+		Workspace:             name,
+		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
 	}
 	labels, err := EncodeLabels(expected)
 	if err != nil {

@@ -5,6 +5,8 @@ import (
 	"path/filepath"
 	"testing"
 	"time"
+
+	"minisandbox/internal/runnerbootstrap"
 )
 
 const testProbeSandboxID = "00010203-0405-4607-8809-0a0b0c0d0e0f"
@@ -31,7 +33,7 @@ func TestRunnerProbeRejectsPathTraversal(t *testing.T) {
 		testProbeSandboxID + `\other`,
 		"",
 	} {
-		if err := probe.Probe(context.Background(), sandboxID); err == nil {
+		if err := probe.Probe(context.Background(), sandboxID, runnerbootstrap.CurrentProtocolVersion); err == nil {
 			t.Fatalf("unsafe sandbox ID accepted: %q", sandboxID)
 		}
 	}

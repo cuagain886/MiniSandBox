@@ -8,5 +8,5 @@ import "context"
 // adapter 必须把请求限制在当前 sandbox 的固定 `/healthz`。
 type RunnerProbe interface {
 	// Probe 对指定 sandbox 执行一次有界健康检查，不负责重试或更新 Store。
-	Probe(context.Context, string) error
+	Probe(context.Context, string, int) error
 }

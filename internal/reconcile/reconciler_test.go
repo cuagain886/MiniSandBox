@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"minisandbox/internal/domain"
+	"minisandbox/internal/runnerbootstrap"
 	"minisandbox/internal/runnerclient"
 	runtimeport "minisandbox/internal/runtime"
 	dockerruntime "minisandbox/internal/runtime/docker"
@@ -22,9 +23,10 @@ func TestReconcileRunningTransitionsInOrder(t *testing.T) {
 	runtime := &recordingRuntime{
 		events: &events,
 		ensureResult: runtimeport.ActualSandbox{
-			ID:        "sandbox-id",
-			RuntimeID: "container-id",
-			State:     runtimeport.ActualRunning,
+			ID:                    "sandbox-id",
+			RuntimeID:             "container-id",
+			State:                 runtimeport.ActualRunning,
+			RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
 		},
 	}
 	probe := &recordingProbe{events: &events}
@@ -58,6 +60,9 @@ func TestReconcileRunningTransitionsInOrder(t *testing.T) {
 	}
 	if got := runtime.ensureSandbox.ObservedState; got != domain.StateCreating {
 		t.Fatalf("Ensure sandbox state: got %s", got)
+	}
+	if got := probe.protocolVersion; got != runnerbootstrap.CurrentProtocolVersion {
+		t.Fatalf("probe protocol version: got %d", got)
 	}
 }
 
@@ -112,17 +117,19 @@ func TestReconcileRunningRecordsRuntimeFailure(t *testing.T) {
 	}
 }
 
-// TestReconcileRunningRecordsProbeFailure 验证 Probe 失败后清理并写入 Failed。
+// TestReconcileRunningRecordsProbeFailure 验证协议不匹配时不能进入 Running，
+// 并按不可重试的稳定 reason 清理后写入 Failed。
 func TestReconcileRunningRecordsProbeFailure(t *testing.T) {
 	events := make([]string, 0, 5)
-	cause := errors.New("probe failure")
+	cause := &runnerclient.ProtocolMismatchError{}
 	sandboxStore := newReconcileStore(&events, pendingSandbox())
 	reconciler := New(
 		sandboxStore,
 		&recordingRuntime{
 			events: &events,
 			ensureResult: runtimeport.ActualSandbox{
-				RuntimeID: "container-id",
+				RuntimeID:             "container-id",
+				RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
 			},
 		},
 		&recordingProbe{events: &events, err: cause},
@@ -139,7 +146,7 @@ func TestReconcileRunningRecordsProbeFailure(t *testing.T) {
 		"store-update-Creating-WAITING_RUNNER",
 		"runner-probe",
 		"runtime-delete",
-		"store-update-Failed-INTERNAL_ERROR",
+		"store-update-Failed-RUNNER_PROTOCOL_MISMATCH",
 	}
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events: got %v, want %v", events, want)
@@ -516,13 +523,15 @@ func (*recordingRuntime) ListManaged(
 
 // recordingProbe 记录健康检查顺序。
 type recordingProbe struct {
-	events *[]string
-	err    error
+	events          *[]string
+	err             error
+	protocolVersion int
 }
 
 // Probe 记录调用并返回预设错误。
-func (p *recordingProbe) Probe(context.Context, string) error {
+func (p *recordingProbe) Probe(_ context.Context, _ string, protocolVersion int) error {
 	*p.events = append(*p.events, "runner-probe")
+	p.protocolVersion = protocolVersion
 	return p.err
 }
 

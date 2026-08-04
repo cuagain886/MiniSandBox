@@ -103,7 +103,7 @@ func (r *Reconciler) reconcileRunning(
 	if err != nil {
 		return fmt.Errorf("mark sandbox waiting for runner: %w", err)
 	}
-	if err := r.probe.Probe(ctx, waiting.ID); err != nil {
+	if err := r.probe.Probe(ctx, waiting.ID, actual.RunnerProtocolVersion); err != nil {
 		return r.failRunning(ctx, waiting, err)
 	}
 	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{

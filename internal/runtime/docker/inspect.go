@@ -55,11 +55,12 @@ func (r *Runtime) Inspect(
 		return runtimeport.ActualSandbox{}, err
 	}
 	return runtimeport.ActualSandbox{
-		ID:        metadata.SandboxID,
-		RuntimeID: inspection.Container.ID,
-		State:     state,
-		SpecHash:  metadata.SpecHash,
-		Workspace: metadata.Workspace,
+		ID:                    metadata.SandboxID,
+		RuntimeID:             inspection.Container.ID,
+		State:                 state,
+		SpecHash:              metadata.SpecHash,
+		Workspace:             metadata.Workspace,
+		RunnerProtocolVersion: metadata.RunnerProtocolVersion,
 	}, nil
 }
 

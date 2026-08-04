@@ -1,5 +1,41 @@
 package protocol
 
+import (
+	"errors"
+	"strconv"
+	"strings"
+)
+
+// RunnerHealth 是 runnerd `/healthz` 返回的严格内部就绪证明。
+type RunnerHealth struct {
+	// Status 固定为 ok；其他值不能用于把 sandbox 推进到 Running。
+	Status string `json:"status"`
+	// Service 固定为 runnerd，防止把同一 socket 上的其他服务误判为 runner。
+	Service string `json:"service"`
+	// Version 是 runnerd 构建版本，仅用于诊断，不参与协议兼容放宽。
+	Version string `json:"version"`
+	// ProtocolVersion 必须与控制面及 Docker label 的整数版本精确相等。
+	ProtocolVersion int `json:"protocol_version"`
+	// NetNSIdentity 是当前进程 Linux network namespace 的 device/inode 身份。
+	NetNSIdentity string `json:"netns_identity"`
+}
+
+// ValidateRunnerNetNSIdentity 校验 `linux-netns:<device>:<inode>` 的规范格式。
+// device 和 inode 必须是非零十进制无符号整数，且编码不能含前导零。
+func ValidateRunnerNetNSIdentity(value string) error {
+	parts := strings.Split(value, ":")
+	if len(parts) != 3 || parts[0] != "linux-netns" {
+		return errors.New("runner netns identity format is invalid")
+	}
+	for _, part := range parts[1:] {
+		parsed, err := strconv.ParseUint(part, 10, 64)
+		if err != nil || parsed == 0 || strconv.FormatUint(parsed, 10) != part {
+			return errors.New("runner netns identity value is invalid")
+		}
+	}
+	return nil
+}
+
 // ExecuteRequest 是发送给 runnerd 的命令执行请求。
 type ExecuteRequest struct {
 	// Argv 是不经过 shell 解析的参数数组，与 Shell 必须二选一。

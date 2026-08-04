@@ -69,11 +69,12 @@ func mapManagedSummary(
 		return item
 	}
 	return runtimeport.ActualSandbox{
-		ID:        metadata.SandboxID,
-		RuntimeID: container.ID,
-		State:     state,
-		SpecHash:  metadata.SpecHash,
-		Workspace: metadata.Workspace,
+		ID:                    metadata.SandboxID,
+		RuntimeID:             container.ID,
+		State:                 state,
+		SpecHash:              metadata.SpecHash,
+		Workspace:             metadata.Workspace,
+		RunnerProtocolVersion: metadata.RunnerProtocolVersion,
 	}
 }
 
