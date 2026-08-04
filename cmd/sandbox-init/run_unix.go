@@ -49,10 +49,26 @@ func run(args []string) int {
 	if err != nil {
 		return 1
 	}
-	if result.runnerStatus.Exited() {
-		return result.runnerStatus.ExitStatus()
+	exitCode, err := runnerExitCode(result.runnerStatus)
+	if err != nil {
+		return 1
 	}
-	return 1
+	return exitCode
+}
+
+// runnerExitCode 把 Linux wait status 映射为 Docker 可观测的稳定 init 退出码。
+//
+// 普通退出保持 runner code；信号退出使用 shell/Docker 通用的 128+signal。
+// stopped/continued 等非终态 status 表示 init 内部状态机错误，不能伪装成功。
+func runnerExitCode(status syscall.WaitStatus) (int, error) {
+	switch {
+	case status.Exited():
+		return status.ExitStatus(), nil
+	case status.Signaled():
+		return 128 + int(status.Signal()), nil
+	default:
+		return 0, errors.New("runner wait status is not terminal")
+	}
 }
 
 // superviseRunner 处理 SIGCHLD 并保留既有的进程组信号转发行为。

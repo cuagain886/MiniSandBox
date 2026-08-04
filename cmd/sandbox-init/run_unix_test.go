@@ -146,6 +146,42 @@ func TestDrainChildrenHandlesECHILDAndEINTR(t *testing.T) {
 	}
 }
 
+// TestRunnerExitCode 验证正常、非零和信号终态的稳定 Docker 退出码映射。
+func TestRunnerExitCode(t *testing.T) {
+	tests := []struct {
+		name   string
+		status syscall.WaitStatus
+		want   int
+	}{
+		{name: "zero", status: exitedStatus(0), want: 0},
+		{name: "nonzero", status: exitedStatus(23), want: 23},
+		{name: "sigterm", status: signaledStatus(syscall.SIGTERM), want: 143},
+		{name: "sigkill", status: signaledStatus(syscall.SIGKILL), want: 137},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			got, err := runnerExitCode(test.status)
+			if err != nil || got != test.want {
+				t.Fatalf("exit code: got %d, want %d, err %v", got, test.want, err)
+			}
+		})
+	}
+	if _, err := runnerExitCode(syscall.WaitStatus(0x7f)); err == nil {
+		t.Fatal("non-terminal stopped status accepted")
+	}
+}
+
+// TestRunMapsMissingRunnerTo127 验证 runner exec 启动失败不会与内部 init 错误混淆。
+func TestRunMapsMissingRunnerTo127(t *testing.T) {
+	if got := run([]string{"/definitely/missing/minisandbox-runnerd"}); got != 127 {
+		t.Fatalf("missing runner exit code: got %d, want 127", got)
+	}
+}
+
 func exitedStatus(code int) syscall.WaitStatus {
 	return syscall.WaitStatus(code << 8)
+}
+
+func signaledStatus(value syscall.Signal) syscall.WaitStatus {
+	return syscall.WaitStatus(value)
 }
