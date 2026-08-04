@@ -34,3 +34,23 @@ limits:
     cpu_quota_millis: 4000
     memory_mib: 8192
     pids: 1024
+
+runner:
+  execution_uid: 1000
+  execution_gid: 1000
+  default_cwd: "/workspace"
+  default_timeout: "10m"
+  max_timeout: "1h"
+  termination_grace: "2s"
+  max_concurrent_executions: 8
+  max_request_bytes: 1048576
+  max_output_bytes: 10485760
+  max_env_vars: 128
+  max_env_key_bytes: 128
+  max_env_value_bytes: 8192
+  max_env_total_bytes: 65536
+  max_log_page_events: 256
+  max_log_page_bytes: 1048576
+  completed_retention: "1h"
+  max_retained_executions: 100
+  sse_write_timeout: "15s"

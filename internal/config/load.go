@@ -21,6 +21,7 @@ type fileConfig struct {
 	Data      *fileData      `yaml:"data"`
 	Runtime   *fileRuntime   `yaml:"runtime"`
 	Limits    *fileLimits    `yaml:"limits"`
+	Runner    *fileRunner    `yaml:"runner"`
 	Reconcile *fileReconcile `yaml:"reconcile"`
 }
 
@@ -68,6 +69,29 @@ type fileResources struct {
 	CPUQuotaMillis *int64 `yaml:"cpu_quota_millis"`
 	MemoryMiB      *int64 `yaml:"memory_mib"`
 	PIDs           *int64 `yaml:"pids"`
+}
+
+// fileRunner 对应 runner 分组的文件字段；duration 保留字符串形式，
+// 统一经 overrideDuration 转换并给出稳定字段路径。
+type fileRunner struct {
+	ExecutionUID            *uint32 `yaml:"execution_uid"`
+	ExecutionGID            *uint32 `yaml:"execution_gid"`
+	DefaultCWD              *string `yaml:"default_cwd"`
+	DefaultTimeout          *string `yaml:"default_timeout"`
+	MaxTimeout              *string `yaml:"max_timeout"`
+	TerminationGrace        *string `yaml:"termination_grace"`
+	MaxConcurrentExecutions *int    `yaml:"max_concurrent_executions"`
+	MaxRequestBytes         *int64  `yaml:"max_request_bytes"`
+	MaxOutputBytes          *int64  `yaml:"max_output_bytes"`
+	MaxEnvVars              *int    `yaml:"max_env_vars"`
+	MaxEnvKeyBytes          *int    `yaml:"max_env_key_bytes"`
+	MaxEnvValueBytes        *int    `yaml:"max_env_value_bytes"`
+	MaxEnvTotalBytes        *int64  `yaml:"max_env_total_bytes"`
+	MaxLogPageEvents        *int    `yaml:"max_log_page_events"`
+	MaxLogPageBytes         *int64  `yaml:"max_log_page_bytes"`
+	CompletedRetention      *string `yaml:"completed_retention"`
+	MaxRetainedExecutions   *int    `yaml:"max_retained_executions"`
+	SSEWriteTimeout         *string `yaml:"sse_write_timeout"`
 }
 
 // fileReconcile 对应 reconcile 分组的文件字段。
@@ -182,6 +206,60 @@ func (f fileConfig) apply(base Config) (Config, error) {
 				f.Limits.MaxResources.MemoryMiB,
 			)
 			override(&cfg.Limits.MaxResources.MaxPIDs, f.Limits.MaxResources.PIDs)
+		}
+	}
+
+	if f.Runner != nil {
+		override(&cfg.Runner.ExecutionUID, f.Runner.ExecutionUID)
+		override(&cfg.Runner.ExecutionGID, f.Runner.ExecutionGID)
+		override(&cfg.Runner.DefaultCWD, f.Runner.DefaultCWD)
+		if err := overrideDuration(
+			&cfg.Runner.DefaultTimeout,
+			f.Runner.DefaultTimeout,
+			"runner.default_timeout",
+		); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(
+			&cfg.Runner.MaxTimeout,
+			f.Runner.MaxTimeout,
+			"runner.max_timeout",
+		); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(
+			&cfg.Runner.TerminationGrace,
+			f.Runner.TerminationGrace,
+			"runner.termination_grace",
+		); err != nil {
+			return Config{}, err
+		}
+		override(
+			&cfg.Runner.MaxConcurrentExecutions,
+			f.Runner.MaxConcurrentExecutions,
+		)
+		override(&cfg.Runner.MaxRequestBytes, f.Runner.MaxRequestBytes)
+		override(&cfg.Runner.MaxOutputBytes, f.Runner.MaxOutputBytes)
+		override(&cfg.Runner.MaxEnvVars, f.Runner.MaxEnvVars)
+		override(&cfg.Runner.MaxEnvKeyBytes, f.Runner.MaxEnvKeyBytes)
+		override(&cfg.Runner.MaxEnvValueBytes, f.Runner.MaxEnvValueBytes)
+		override(&cfg.Runner.MaxEnvTotalBytes, f.Runner.MaxEnvTotalBytes)
+		override(&cfg.Runner.MaxLogPageEvents, f.Runner.MaxLogPageEvents)
+		override(&cfg.Runner.MaxLogPageBytes, f.Runner.MaxLogPageBytes)
+		if err := overrideDuration(
+			&cfg.Runner.CompletedRetention,
+			f.Runner.CompletedRetention,
+			"runner.completed_retention",
+		); err != nil {
+			return Config{}, err
+		}
+		override(&cfg.Runner.MaxRetainedExecutions, f.Runner.MaxRetainedExecutions)
+		if err := overrideDuration(
+			&cfg.Runner.SSEWriteTimeout,
+			f.Runner.SSEWriteTimeout,
+			"runner.sse_write_timeout",
+		); err != nil {
+			return Config{}, err
 		}
 	}
 

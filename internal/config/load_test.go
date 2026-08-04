@@ -100,6 +100,25 @@ limits:
     cpu_quota_millis: 1000
     memory_mib: 2048
     pids: 512
+runner:
+  execution_uid: 2000
+  execution_gid: 2001
+  default_cwd: "/workspace/jobs"
+  default_timeout: "30s"
+  max_timeout: "5m"
+  termination_grace: "3s"
+  max_concurrent_executions: 4
+  max_request_bytes: 2048
+  max_output_bytes: 4096
+  max_env_vars: 16
+  max_env_key_bytes: 64
+  max_env_value_bytes: 512
+  max_env_total_bytes: 1024
+  max_log_page_events: 32
+  max_log_page_bytes: 2048
+  completed_retention: "30m"
+  max_retained_executions: 25
+  sse_write_timeout: "4s"
 reconcile:
   interval: "5s"
   runner_ready_timeout: "20s"
@@ -146,6 +165,26 @@ reconcile:
 				MaxMemoryMiB:      2048,
 				MaxPIDs:           512,
 			},
+		},
+		Runner: RunnerConfig{
+			ExecutionUID:            2000,
+			ExecutionGID:            2001,
+			DefaultCWD:              "/workspace/jobs",
+			DefaultTimeout:          30 * time.Second,
+			MaxTimeout:              5 * time.Minute,
+			TerminationGrace:        3 * time.Second,
+			MaxConcurrentExecutions: 4,
+			MaxRequestBytes:         2048,
+			MaxOutputBytes:          4096,
+			MaxEnvVars:              16,
+			MaxEnvKeyBytes:          64,
+			MaxEnvValueBytes:        512,
+			MaxEnvTotalBytes:        1024,
+			MaxLogPageEvents:        32,
+			MaxLogPageBytes:         2048,
+			CompletedRetention:      30 * time.Minute,
+			MaxRetainedExecutions:   25,
+			SSEWriteTimeout:         4 * time.Second,
 		},
 		Reconcile: ReconcileConfig{
 			Interval:           5 * time.Second,

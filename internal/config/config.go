@@ -2,7 +2,7 @@
 // 与启动前安全校验。
 //
 // 本模块是配置字段和默认值的 source of truth,负责用 Go 类型表示 server、
-// data、runtime、limits 和 reconcile 配置,提供可直接生成完整 resolved
+// data、runtime、limits、runner 和 reconcile 配置,提供可直接生成完整 resolved
 // spec 的默认值,从显式路径加载 YAML 覆盖默认值,并在启动前一次性拒绝
 // 不安全或互相矛盾的配置。它不创建目录、不监听端口,也不连接外部依赖;
 // 这些能力由后续里程碑实现。
@@ -28,6 +28,8 @@ type Config struct {
 	Runtime RuntimeConfig
 	// Limits 是 TTL 与资源的默认值和服务端上限。
 	Limits LimitsConfig
+	// Runner 是容器内执行身份、路径与有界资源限制配置。
+	Runner RunnerConfig
 	// Reconcile 是期望状态收敛的节奏与超时配置。
 	Reconcile ReconcileConfig
 }
@@ -82,6 +84,49 @@ type LimitsConfig struct {
 	MaxResources domain.ResourceBounds
 }
 
+// RunnerConfig 描述 runnerd 的固定执行身份、工作目录和服务端执行上限。
+//
+// 这些值由控制面提供，普通 execution 请求只能缩小 timeout 等可请求值，
+// 不能扩大这里的上限。字节数使用 int64，条目数使用 int，避免单位含糊。
+type RunnerConfig struct {
+	// ExecutionUID 是 runnerd 永久降权后及其子进程使用的 Linux UID。
+	ExecutionUID uint32
+	// ExecutionGID 是 runnerd 永久降权后及其子进程使用的 Linux GID。
+	ExecutionGID uint32
+	// DefaultCWD 是请求未指定 cwd 时使用的容器内绝对工作目录。
+	DefaultCWD string
+	// DefaultTimeout 是请求未指定 timeout 时的执行超时。
+	DefaultTimeout time.Duration
+	// MaxTimeout 是单次 execution 可请求的最大执行时长。
+	MaxTimeout time.Duration
+	// TerminationGrace 是发送 TERM 后等待进程组退出再发送 KILL 的时长。
+	TerminationGrace time.Duration
+	// MaxConcurrentExecutions 是单个 sandbox 可同时运行的 execution 数量上限。
+	MaxConcurrentExecutions int
+	// MaxRequestBytes 是 runner HTTP 请求体允许的最大字节数。
+	MaxRequestBytes int64
+	// MaxOutputBytes 是单次 execution 的 stdout 与 stderr 合计保留上限。
+	MaxOutputBytes int64
+	// MaxEnvVars 是单次 execution 可提供的环境变量条目上限。
+	MaxEnvVars int
+	// MaxEnvKeyBytes 是单个环境变量名称的 UTF-8 字节上限。
+	MaxEnvKeyBytes int
+	// MaxEnvValueBytes 是单个环境变量值的 UTF-8 字节上限。
+	MaxEnvValueBytes int
+	// MaxEnvTotalBytes 是所有环境变量名称和值合计的 UTF-8 字节上限。
+	MaxEnvTotalBytes int64
+	// MaxLogPageEvents 是一次后台日志查询可返回的事件数上限。
+	MaxLogPageEvents int
+	// MaxLogPageBytes 是一次后台日志查询可返回的编码前数据字节上限。
+	MaxLogPageBytes int64
+	// CompletedRetention 是 terminal execution 至少保留供状态和日志查询的时长。
+	CompletedRetention time.Duration
+	// MaxRetainedExecutions 是单个 sandbox 可保留的 terminal execution 数量上限。
+	MaxRetainedExecutions int
+	// SSEWriteTimeout 是单次向客户端写出 SSE event 的最长等待时间。
+	SSEWriteTimeout time.Duration
+}
+
 // ReconcileConfig 描述期望状态收敛循环的节奏与阶段超时。
 type ReconcileConfig struct {
 	// Interval 是周期性扫描待收敛 sandbox 的间隔。
@@ -132,6 +177,26 @@ func Default() Config {
 				MaxMemoryMiB:      8192,
 				MaxPIDs:           1024,
 			},
+		},
+		Runner: RunnerConfig{
+			ExecutionUID:            1000,
+			ExecutionGID:            1000,
+			DefaultCWD:              "/workspace",
+			DefaultTimeout:          10 * time.Minute,
+			MaxTimeout:              time.Hour,
+			TerminationGrace:        2 * time.Second,
+			MaxConcurrentExecutions: 8,
+			MaxRequestBytes:         1_048_576,
+			MaxOutputBytes:          10_485_760,
+			MaxEnvVars:              128,
+			MaxEnvKeyBytes:          128,
+			MaxEnvValueBytes:        8_192,
+			MaxEnvTotalBytes:        65_536,
+			MaxLogPageEvents:        256,
+			MaxLogPageBytes:         1_048_576,
+			CompletedRetention:      time.Hour,
+			MaxRetainedExecutions:   100,
+			SSEWriteTimeout:         15 * time.Second,
 		},
 		Reconcile: ReconcileConfig{
 			Interval:           2 * time.Second,
