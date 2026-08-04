@@ -11,6 +11,7 @@ import (
 )
 
 type wait4Func func(int, *syscall.WaitStatus, int, *syscall.Rusage) (int, error)
+type killFunc func(int, syscall.Signal) error
 
 type reapResult struct {
 	runnerStatus syscall.WaitStatus
@@ -39,7 +40,12 @@ func run(args []string) int {
 		return 127
 	}
 
-	result, err := superviseRunner(command.Process.Pid, signals, syscall.Wait4)
+	result, err := superviseRunner(
+		command.Process.Pid,
+		signals,
+		syscall.Wait4,
+		syscall.Kill,
+	)
 	if err != nil {
 		return 1
 	}
@@ -57,7 +63,11 @@ func superviseRunner(
 	runnerPID int,
 	signals <-chan os.Signal,
 	wait4 wait4Func,
+	kill killFunc,
 ) (reapResult, error) {
+	if runnerPID <= 0 {
+		return reapResult{}, errors.New("runner PID must be positive")
+	}
 	var result reapResult
 	for received := range signals {
 		value, ok := received.(syscall.Signal)
@@ -65,7 +75,9 @@ func superviseRunner(
 			continue
 		}
 		if value != syscall.SIGCHLD {
-			_ = syscall.Kill(-runnerPID, value)
+			if err := forwardRunnerSignal(runnerPID, value, kill); err != nil {
+				return reapResult{}, err
+			}
 			continue
 		}
 
@@ -78,6 +90,31 @@ func superviseRunner(
 		}
 	}
 	return reapResult{}, errors.New("sandbox-init signal channel closed before runner was reaped")
+}
+
+// forwardRunnerSignal 只把容器生命周期信号发送给 runner 的独立进程组。
+//
+// 负 PGID 保证不会误发给 sandbox-init 自己；runner 已先退出时 Kill 返回
+// ESRCH 属于正常竞态，不能把 init 误判为内部失败。
+func forwardRunnerSignal(
+	runnerPID int,
+	value syscall.Signal,
+	kill killFunc,
+) error {
+	if runnerPID <= 0 {
+		return errors.New("runner PID must be positive")
+	}
+	switch value {
+	case syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP:
+	case syscall.SIGCHLD:
+		return nil
+	default:
+		return nil
+	}
+	if err := kill(-runnerPID, value); err != nil && !errors.Is(err, syscall.ESRCH) {
+		return err
+	}
+	return nil
 }
 
 // drainChildren 使用 WNOHANG 排空当前所有 zombie；runner 状态单独保存，其他

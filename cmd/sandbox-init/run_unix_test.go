@@ -3,9 +3,15 @@
 package main
 
 import (
+	"bufio"
 	"os"
+	"os/exec"
+	"os/signal"
+	"strconv"
+	"strings"
 	"syscall"
 	"testing"
+	"time"
 )
 
 // TestSuperviseRunnerUsesSingleDrainLoop 验证一次 SIGCHLD 会排空多名 child，
@@ -34,12 +40,93 @@ func TestSuperviseRunnerUsesSingleDrainLoop(t *testing.T) {
 	}
 	signals := make(chan os.Signal, 1)
 	signals <- syscall.SIGCHLD
-	result, err := superviseRunner(runnerPID, signals, wait4)
+	result, err := superviseRunner(runnerPID, signals, wait4, func(int, syscall.Signal) error { return nil })
 	if err != nil {
 		t.Fatalf("supervise runner: %v", err)
 	}
 	if calls != len(responses) || result.orphanCount != 1 || !result.runnerStatus.Exited() || result.runnerStatus.ExitStatus() != 7 {
 		t.Fatalf("unexpected reap result: calls=%d result=%+v", calls, result)
+	}
+}
+
+// TestForwardRunnerSignalTargetsOnlyRunnerGroup 验证三种允许信号使用负 PGID，
+// SIGCHLD 和其他信号不转发，runner 先退出产生的 ESRCH 被忽略。
+func TestForwardRunnerSignalTargetsOnlyRunnerGroup(t *testing.T) {
+	for _, value := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP} {
+		called := false
+		err := forwardRunnerSignal(42, value, func(pid int, got syscall.Signal) error {
+			called = true
+			if pid != -42 || got != value {
+				t.Fatalf("kill target: pid=%d signal=%d", pid, got)
+			}
+			return syscall.ESRCH
+		})
+		if err != nil || !called {
+			t.Fatalf("forward %d: called=%t err=%v", value, called, err)
+		}
+	}
+	for _, value := range []syscall.Signal{syscall.SIGCHLD, syscall.SIGUSR1} {
+		if err := forwardRunnerSignal(42, value, func(int, syscall.Signal) error {
+			t.Fatal("non-lifecycle signal was forwarded")
+			return nil
+		}); err != nil {
+			t.Fatalf("ignore signal %d: %v", value, err)
+		}
+	}
+	if err := forwardRunnerSignal(0, syscall.SIGTERM, syscall.Kill); err == nil {
+		t.Fatal("invalid runner PID accepted")
+	}
+}
+
+// TestForwardRunnerSignalsToHelperProcessGroup 在真实 Linux 进程组中证明 helper
+// 能分别收到 TERM、INT 与 HUP，且目标不是测试进程本身。
+func TestForwardRunnerSignalsToHelperProcessGroup(t *testing.T) {
+	for _, value := range []syscall.Signal{syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP} {
+		t.Run(strconv.Itoa(int(value)), func(t *testing.T) {
+			command := exec.Command(os.Args[0], "-test.run=TestSandboxInitSignalHelper")
+			command.Env = append(os.Environ(), "MINISANDBOX_INIT_SIGNAL_HELPER=1")
+			command.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+			stdout, err := command.StdoutPipe()
+			if err != nil {
+				t.Fatalf("helper stdout: %v", err)
+			}
+			if err := command.Start(); err != nil {
+				t.Fatalf("start helper: %v", err)
+			}
+			reader := bufio.NewReader(stdout)
+			ready, err := reader.ReadString('\n')
+			if err != nil || strings.TrimSpace(ready) != "ready" {
+				t.Fatalf("helper readiness: %q %v", ready, err)
+			}
+			if err := forwardRunnerSignal(command.Process.Pid, value, syscall.Kill); err != nil {
+				t.Fatalf("forward signal: %v", err)
+			}
+			seen, err := reader.ReadString('\n')
+			if err != nil || strings.TrimSpace(seen) != strconv.Itoa(int(value)) {
+				t.Fatalf("helper signal: %q %v", seen, err)
+			}
+			if err := command.Wait(); err != nil {
+				t.Fatalf("wait helper: %v", err)
+			}
+		})
+	}
+}
+
+// TestSandboxInitSignalHelper 是真实信号转发测试使用的隔离子进程入口。
+func TestSandboxInitSignalHelper(t *testing.T) {
+	if os.Getenv("MINISANDBOX_INIT_SIGNAL_HELPER") != "1" {
+		return
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	_, _ = os.Stdout.WriteString("ready\n")
+	select {
+	case received := <-signals:
+		value := received.(syscall.Signal)
+		_, _ = os.Stdout.WriteString(strconv.Itoa(int(value)) + "\n")
+	case <-time.After(5 * time.Second):
+		os.Exit(3)
 	}
 }
 
