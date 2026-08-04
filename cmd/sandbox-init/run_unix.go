@@ -39,6 +39,9 @@ func run(args []string) int {
 	if err := command.Start(); err != nil {
 		return 127
 	}
+	// wait4 取代 Cmd.Wait 后，os.Process 仍可能持有 Linux pidfd；Release 只释放
+	// Go 侧句柄而不会再次 wait，必须在所有 supervise 返回路径执行。
+	defer command.Process.Release()
 
 	result, err := superviseRunner(
 		command.Process.Pid,
