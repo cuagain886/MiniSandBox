@@ -95,12 +95,14 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 
 // TestHealthRejectsEmptyToken 验证 runnerclient 不会发出未鉴权的内部请求。
 func TestHealthRejectsEmptyToken(t *testing.T) {
-	client := New("unused", "")
-	client.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		t.Fatal("empty-token request reached transport")
-		return nil, nil
-	})}
-	if _, err := client.Health(context.Background(), runnerbootstrap.CurrentProtocolVersion); err == nil {
-		t.Fatal("empty runner token accepted")
+	for _, token := range []string{"", " \t"} {
+		client := New("unused", token)
+		client.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			t.Fatal("empty-token request reached transport")
+			return nil, nil
+		})}
+		if _, err := client.Health(context.Background(), runnerbootstrap.CurrentProtocolVersion); err == nil {
+			t.Fatalf("empty runner token accepted: %q", token)
+		}
 	}
 }

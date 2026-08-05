@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"strings"
 	"time"
 
 	"minisandbox/pkg/protocol"
@@ -39,7 +40,7 @@ func New(socketPath, token string) *Client {
 // Health 验证当前 sandbox 的 runner 是否已就绪且与容器 label 声明的协议
 // 版本精确一致，成功时返回当前 Linux netns identity。
 func (c *Client) Health(ctx context.Context, expectedProtocolVersion int) (protocol.RunnerHealth, error) {
-	if c == nil || c.token == "" {
+	if c == nil || strings.TrimSpace(c.token) == "" {
 		return protocol.RunnerHealth{}, errors.New("runner bearer token is required")
 	}
 	if expectedProtocolVersion <= 0 {

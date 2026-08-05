@@ -108,6 +108,9 @@ func NewRunnerProbe(
 	if timeout <= 0 {
 		return nil, errors.New("runner ready timeout must be positive")
 	}
+	if strings.TrimSpace(token) == "" {
+		return nil, errors.New("runner bearer token is required")
+	}
 	return &Probe{
 		socketRoot:    filepath.Clean(socketRoot),
 		timeout:       timeout,

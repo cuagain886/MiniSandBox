@@ -82,7 +82,7 @@ func TestRunnerProbeReturnsProtocolMismatch(t *testing.T) {
 
 // TestRunnerProbeUnixSocketMissing 验证不存在的 socket 会等待到 ready timeout。
 func TestRunnerProbeUnixSocketMissing(t *testing.T) {
-	probe, err := NewRunnerProbe(shortTempDir(t), 30*time.Millisecond, "")
+	probe, err := NewRunnerProbe(shortTempDir(t), 30*time.Millisecond, testProbeToken)
 	if err != nil {
 		t.Fatalf("new runner probe: %v", err)
 	}
@@ -105,7 +105,7 @@ func TestRunnerProbeWaitsForDelayedUnixSocket(t *testing.T) {
 	if err := os.Mkdir(directory, 0o700); err != nil {
 		t.Fatalf("create socket directory: %v", err)
 	}
-	probe, err := NewRunnerProbe(root, time.Second, "")
+	probe, err := NewRunnerProbe(root, time.Second, testProbeToken)
 	if err != nil {
 		t.Fatalf("new runner probe: %v", err)
 	}
@@ -125,8 +125,11 @@ func TestRunnerProbeWaitsForDelayedUnixSocket(t *testing.T) {
 		}
 		server := &http.Server{Handler: http.HandlerFunc(func(
 			writer http.ResponseWriter,
-			_ *http.Request,
+			request *http.Request,
 		) {
+			if request.Header.Get("Authorization") != "Bearer "+testProbeToken {
+				t.Errorf("authorization header: %q", request.Header.Get("Authorization"))
+			}
 			writeReadyHealth(t, writer)
 		})}
 		shutdown <- func() {
@@ -195,11 +198,16 @@ func startProbeServer(
 	if err != nil {
 		t.Fatalf("listen Unix socket: %v", err)
 	}
-	server := &http.Server{Handler: handler}
+	server := &http.Server{Handler: http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if request.Header.Get("Authorization") != "Bearer "+testProbeToken {
+			t.Errorf("authorization header: %q", request.Header.Get("Authorization"))
+		}
+		handler(writer, request)
+	})}
 	go func() {
 		_ = server.Serve(listener)
 	}()
-	probe, err := NewRunnerProbe(root, time.Second, "")
+	probe, err := NewRunnerProbe(root, time.Second, testProbeToken)
 	if err != nil {
 		t.Fatalf("new runner probe: %v", err)
 	}
