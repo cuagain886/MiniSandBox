@@ -109,7 +109,12 @@ func (s *EventSequencer) sequenceEvent(sequence uint64, draft protocol.Execution
 	if draft.ExecutionID != "" || draft.Sequence != 0 || !draft.Timestamp.IsZero() {
 		return protocol.ExecutionEvent{}, ErrInvalidEventDraft
 	}
-	if (sequence == 1) != (draft.Type == protocol.EventStarted) {
+	if draft.Type == protocol.EventStarted && sequence != 1 {
+		return protocol.ExecutionEvent{}, ErrInvalidEventDraft
+	}
+	// 校验或启动失败没有 started 事件，此时 failed terminal 自身使用 sequence 1；
+	// stdout/stderr、limit、cancel、timeout 和 exited 均不允许抢占首事件。
+	if sequence == 1 && draft.Type != protocol.EventStarted && draft.Type != protocol.EventFailed {
 		return protocol.ExecutionEvent{}, ErrInvalidEventDraft
 	}
 	draft.ExecutionID = string(s.executionID)

@@ -114,3 +114,24 @@ func TestEventSequencerRejectsPublishAfterClose(t *testing.T) {
 		t.Fatalf("publish after close: %v", err)
 	}
 }
+
+// TestEventSequencerAllowsFailedAsFirstEvent 验证校验或启动失败无需伪造 started，failed terminal 可直接使用 sequence 1。
+func TestEventSequencerAllowsFailedAsFirstEvent(t *testing.T) {
+	sequencer, err := NewEventSequencer("exec_test", fixedClock{value: time.Now()})
+	if err != nil {
+		t.Fatalf("new sequencer: %v", err)
+	}
+	defer sequencer.Close()
+	duration := int64(0)
+	truncated := false
+	event, err := sequencer.Publish(context.Background(), protocol.ExecutionEvent{
+		Type:            protocol.EventFailed,
+		DurationMS:      &duration,
+		OutputTruncated: &truncated,
+		ErrorCode:       "START_FAILED",
+		Message:         "execution could not start",
+	})
+	if err != nil || event.Sequence != 1 || event.Type != protocol.EventFailed {
+		t.Fatalf("first failed event: %+v err=%v", event, err)
+	}
+}
