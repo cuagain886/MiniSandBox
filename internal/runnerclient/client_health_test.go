@@ -43,8 +43,11 @@ func TestHealthContract(t *testing.T) {
 			if err != nil {
 				t.Fatalf("marshal health: %v", err)
 			}
-			client := New("unused", "")
-			client.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+			client := New("unused", "test-token")
+			client.httpClient = &http.Client{Transport: roundTripFunc(func(request *http.Request) (*http.Response, error) {
+				if request.Header.Get("Authorization") != "Bearer test-token" {
+					t.Fatalf("authorization header: %q", request.Header.Get("Authorization"))
+				}
 				return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(string(body)))}, nil
 			})}
 			got, err := client.Health(context.Background(), test.expected)
@@ -73,7 +76,7 @@ func TestHealthRejectsUnknownMissingAndTrailingFields(t *testing.T) {
 		`{"status":"ok","service":"runnerd","version":"test","protocol_version":1,"netns_identity":"linux-netns:4:99"}{}`,
 	}
 	for _, fixture := range fixtures {
-		client := New("unused", "")
+		client := New("unused", "test-token")
 		client.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
 			return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(fixture))}, nil
 		})}
@@ -88,4 +91,16 @@ type roundTripFunc func(*http.Request) (*http.Response, error)
 
 func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {
 	return f(request)
+}
+
+// TestHealthRejectsEmptyToken 验证 runnerclient 不会发出未鉴权的内部请求。
+func TestHealthRejectsEmptyToken(t *testing.T) {
+	client := New("unused", "")
+	client.httpClient = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
+		t.Fatal("empty-token request reached transport")
+		return nil, nil
+	})}
+	if _, err := client.Health(context.Background(), runnerbootstrap.CurrentProtocolVersion); err == nil {
+		t.Fatal("empty runner token accepted")
+	}
 }

@@ -8,6 +8,7 @@ package runner
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net"
 	"net/http"
 	"time"
@@ -19,7 +20,7 @@ import (
 // NewServer 创建 runnerd 内部 HTTP handler。
 //
 // handler 只暴露当前 sandbox 的健康检查和执行资源，不接受 sandbox ID。
-func NewServer(version, token string) http.Handler {
+func NewServer(version, token string) (http.Handler, error) {
 	return newServer(version, token, currentNetNSIdentity)
 }
 
@@ -29,7 +30,10 @@ func newServer(
 	version,
 	token string,
 	readNetNSIdentity func() (string, error),
-) http.Handler {
+) (http.Handler, error) {
+	if version == "" {
+		return nil, errors.New("runner version is required")
+	}
 	mux := http.NewServeMux()
 	mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, _ *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

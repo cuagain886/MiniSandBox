@@ -65,7 +65,12 @@ func main() {
 	defer stop()
 
 	slog.Info("runnerd listening", "socket", *socketPath, "version", version)
-	if err := runner.Serve(ctx, listener, runner.NewServer(version, token)); err != nil {
+	handler, err := runner.NewServer(version, token)
+	if err != nil {
+		slog.Error("configure runner server", "error", err)
+		os.Exit(1)
+	}
+	if err := runner.Serve(ctx, listener, handler); err != nil {
 		slog.Error("runnerd stopped", "error", err)
 		os.Exit(1)
 	}

@@ -14,10 +14,14 @@ import (
 // TestHealthReturnsProtocolAndNetNSIdentity 验证 health 返回固定 service、精确
 // 协议版本和从可信 reader 获得的当前 netns identity。
 func TestHealthReturnsProtocolAndNetNSIdentity(t *testing.T) {
-	handler := newServer("test-build", "", func() (string, error) {
+	handler, err := newServer("test-build", "test-token", func() (string, error) {
 		return "linux-netns:4:4026532000", nil
 	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
 	response := httptest.NewRecorder()
 	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
@@ -34,11 +38,16 @@ func TestHealthReturnsProtocolAndNetNSIdentity(t *testing.T) {
 
 // TestHealthFailsClosedWhenNetNSUnavailable 验证 stat/格式读取失败不会返回就绪。
 func TestHealthFailsClosedWhenNetNSUnavailable(t *testing.T) {
-	handler := newServer("test-build", "", func() (string, error) {
+	handler, err := newServer("test-build", "test-token", func() (string, error) {
 		return "", errors.New("stat failed")
 	})
+	if err != nil {
+		t.Fatalf("new server: %v", err)
+	}
 	response := httptest.NewRecorder()
-	handler.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/healthz", nil))
+	request := httptest.NewRequest(http.MethodGet, "/healthz", nil)
+	request.Header.Set("Authorization", "Bearer test-token")
+	handler.ServeHTTP(response, request)
 	if response.Code != http.StatusServiceUnavailable {
 		t.Fatalf("status: got %d, want %d", response.Code, http.StatusServiceUnavailable)
 	}
