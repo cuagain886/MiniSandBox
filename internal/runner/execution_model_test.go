@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"testing"
+	"time"
 
 	"minisandbox/pkg/protocol"
 )
@@ -121,11 +122,7 @@ func TestMapExecutionStateUsesExplicitWireMapping(t *testing.T) {
 
 func pendingExecution(t *testing.T) *Execution {
 	t.Helper()
-	execution, err := NewPendingExecution("exec_test")
-	if err != nil {
-		t.Fatalf("new execution: %v", err)
-	}
-	return execution
+	return newPendingExecution("exec_test", time.Date(2026, 8, 5, 1, 2, 3, 0, time.UTC))
 }
 
 func executionInState(t *testing.T, state ExecutionState) *Execution {
@@ -159,7 +156,7 @@ func executionInState(t *testing.T, state ExecutionState) *Execution {
 
 func assertDescriptorEqual(t *testing.T, got, want ExecutionDescriptor) {
 	t.Helper()
-	if got.ID != want.ID || got.State != want.State || got.TerminationReason != want.TerminationReason {
+	if got.ID != want.ID || got.State != want.State || !got.CreatedAt.Equal(want.CreatedAt) || got.TerminationReason != want.TerminationReason {
 		t.Fatalf("descriptor changed: got %+v, want %+v", got, want)
 	}
 	if (got.ExitCode == nil) != (want.ExitCode == nil) || (got.ExitCode != nil && *got.ExitCode != *want.ExitCode) {

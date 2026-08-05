@@ -3,6 +3,7 @@ package runner
 import (
 	"errors"
 	"sync"
+	"time"
 
 	"minisandbox/pkg/protocol"
 )
@@ -61,6 +62,8 @@ type ExecutionDescriptor struct {
 	ID ExecutionID
 	// State 是快照生成时的内部状态。
 	State ExecutionState
+	// CreatedAt 是 factory 接受 execution 时取得的 UTC 时间。
+	CreatedAt time.Time
 	// TerminationReason 仅在终态中非空。
 	TerminationReason TerminationReason
 	// ExitCode 仅在 Exited 中存在，且允许为任意进程退出码。
@@ -72,16 +75,13 @@ type Execution struct {
 	mu                sync.RWMutex
 	id                ExecutionID
 	state             ExecutionState
+	createdAt         time.Time
 	terminationReason TerminationReason
 	exitCode          *int
 }
 
-// NewPendingExecution 创建处于 Pending 的 execution；ID 必须由受信任 factory 生成。
-func NewPendingExecution(id ExecutionID) (*Execution, error) {
-	if id == "" {
-		return nil, errors.New("execution ID is required")
-	}
-	return &Execution{id: id, state: ExecutionPending}, nil
+func newPendingExecution(id ExecutionID, createdAt time.Time) *Execution {
+	return &Execution{id: id, state: ExecutionPending, createdAt: createdAt}
 }
 
 // Descriptor 返回与内部存储解耦的当前状态快照。
@@ -91,6 +91,7 @@ func (e *Execution) Descriptor() ExecutionDescriptor {
 	descriptor := ExecutionDescriptor{
 		ID:                e.id,
 		State:             e.state,
+		CreatedAt:         e.createdAt,
 		TerminationReason: e.terminationReason,
 	}
 	if e.exitCode != nil {
