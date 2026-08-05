@@ -19,7 +19,6 @@ const (
 	artifactDirectory       = "/opt/minisandbox"
 	sandboxInitPath         = artifactDirectory + "/sandbox-init"
 	runnerPath              = artifactDirectory + "/runnerd"
-	guestRuntimeDirectory   = "/run/minisandbox"
 	noNewPrivilegesSecurity = "no-new-privileges:true"
 )
 
@@ -104,7 +103,7 @@ func buildContainerCreateOptions(
 				{
 					Type:   mobymount.TypeBind,
 					Source: names.RuntimeDirectory,
-					Target: guestRuntimeDirectory,
+					Target: runnerbootstrap.RuntimeDirectory,
 				},
 			},
 		},

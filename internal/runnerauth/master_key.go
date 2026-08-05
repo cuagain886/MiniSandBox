@@ -17,3 +17,11 @@ func (k *MasterKey) Clear() {
 		clear(k[:])
 	}
 }
+
+func allZero(value []byte) bool {
+	var combined byte
+	for _, item := range value {
+		combined |= item
+	}
+	return combined == 0
+}

@@ -56,11 +56,3 @@ func LoadMasterKey(path string) (key MasterKey, err error) {
 	}
 	return key, nil
 }
-
-func allZero(value []byte) bool {
-	var combined byte
-	for _, item := range value {
-		combined |= item
-	}
-	return combined == 0
-}

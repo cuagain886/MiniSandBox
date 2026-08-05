@@ -4,10 +4,14 @@ import (
 	"math"
 	"path/filepath"
 	"reflect"
+	"strings"
 	"testing"
 
 	mobymount "github.com/moby/moby/api/types/mount"
+	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
+	"minisandbox/internal/runnerauth"
+	"minisandbox/internal/runnerbootstrap"
 )
 
 // TestBuildContainerCreateOptionsAppliesSecurityBoundary 逐项验证 Phase 1 固定安全配置。
@@ -84,8 +88,9 @@ func TestBuildContainerCreateOptionsAppliesSecurityBoundary(t *testing.T) {
 		host.Mounts[1],
 		mobymount.TypeBind,
 		names.RuntimeDirectory,
-		guestRuntimeDirectory,
+		runnerbootstrap.RuntimeDirectory,
 	)
+	assertRunnerCredentialIsNotInContainerMetadata(t, options)
 	if host.NanoCPUs != 500_000_000 ||
 		host.Memory != 512*1024*1024 ||
 		host.PidsLimit == nil ||
@@ -97,6 +102,37 @@ func TestBuildContainerCreateOptionsAppliesSecurityBoundary(t *testing.T) {
 	}
 	if options.NetworkingConfig != nil || options.Image != "" {
 		t.Fatalf("unexpected create shortcut config: %#v", options)
+	}
+}
+
+// assertRunnerCredentialIsNotInContainerMetadata 验证 runner 凭据只能通过受管运行时目录中的
+// 一次性文件传递，不会进入可被 inspect 或进程参数读取的环境变量、命令和 labels。
+func assertRunnerCredentialIsNotInContainerMetadata(
+	t *testing.T,
+	options mobyclient.ContainerCreateOptions,
+) {
+	t.Helper()
+	const credentialCanary = "runner-credential-secret-canary"
+	config := options.Config
+	metadata := append([]string(nil), config.Env...)
+	metadata = append(metadata, config.Entrypoint...)
+	metadata = append(metadata, config.Cmd...)
+	for key, value := range config.Labels {
+		metadata = append(metadata, key, value)
+	}
+	joined := strings.Join(metadata, "\x00")
+	if strings.Contains(joined, credentialCanary) ||
+		strings.Contains(joined, runnerauth.CredentialFileName) {
+		t.Fatalf("runner credential leaked into container metadata: %q", joined)
+	}
+	credentialPath := filepath.Join(
+		runnerbootstrap.RuntimeDirectory,
+		runnerauth.CredentialFileName,
+	)
+	for _, mount := range options.HostConfig.Mounts {
+		if mount.Target == credentialPath {
+			t.Fatalf("credential received a dedicated Docker mount: %#v", mount)
+		}
 	}
 }
 
