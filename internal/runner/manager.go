@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"time"
 
 	"minisandbox/pkg/protocol"
 )
@@ -39,6 +40,7 @@ type managedExecution struct {
 	cancelDone      chan struct{}
 	cancelErr       error
 	terminalDone    chan struct{}
+	completedAt     time.Time
 }
 
 // CancellationHandler 把内部取消原因交给单个 execution 的 arbiter 与进程组清理流程。
@@ -200,8 +202,15 @@ func (m *Manager) Descriptor(id ExecutionID) (ExecutionDescriptor, error) {
 // Complete 在 execution 已进入终态后释放一次并发槽位，同时保留其描述符供后续查询。
 // 重复调用保持幂等；Pending 或 Running 不能伪装为已完成。
 func (m *Manager) Complete(id ExecutionID) error {
+	return m.completeAt(id, time.Now().UTC())
+}
+
+func (m *Manager) completeAt(id ExecutionID, completedAt time.Time) error {
 	if m == nil {
 		return ErrExecutionNotFound
+	}
+	if completedAt.IsZero() {
+		return errors.New("execution completion time is required")
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -214,6 +223,7 @@ func (m *Manager) Complete(id ExecutionID) error {
 	}
 	if entry.active {
 		entry.active = false
+		entry.completedAt = completedAt.UTC()
 		m.active--
 		close(entry.terminalDone)
 		m.notifyChangedLocked()
