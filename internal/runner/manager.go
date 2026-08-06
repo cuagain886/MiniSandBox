@@ -17,6 +17,8 @@ var (
 	ErrExecutionStillActive = errors.New("execution is still active")
 	// ErrCancellationHandlerAlreadySet 表示同一 execution 被重复绑定了不同的清理控制器。
 	ErrCancellationHandlerAlreadySet = errors.New("execution cancellation handler already set")
+	// ErrRunnerShuttingDown 表示 runner 已关闭新 execution 准入。
+	ErrRunnerShuttingDown = errors.New("RUNNER_SHUTTING_DOWN")
 )
 
 type executionCreator interface {
@@ -46,6 +48,8 @@ type Manager struct {
 	factory       executionCreator
 	executions    map[ExecutionID]*managedExecution
 	active        int
+	accepting     bool
+	changed       chan struct{}
 }
 
 // NewManager 创建单 runner execution manager；maxConcurrent 必须为正数。
@@ -61,6 +65,8 @@ func newManager(maxConcurrent int, factory executionCreator) (*Manager, error) {
 		maxConcurrent: maxConcurrent,
 		factory:       factory,
 		executions:    make(map[ExecutionID]*managedExecution),
+		accepting:     true,
+		changed:       make(chan struct{}),
 	}, nil
 }
 
@@ -72,6 +78,9 @@ func (m *Manager) CreateExecution() (*Execution, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	if !m.accepting {
+		return nil, ErrRunnerShuttingDown
+	}
 	if m.active >= m.maxConcurrent {
 		return nil, ErrExecutionLimitReached
 	}
@@ -131,6 +140,7 @@ func (m *Manager) Complete(id ExecutionID) error {
 	if entry.active {
 		entry.active = false
 		m.active--
+		m.notifyChangedLocked()
 	}
 	return nil
 }
@@ -235,6 +245,70 @@ func cancellationResult(m *Manager, entry *managedExecution) error {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return entry.cancelErr
+}
+
+// Shutdown 先永久关闭新 execution 准入，再并发以 runner_shutdown 原因取消快照中的全部活动执行。
+// ctx 是整个收敛过程的总上限；超时只停止等待，不撤销已经开始的进程组清理。
+func (m *Manager) Shutdown(ctx context.Context) error {
+	if m == nil {
+		return errors.New("execution manager is unavailable")
+	}
+	if ctx == nil {
+		return errors.New("shutdown context is required")
+	}
+	m.mu.Lock()
+	m.accepting = false
+	ids := make([]ExecutionID, 0, m.active)
+	for id, entry := range m.executions {
+		if entry.active {
+			ids = append(ids, id)
+		}
+	}
+	m.mu.Unlock()
+
+	results := make(chan error, len(ids))
+	for _, id := range ids {
+		go func(id ExecutionID) {
+			results <- m.requestCancellation(ctx, id, TerminationRunnerShutdown)
+		}(id)
+	}
+	var firstErr error
+	for range ids {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case err := <-results:
+			if err != nil && firstErr == nil {
+				firstErr = err
+			}
+		}
+	}
+	if err := m.waitForNoActive(ctx); err != nil {
+		return err
+	}
+	return firstErr
+}
+
+func (m *Manager) waitForNoActive(ctx context.Context) error {
+	for {
+		m.mu.RLock()
+		if m.active == 0 {
+			m.mu.RUnlock()
+			return nil
+		}
+		changed := m.changed
+		m.mu.RUnlock()
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-changed:
+		}
+	}
+}
+
+func (m *Manager) notifyChangedLocked() {
+	close(m.changed)
+	m.changed = make(chan struct{})
 }
 
 func terminalExecutionState(state ExecutionState) bool {
