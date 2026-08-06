@@ -22,6 +22,7 @@ type EventStore struct {
 	limitPublished  bool
 	terminal        bool
 	events          []protocol.ExecutionEvent
+	changed         chan struct{}
 }
 
 // NewEventStore 创建不自动发布 started 的事件存储；maxOutputBytes 必须为正数。
@@ -33,7 +34,7 @@ func NewEventStore(executionID ExecutionID, clock Clock, maxOutputBytes int64) (
 	if err != nil {
 		return nil, err
 	}
-	return &EventStore{sequencer: sequencer, maxOutputBytes: maxOutputBytes}, nil
+	return &EventStore{sequencer: sequencer, maxOutputBytes: maxOutputBytes, changed: make(chan struct{})}, nil
 }
 
 // PublishControl 保存 started 或 terminal 控制事件；terminal 的截断标志由 store 强制填写。
@@ -61,6 +62,7 @@ func (s *EventStore) PublishControl(ctx context.Context, draft protocol.Executio
 	if event.Terminal() {
 		s.terminal = true
 	}
+	s.notifyChangedLocked()
 	return cloneExecutionEvent(event), nil
 }
 
@@ -77,6 +79,7 @@ func (s *EventStore) AppendOutput(ctx context.Context, chunk RawOutputChunk) err
 	if s.terminal {
 		return ErrEventStoreTerminal
 	}
+	before := len(s.events)
 	remaining := s.maxOutputBytes - s.outputBytes
 	retained := int64(len(chunk.Data))
 	truncated := false
@@ -110,6 +113,9 @@ func (s *EventStore) AppendOutput(ctx context.Context, chunk RawOutputChunk) err
 			s.limitPublished = true
 		}
 	}
+	if len(s.events) != before {
+		s.notifyChangedLocked()
+	}
 	return nil
 }
 
@@ -125,6 +131,30 @@ func (s *EventStore) Events() []protocol.ExecutionEvent {
 		result[index] = cloneExecutionEvent(event)
 	}
 	return result
+}
+
+// EventsAfter 返回 sequence 大于 cursor 的有序快照、当前 terminal 标志和下一次变更通知。
+// publisher 只关闭并替换通知 channel，永远不等待 stream consumer。
+func (s *EventStore) EventsAfter(cursor uint64) ([]protocol.ExecutionEvent, bool, <-chan struct{}) {
+	if s == nil {
+		closed := make(chan struct{})
+		close(closed)
+		return nil, true, closed
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	start := len(s.events)
+	for index, event := range s.events {
+		if event.Sequence > cursor {
+			start = index
+			break
+		}
+	}
+	result := make([]protocol.ExecutionEvent, len(s.events)-start)
+	for index, event := range s.events[start:] {
+		result[index] = cloneExecutionEvent(event)
+	}
+	return result, s.terminal, s.changed
 }
 
 // Close 停止 sequencer；已保存事件仍可通过 Events 读取。
@@ -157,4 +187,9 @@ func cloneExecutionEvent(event protocol.ExecutionEvent) protocol.ExecutionEvent 
 		event.OutputTruncated = &value
 	}
 	return event
+}
+
+func (s *EventStore) notifyChangedLocked() {
+	close(s.changed)
+	s.changed = make(chan struct{})
 }
