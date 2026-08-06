@@ -34,6 +34,7 @@ type managedExecution struct {
 	cancelStarted   bool
 	cancelDone      chan struct{}
 	cancelErr       error
+	terminalDone    chan struct{}
 }
 
 // CancellationHandler 把内部取消原因交给单个 execution 的 arbiter 与进程组清理流程。
@@ -104,7 +105,12 @@ func (m *Manager) CreateExecution() (*Execution, error) {
 		m.active--
 		return nil, ErrExecutionAlreadyRegistered
 	}
-	m.executions[id] = &managedExecution{execution: execution, active: true, cancelDone: make(chan struct{})}
+	m.executions[id] = &managedExecution{
+		execution:    execution,
+		active:       true,
+		cancelDone:   make(chan struct{}),
+		terminalDone: make(chan struct{}),
+	}
 	return execution, nil
 }
 
@@ -140,6 +146,7 @@ func (m *Manager) Complete(id ExecutionID) error {
 	if entry.active {
 		entry.active = false
 		m.active--
+		close(entry.terminalDone)
 		m.notifyChangedLocked()
 	}
 	return nil
@@ -309,6 +316,22 @@ func (m *Manager) waitForNoActive(ctx context.Context) error {
 func (m *Manager) notifyChangedLocked() {
 	close(m.changed)
 	m.changed = make(chan struct{})
+}
+
+func (m *Manager) foregroundCompletion(id ExecutionID) (<-chan struct{}, error) {
+	if m == nil {
+		return nil, ErrExecutionNotFound
+	}
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	entry, exists := m.executions[id]
+	if !exists {
+		return nil, ErrExecutionNotFound
+	}
+	if entry.cancelHandler == nil && entry.active {
+		return nil, errors.New("execution cancellation handler is not ready")
+	}
+	return entry.terminalDone, nil
 }
 
 func terminalExecutionState(state ExecutionState) bool {
