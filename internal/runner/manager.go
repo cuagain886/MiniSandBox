@@ -45,6 +45,16 @@ type managedExecution struct {
 // handler 必须幂等并在进程、pipe readers 和 terminal event 已收敛后返回。
 type CancellationHandler func(TerminationReason) error
 
+// CancelDisposition 描述异步取消请求在接收时观察到的状态，不等待 TERM/KILL 收敛。
+type CancelDisposition string
+
+const (
+	// CancelAccepted 表示活动 execution 的取消已首次或重复接受。
+	CancelAccepted CancelDisposition = "accepted"
+	// CancelAlreadyTerminal 表示 execution 已终态，取消是成功 no-op。
+	CancelAlreadyTerminal CancelDisposition = "already_terminal"
+)
+
 // Manager 保存单个 runner 内的 execution 注册表和并发槽位；查询只返回不可反向修改内部状态的快照。
 // 已进入终态的记录继续保留，清理策略由后续 retention 任务负责。
 type Manager struct {
@@ -244,6 +254,35 @@ func (m *Manager) SetCancellationHandler(id ExecutionID, handler CancellationHan
 // 已终态 execution 是成功 no-op，未知 ID 返回 ErrExecutionNotFound。
 func (m *Manager) Cancel(ctx context.Context, id ExecutionID) error {
 	return m.requestCancellation(ctx, id, TerminationExplicitCancel)
+}
+
+// CancelAsync 接受按 ID 显式取消并立即返回，不等待 termination grace、KILL 或 terminal 发布。
+// 首次请求最多启动一个内部清理 goroutine；重复请求共享同一取消状态。
+func (m *Manager) CancelAsync(id ExecutionID) (CancelDisposition, error) {
+	if m == nil {
+		return "", ErrExecutionNotFound
+	}
+	m.mu.Lock()
+	entry, exists := m.executions[id]
+	if !exists {
+		m.mu.Unlock()
+		return "", ErrExecutionNotFound
+	}
+	if terminalExecutionState(entry.execution.Descriptor().State) {
+		m.mu.Unlock()
+		return CancelAlreadyTerminal, nil
+	}
+	if !entry.cancelRequested {
+		entry.cancelRequested = true
+		entry.cancelReason = TerminationExplicitCancel
+	}
+	run, reason, _ := beginCancellation(entry)
+	handler := entry.cancelHandler
+	m.mu.Unlock()
+	if run {
+		go m.runCancellation(entry, handler, reason)
+	}
+	return CancelAccepted, nil
 }
 
 func (m *Manager) requestCancellation(ctx context.Context, id ExecutionID, reason TerminationReason) error {
