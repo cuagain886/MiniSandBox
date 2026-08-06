@@ -40,6 +40,12 @@ type ForegroundLauncher interface {
 // ForegroundStreamFunc 接管已启动 execution 的 HTTP 流；调用前 handler 尚未提交响应 headers。
 type ForegroundStreamFunc func(http.ResponseWriter, *http.Request, *ExecutionHandle)
 
+// BackgroundLauncher 使用 runner server context 启动后台 execution；不得保存或派生 HTTP request context。
+type BackgroundLauncher interface {
+	// StartBackground 在返回前保证 execution 已注册且启动已被接受，并返回内部描述符快照。
+	StartBackground(ctx context.Context, request ExecutionLaunchRequest) (ExecutionDescriptor, error)
+}
+
 // ExecutionCreateHandlerConfig 配置严格创建入口；后台分支由 P2-045 增量加入。
 type ExecutionCreateHandlerConfig struct {
 	// MaxRequestBytes 是 JSON body 的不可扩展硬上限。
@@ -50,12 +56,19 @@ type ExecutionCreateHandlerConfig struct {
 	ForegroundLauncher ForegroundLauncher
 	// ForegroundStream 在启动成功后接管响应。
 	ForegroundStream ForegroundStreamFunc
+	// ServerContext 是所有后台 execution 共享的 runner lifetime。
+	ServerContext context.Context
+	// BackgroundLauncher 非空时启用 background=true 分支。
+	BackgroundLauncher BackgroundLauncher
 }
 
 // NewExecutionCreateHandler 创建 POST `/v1/executions` handler。
 func NewExecutionCreateHandler(config ExecutionCreateHandlerConfig) (http.Handler, error) {
 	if config.MaxRequestBytes <= 0 || config.Validator == nil || config.ForegroundLauncher == nil || config.ForegroundStream == nil {
 		return nil, errors.New("execution create handler is not configured")
+	}
+	if config.BackgroundLauncher != nil && config.ServerContext == nil {
+		return nil, errors.New("background execution server context is required")
 	}
 	return &executionCreateHandler{config: config}, nil
 }
@@ -85,7 +98,7 @@ func (h *executionCreateHandler) ServeHTTP(w http.ResponseWriter, request *http.
 		return
 	}
 	if validated.Background {
-		writeRunnerError(w, http.StatusBadRequest, string(protocol.ErrorCodeInvalidExecutionRequest), "background execution is not available", false)
+		h.serveBackground(w, request, decoded, validated)
 		return
 	}
 	if !acceptsMediaType(request.Header.Values("Accept"), "text/event-stream") {
@@ -107,6 +120,50 @@ func (h *executionCreateHandler) ServeHTTP(w http.ResponseWriter, request *http.
 		return
 	}
 	h.config.ForegroundStream(w, request, handle)
+}
+
+func (h *executionCreateHandler) serveBackground(
+	w http.ResponseWriter,
+	request *http.Request,
+	decoded protocol.ExecuteRequest,
+	validated ValidatedRequest,
+) {
+	if h.config.BackgroundLauncher == nil {
+		writeRunnerError(w, http.StatusBadRequest, string(protocol.ErrorCodeInvalidExecutionRequest), "background execution is not available", false)
+		return
+	}
+	acceptValues := request.Header.Values("Accept")
+	if len(acceptValues) > 0 && !acceptsMediaType(acceptValues, "application/json") {
+		writeRunnerError(w, http.StatusNotAcceptable, "NOT_ACCEPTABLE", "accept must include application/json", false)
+		return
+	}
+	launchRequest := ExecutionLaunchRequest{Validated: validated, CWD: decoded.Cwd, Env: cloneStringMap(decoded.Env)}
+	descriptor, err := h.config.BackgroundLauncher.StartBackground(h.config.ServerContext, launchRequest)
+	if err != nil {
+		writeLaunchError(w, err)
+		return
+	}
+	public, err := MapExecutionDescriptor(descriptor)
+	if err != nil {
+		writeRunnerError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "execution could not be started", false)
+		return
+	}
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	// 响应写失败不能反向取消后台 execution；其生命周期只由 server、显式 cancel 和自身终态决定。
+	_ = json.NewEncoder(w).Encode(public)
+}
+
+// MapExecutionDescriptor 把内部状态快照显式映射为不含 PID、命令、环境或内部原因的公开 descriptor。
+func MapExecutionDescriptor(descriptor ExecutionDescriptor) (protocol.ExecutionDescriptor, error) {
+	if descriptor.ID == "" {
+		return protocol.ExecutionDescriptor{}, errors.New("execution descriptor ID is empty")
+	}
+	state, err := MapExecutionState(descriptor.State)
+	if err != nil {
+		return protocol.ExecutionDescriptor{}, err
+	}
+	return protocol.ExecutionDescriptor{ExecutionID: string(descriptor.ID), State: state}, nil
 }
 
 func decodeExecuteRequest(w http.ResponseWriter, request *http.Request, limit int64) (protocol.ExecuteRequest, error) {
