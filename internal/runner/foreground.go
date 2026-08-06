@@ -26,7 +26,7 @@ func StartForegroundCoordinator(
 	if serverContext == nil || requestContext == nil || manager == nil || id == "" {
 		return nil, errors.New("foreground coordinator is not configured")
 	}
-	terminal, err := manager.foregroundCompletion(id)
+	terminal, err := manager.executionCompletion(id)
 	if err != nil {
 		return nil, err
 	}

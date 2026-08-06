@@ -318,7 +318,7 @@ func (m *Manager) notifyChangedLocked() {
 	m.changed = make(chan struct{})
 }
 
-func (m *Manager) foregroundCompletion(id ExecutionID) (<-chan struct{}, error) {
+func (m *Manager) executionCompletion(id ExecutionID) (<-chan struct{}, error) {
 	if m == nil {
 		return nil, ErrExecutionNotFound
 	}
