@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"sync"
+
+	"minisandbox/pkg/protocol"
 )
 
 var (
@@ -27,6 +29,8 @@ type executionCreator interface {
 
 type managedExecution struct {
 	execution       *Execution
+	visible         ExecutionDescriptor
+	events          *EventStore
 	active          bool
 	cancelHandler   CancellationHandler
 	cancelRequested bool
@@ -107,11 +111,66 @@ func (m *Manager) CreateExecution() (*Execution, error) {
 	}
 	m.executions[id] = &managedExecution{
 		execution:    execution,
+		visible:      execution.Descriptor(),
 		active:       true,
 		cancelDone:   make(chan struct{}),
 		terminalDone: make(chan struct{}),
 	}
 	return execution, nil
+}
+
+// ExecutionStatusSnapshot 是 Manager 在一次锁定中取得的描述符与可选 terminal event。
+type ExecutionStatusSnapshot struct {
+	// Descriptor 是对外映射所依据的稳定 execution 快照。
+	Descriptor ExecutionDescriptor
+	// TerminalEvent 仅在 Descriptor 已进入终态且 EventStore 已发布对应 terminal 时存在。
+	TerminalEvent *protocol.ExecutionEvent
+}
+
+// SetEventStore 为已注册 execution 绑定唯一事件源，供状态和后续日志能力读取。
+func (m *Manager) SetEventStore(id ExecutionID, store *EventStore) error {
+	if m == nil || store == nil {
+		return errors.New("execution event store is not configured")
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, exists := m.executions[id]
+	if !exists {
+		return ErrExecutionNotFound
+	}
+	if entry.events != nil && entry.events != store {
+		return errors.New("execution event store already set")
+	}
+	entry.events = store
+	return nil
+}
+
+// StatusSnapshot 返回自洽的非终态或终态快照。状态机先于 terminal event 更新的极短窗口内，
+// Manager 保留上一次可见非终态，避免返回缺失 terminal metadata 的终态响应。
+func (m *Manager) StatusSnapshot(id ExecutionID) (ExecutionStatusSnapshot, error) {
+	if m == nil {
+		return ExecutionStatusSnapshot{}, ErrExecutionNotFound
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	entry, exists := m.executions[id]
+	if !exists {
+		return ExecutionStatusSnapshot{}, ErrExecutionNotFound
+	}
+	descriptor := entry.execution.Descriptor()
+	if !terminalExecutionState(descriptor.State) {
+		entry.visible = descriptor
+		return ExecutionStatusSnapshot{Descriptor: descriptor}, nil
+	}
+	if entry.events != nil {
+		events := entry.events.Events()
+		if len(events) > 0 && events[len(events)-1].Terminal() {
+			terminal := cloneExecutionEvent(events[len(events)-1])
+			entry.visible = descriptor
+			return ExecutionStatusSnapshot{Descriptor: descriptor, TerminalEvent: &terminal}, nil
+		}
+	}
+	return ExecutionStatusSnapshot{Descriptor: entry.visible}, nil
 }
 
 // Descriptor 返回指定 execution 的当前值快照；调用方修改快照不会改变 manager 内部记录。
