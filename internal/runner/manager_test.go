@@ -2,6 +2,7 @@ package runner
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"strconv"
 	"sync"
@@ -155,4 +156,162 @@ func (m *Manager) activeCount() int {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
 	return m.active
+}
+
+// TestManagerCancelsPendingAndRunningOnce 验证 Pending/Running 首次取消均被接受，且重复请求不重复执行 handler。
+func TestManagerCancelsPendingAndRunningOnce(t *testing.T) {
+	for _, running := range []bool{false, true} {
+		t.Run(map[bool]string{false: "pending", true: "running"}[running], func(t *testing.T) {
+			var sequence atomic.Int64
+			manager, err := newManager(1, creatorFunc(func() (*Execution, error) {
+				return newPendingExecution(ExecutionID("exec_cancel_"+strconv.FormatInt(sequence.Add(1), 10)), time.Now()), nil
+			}))
+			if err != nil {
+				t.Fatalf("new manager: %v", err)
+			}
+			execution, err := manager.CreateExecution()
+			if err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if running {
+				if err := execution.Transition(ExecutionRunning, TerminationNone, nil); err != nil {
+					t.Fatalf("start: %v", err)
+				}
+			}
+			var calls atomic.Int64
+			if err := manager.SetCancellationHandler(execution.Descriptor().ID, func(reason TerminationReason) error {
+				calls.Add(1)
+				if reason != TerminationExplicitCancel {
+					t.Fatalf("reason: %q", reason)
+				}
+				if err := execution.Transition(ExecutionCancelled, reason, nil); err != nil {
+					return err
+				}
+				return manager.Complete(execution.Descriptor().ID)
+			}); err != nil {
+				t.Fatalf("set handler: %v", err)
+			}
+			for index := 0; index < 2; index++ {
+				if err := manager.Cancel(context.Background(), execution.Descriptor().ID); err != nil {
+					t.Fatalf("cancel %d: %v", index, err)
+				}
+			}
+			if calls.Load() != 1 || execution.Descriptor().State != ExecutionCancelled || manager.activeCount() != 0 {
+				t.Fatalf("cancel result: calls=%d descriptor=%+v active=%d", calls.Load(), execution.Descriptor(), manager.activeCount())
+			}
+		})
+	}
+}
+
+// TestManagerQueuesCancelUntilHandlerIsReady 验证启动窗口内的 Pending cancel 不会因 handler 尚未绑定而丢失。
+func TestManagerQueuesCancelUntilHandlerIsReady(t *testing.T) {
+	manager, err := newManager(1, creatorFunc(func() (*Execution, error) {
+		return newPendingExecution("exec_pending_cancel", time.Now()), nil
+	}))
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	execution, err := manager.CreateExecution()
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	if err := manager.Cancel(context.Background(), execution.Descriptor().ID); err != nil {
+		t.Fatalf("queue cancel: %v", err)
+	}
+	var calls atomic.Int64
+	if err := manager.SetCancellationHandler(execution.Descriptor().ID, func(reason TerminationReason) error {
+		calls.Add(1)
+		if err := execution.Transition(ExecutionCancelled, reason, nil); err != nil {
+			return err
+		}
+		return manager.Complete(execution.Descriptor().ID)
+	}); err != nil {
+		t.Fatalf("set handler: %v", err)
+	}
+	if calls.Load() != 1 || execution.Descriptor().State != ExecutionCancelled {
+		t.Fatalf("queued cancel result: calls=%d descriptor=%+v", calls.Load(), execution.Descriptor())
+	}
+}
+
+// TestManagerCancelTerminalAndUnknown 验证所有终态取消均为 no-op，未知 ID 明确报错。
+func TestManagerCancelTerminalAndUnknown(t *testing.T) {
+	states := []ExecutionState{ExecutionExited, ExecutionFailed, ExecutionCancelled, ExecutionTimedOut}
+	for _, state := range states {
+		t.Run(string(state), func(t *testing.T) {
+			// Manager 只允许注册 Pending，先注册后再复现目标终态。
+			execution := newPendingExecution(ExecutionID("exec_terminal_"+state), time.Now())
+			manager, err := newManager(1, creatorFunc(func() (*Execution, error) { return execution, nil }))
+			if err != nil {
+				t.Fatalf("new manager: %v", err)
+			}
+			if _, err := manager.CreateExecution(); err != nil {
+				t.Fatalf("create: %v", err)
+			}
+			if state != ExecutionFailed {
+				if err := execution.Transition(ExecutionRunning, TerminationNone, nil); err != nil {
+					t.Fatalf("start: %v", err)
+				}
+			}
+			switch state {
+			case ExecutionExited:
+				exitCode := 0
+				_ = execution.Transition(state, TerminationProcessExited, &exitCode)
+			case ExecutionFailed:
+				_ = execution.Transition(state, TerminationStartFailed, nil)
+			case ExecutionCancelled:
+				_ = execution.Transition(state, TerminationExplicitCancel, nil)
+			case ExecutionTimedOut:
+				_ = execution.Transition(state, TerminationDeadlineExceeded, nil)
+			}
+			var calls atomic.Int64
+			if err := manager.SetCancellationHandler(execution.Descriptor().ID, func(TerminationReason) error { calls.Add(1); return nil }); err != nil {
+				t.Fatalf("set handler: %v", err)
+			}
+			if err := manager.Cancel(context.Background(), execution.Descriptor().ID); err != nil || calls.Load() != 0 {
+				t.Fatalf("terminal cancel: err=%v calls=%d", err, calls.Load())
+			}
+		})
+	}
+	manager, _ := newManager(1, creatorFunc(func() (*Execution, error) { return nil, errors.New("unused") }))
+	if err := manager.Cancel(context.Background(), "exec_unknown"); !errors.Is(err, ErrExecutionNotFound) {
+		t.Fatalf("unknown cancel: %v", err)
+	}
+}
+
+// TestManagerConcurrentRepeatedCancel 验证并发重复取消共享同一次清理结果，不暴露或复制内部 goroutine。
+func TestManagerConcurrentRepeatedCancel(t *testing.T) {
+	manager, err := newManager(1, creatorFunc(func() (*Execution, error) {
+		return newPendingExecution("exec_concurrent_cancel", time.Now()), nil
+	}))
+	if err != nil {
+		t.Fatalf("new manager: %v", err)
+	}
+	execution, _ := manager.CreateExecution()
+	_ = execution.Transition(ExecutionRunning, TerminationNone, nil)
+	release := make(chan struct{})
+	entered := make(chan struct{})
+	var calls atomic.Int64
+	if err := manager.SetCancellationHandler(execution.Descriptor().ID, func(reason TerminationReason) error {
+		calls.Add(1)
+		close(entered)
+		<-release
+		return execution.Transition(ExecutionCancelled, reason, nil)
+	}); err != nil {
+		t.Fatalf("set handler: %v", err)
+	}
+	const callers = 32
+	errorsSeen := make(chan error, callers)
+	for index := 0; index < callers; index++ {
+		go func() { errorsSeen <- manager.Cancel(context.Background(), execution.Descriptor().ID) }()
+	}
+	<-entered
+	close(release)
+	for index := 0; index < callers; index++ {
+		if err := <-errorsSeen; err != nil {
+			t.Fatalf("cancel %d: %v", index, err)
+		}
+	}
+	if calls.Load() != 1 {
+		t.Fatalf("handler calls: %d", calls.Load())
+	}
 }

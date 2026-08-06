@@ -145,6 +145,10 @@ func validExecutionTransition(current, next ExecutionState, reason TerminationRe
 		return (reason == TerminationValidationFailed ||
 			reason == TerminationStartFailed ||
 			reason == TerminationInternalFailure) && exitCode == nil
+	case current == ExecutionPending && next == ExecutionCancelled:
+		return (reason == TerminationExplicitCancel ||
+			reason == TerminationForegroundDisconnect ||
+			reason == TerminationRunnerShutdown) && exitCode == nil
 	case current == ExecutionRunning && next == ExecutionExited:
 		return reason == TerminationProcessExited && exitCode != nil
 	case current == ExecutionRunning && next == ExecutionCancelled:
