@@ -228,14 +228,3 @@ func writeLaunchError(w http.ResponseWriter, err error) {
 		writeRunnerError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "execution could not be started", false)
 	}
 }
-
-func writeRunnerError(w http.ResponseWriter, status int, code, message string, retryable bool) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(status)
-	_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{Error: protocol.ErrorDetail{
-		Code:      code,
-		Message:   message,
-		RequestID: "",
-		Retryable: retryable,
-	}})
-}

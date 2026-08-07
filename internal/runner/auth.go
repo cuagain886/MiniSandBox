@@ -36,7 +36,5 @@ func TokenAuth(expected string, next http.Handler) (http.Handler, error) {
 }
 
 func unauthorized(w http.ResponseWriter) {
-	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
-	w.WriteHeader(http.StatusUnauthorized)
-	_, _ = w.Write([]byte("unauthorized\n"))
+	writeRunnerError(w, http.StatusUnauthorized, "UNAUTHORIZED", "runner authentication failed", false)
 }

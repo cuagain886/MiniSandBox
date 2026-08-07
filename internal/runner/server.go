@@ -39,11 +39,7 @@ func newServer(
 		w.Header().Set("Content-Type", "application/json")
 		identity, err := readNetNSIdentity()
 		if err != nil {
-			w.WriteHeader(http.StatusServiceUnavailable)
-			_ = json.NewEncoder(w).Encode(map[string]string{
-				"code":    "netns_identity_unavailable",
-				"message": "runner network namespace identity is unavailable",
-			})
+			writeRunnerError(w, http.StatusServiceUnavailable, "NETNS_IDENTITY_UNAVAILABLE", "runner network namespace identity is unavailable", true)
 			return
 		}
 		_ = json.NewEncoder(w).Encode(protocol.RunnerHealth{
@@ -56,15 +52,16 @@ func newServer(
 	})
 	mux.HandleFunc("POST /v1/executions", notImplemented)
 	mux.HandleFunc("DELETE /v1/executions/{execution_id}", notImplemented)
-	return TokenAuth(token, mux)
+	authenticated, err := TokenAuth(token, mux)
+	if err != nil {
+		return nil, err
+	}
+	return RunnerRequestPolicy(authenticated)
 }
 
 // Serve 在给定 listener 上运行 runner HTTP 服务，并在 context 取消时优雅关闭。
 func Serve(ctx context.Context, listener net.Listener, handler http.Handler) error {
-	server := &http.Server{
-		Handler:           handler,
-		ReadHeaderTimeout: 5 * time.Second,
-	}
+	server := newRunnerHTTPServer(handler)
 
 	// context 通常由容器终止信号触发。先优雅关闭 HTTP 服务，让进行中的 handler
 	// 有机会把最终退出事件写完，再由上层关闭 Unix Socket。
@@ -91,10 +88,5 @@ func Serve(ctx context.Context, listener net.Listener, handler http.Handler) err
 }
 
 func notImplemented(w http.ResponseWriter, _ *http.Request) {
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusNotImplemented)
-	_ = json.NewEncoder(w).Encode(map[string]string{
-		"code":    "not_implemented",
-		"message": "runner execution is not implemented in the initialization scaffold",
-	})
+	writeRunnerError(w, http.StatusNotImplemented, "NOT_IMPLEMENTED", "runner operation is not implemented", false)
 }
