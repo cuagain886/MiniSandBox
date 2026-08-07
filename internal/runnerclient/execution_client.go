@@ -10,7 +10,6 @@ import (
 	"net/http"
 	"net/url"
 	"strconv"
-	"strings"
 	"sync"
 
 	"minisandbox/pkg/protocol"
@@ -51,6 +50,9 @@ func (s *EventStream) Close() error {
 
 // ExecuteForeground 创建前台 execution，并返回严格 typed SSE stream。
 func (c *Client) ExecuteForeground(ctx context.Context, request protocol.ExecuteRequest) (*EventStream, error) {
+	if err := c.ensureHealthy(ctx); err != nil {
+		return nil, err
+	}
 	request.Background = false
 	body, err := json.Marshal(request)
 	if err != nil {
@@ -62,7 +64,7 @@ func (c *Client) ExecuteForeground(ctx context.Context, request protocol.Execute
 	}
 	httpRequest.Header.Set("Content-Type", "application/json")
 	httpRequest.Header.Set("Accept", "text/event-stream")
-	response, err := c.httpClient.Do(httpRequest)
+	response, err := c.do(httpRequest)
 	if err != nil {
 		return nil, err
 	}
@@ -80,6 +82,9 @@ func (c *Client) ExecuteForeground(ctx context.Context, request protocol.Execute
 
 // ExecuteBackground 创建后台 execution，并返回最小描述符。
 func (c *Client) ExecuteBackground(ctx context.Context, request protocol.ExecuteRequest) (protocol.ExecutionDescriptor, error) {
+	if err := c.ensureHealthy(ctx); err != nil {
+		return protocol.ExecutionDescriptor{}, err
+	}
 	request.Background = true
 	var result protocol.ExecutionDescriptor
 	err := c.doJSON(ctx, http.MethodPost, "/v1/executions", request, http.StatusAccepted, &result)
@@ -94,6 +99,9 @@ func (c *Client) ExecuteBackground(ctx context.Context, request protocol.Execute
 
 // Status 查询当前 sandbox 内一个 execution 的状态。
 func (c *Client) Status(ctx context.Context, executionID string) (protocol.ExecutionStatus, error) {
+	if err := c.ensureHealthy(ctx); err != nil {
+		return protocol.ExecutionStatus{}, err
+	}
 	var result protocol.ExecutionStatus
 	err := c.doJSON(ctx, http.MethodGet, executionPath(executionID), nil, http.StatusOK, &result)
 	if err != nil {
@@ -110,11 +118,14 @@ func (c *Client) Status(ctx context.Context, executionID string) (protocol.Execu
 
 // Cancel 幂等请求取消当前 sandbox 内一个 execution。
 func (c *Client) Cancel(ctx context.Context, executionID string) error {
+	if err := c.ensureHealthy(ctx); err != nil {
+		return err
+	}
 	request, err := c.newRequest(ctx, http.MethodDelete, executionPath(executionID), nil)
 	if err != nil {
 		return err
 	}
-	response, err := c.httpClient.Do(request)
+	response, err := c.do(request)
 	if err != nil {
 		return err
 	}
@@ -131,6 +142,9 @@ func (c *Client) Cancel(ctx context.Context, executionID string) error {
 
 // Logs 从 cursor 之后读取一页后台 execution 事件。
 func (c *Client) Logs(ctx context.Context, executionID string, cursor uint64) (protocol.ExecutionLogPage, error) {
+	if err := c.ensureHealthy(ctx); err != nil {
+		return protocol.ExecutionLogPage{}, err
+	}
 	query := url.Values{"cursor": []string{strconv.FormatUint(cursor, 10)}}
 	var result protocol.ExecutionLogPage
 	err := c.doJSON(ctx, http.MethodGet, executionPath(executionID)+"/logs?"+query.Encode(), nil, http.StatusOK, &result)
@@ -170,7 +184,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, input any, exp
 		request.Header.Set("Content-Type", "application/json")
 	}
 	request.Header.Set("Accept", "application/json")
-	response, err := c.httpClient.Do(request)
+	response, err := c.do(request)
 	if err != nil {
 		return err
 	}
@@ -194,15 +208,40 @@ func (c *Client) doJSON(ctx context.Context, method, path string, input any, exp
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {
-	if c == nil || c.httpClient == nil || strings.TrimSpace(c.token) == "" || ctx == nil {
+	if c == nil || c.httpClient == nil || c.authorization == nil || ctx == nil {
 		return nil, errors.New("runner client is not configured")
 	}
 	request, err := http.NewRequestWithContext(ctx, method, c.baseURL+path, body)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("Authorization", "Bearer "+c.token)
 	return request, nil
+}
+
+func (c *Client) ensureHealthy(ctx context.Context) error {
+	if c == nil || c.expectedProtocolVersion == 0 {
+		return nil
+	}
+	c.healthMu.Lock()
+	defer c.healthMu.Unlock()
+	now := c.now()
+	if !c.healthCheckedAt.IsZero() && now.Sub(c.healthCheckedAt) >= 0 && now.Sub(c.healthCheckedAt) < c.healthCacheTTL {
+		return nil
+	}
+	_, err := c.Health(ctx, c.expectedProtocolVersion)
+	if err == nil {
+		c.healthCheckedAt = now
+		return nil
+	}
+	var mismatch *ProtocolMismatchError
+	if errors.As(err, &mismatch) {
+		return err
+	}
+	var status *StatusError
+	if errors.As(err, &status) && status.StatusCode == http.StatusUnauthorized {
+		return &AuthenticationError{}
+	}
+	return &ConnectionError{cause: err}
 }
 
 func executionPath(executionID string) string {
