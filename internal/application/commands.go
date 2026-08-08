@@ -26,6 +26,10 @@ type DeleteSandbox struct {
 
 // Execute 表示在指定 sandbox 内提交一次命令执行。
 type Execute struct {
+	// SandboxID 是 Store gate 和 runner client factory 共用的唯一 sandbox 标识。
 	SandboxID string
-	Spec      domain.ExecutionSpec
+	// Spec 是不被 application 解释或重写的用户命令规格。
+	Spec domain.ExecutionSpec
+	// Background 决定返回 typed stream 还是后台 descriptor。
+	Background bool
 }
