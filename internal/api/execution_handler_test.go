@@ -124,6 +124,48 @@ func TestBackgroundExecutionHandlerMapsApplicationFailures(t *testing.T) {
 	}
 }
 
+func TestExecutionStatusHandlerMapsBoundQuery(t *testing.T) {
+	duration, truncated, exitCode := int64(4), false, 0
+	terminal := protocol.ExecutionEvent{ExecutionID: "exec_test", Sequence: 2, Timestamp: time.Now().UTC(), Type: protocol.EventExited, ExitCode: &exitCode, DurationMS: &duration, OutputTruncated: &truncated}
+	service := &apiExecutionServiceFake{status: application.ExecutionStatus{Descriptor: application.ExecutionDescriptor{ID: "exec_test", State: protocol.ExecutionStateExited}, TerminalEvent: &terminal}}
+	request := httptest.NewRequest(http.MethodGet, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions/exec_test", nil)
+	response := httptest.NewRecorder()
+	NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status response: %d %s", response.Code, response.Body.String())
+	}
+	if !reflect.DeepEqual(service.statusCalls, [][2]string{{executionHandlerSandboxID, "exec_test"}}) {
+		t.Fatalf("status selection: %v", service.statusCalls)
+	}
+	var got protocol.ExecutionStatus
+	if err := json.NewDecoder(response.Body).Decode(&got); err != nil || got.ExecutionID != "exec_test" || got.TerminalEvent == nil || got.TerminalEvent.Type != protocol.EventExited {
+		t.Fatalf("mapped status: %+v err=%v", got, err)
+	}
+}
+
+func TestExecutionStatusHandlerRejectsIDsAndMapsErrors(t *testing.T) {
+	for _, test := range []struct {
+		name, path string
+		err        error
+		want       int
+	}{
+		{name: "bad sandbox", path: "/v1/sandboxes/bad/executions/exec_test", want: http.StatusBadRequest},
+		{name: "bad execution", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/bad.id", want: http.StatusBadRequest},
+		{name: "not found", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_missing", err: domain.ErrExecutionNotFound, want: http.StatusNotFound},
+		{name: "not running", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_test", err: domain.ErrSandboxNotRunning, want: http.StatusConflict},
+		{name: "runner", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_test", err: domain.ErrRunnerUnhealthy, want: http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &apiExecutionServiceFake{statusErr: test.err}
+			response := httptest.NewRecorder()
+			NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, test.path, nil))
+			if response.Code != test.want {
+				t.Fatalf("status: got %d want %d body=%s", response.Code, test.want, response.Body.String())
+			}
+		})
+	}
+}
+
 func TestForegroundExecutionHandlerMapsServiceErrorBeforeSSE(t *testing.T) {
 	service := &apiExecutionServiceFake{err: domain.ErrSandboxNotRunning}
 	request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"argv":["true"]}`))
@@ -141,9 +183,17 @@ func TestForegroundExecutionHandlerMapsServiceErrorBeforeSSE(t *testing.T) {
 }
 
 type apiExecutionServiceFake struct {
-	result   application.ExecutionResult
-	err      error
-	commands []application.Execute
+	result      application.ExecutionResult
+	err         error
+	commands    []application.Execute
+	status      application.ExecutionStatus
+	statusErr   error
+	statusCalls [][2]string
+}
+
+func (s *apiExecutionServiceFake) Status(_ context.Context, sandboxID, executionID string) (application.ExecutionStatus, error) {
+	s.statusCalls = append(s.statusCalls, [2]string{sandboxID, executionID})
+	return s.status, s.statusErr
 }
 
 func (s *apiExecutionServiceFake) Execute(_ context.Context, command application.Execute) (application.ExecutionResult, error) {

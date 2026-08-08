@@ -23,15 +23,92 @@ const maxExecutionRequestBodyBytes int64 = 1 << 20
 type ExecutionService interface {
 	// Execute 在 application 完成 sandbox admission 后返回前台 stream 或后台 descriptor。
 	Execute(context.Context, application.Execute) (application.ExecutionResult, error)
+	// Status 查询指定 sandbox 内的 execution，不允许 execution ID 选择 runner。
+	Status(context.Context, string, string) (application.ExecutionStatus, error)
 }
 
 func registerExecutionRoutes(mux *http.ServeMux, service ExecutionService) {
 	if service == nil {
 		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", notImplemented("command execution"))
+		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented("execution status"))
 	} else {
 		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", executeSandboxHandler(service))
+		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}", executionStatusHandler(service))
 	}
 	mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented("execution cancellation"))
+}
+
+func executionStatusHandler(service ExecutionService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sandboxID, executionID := r.PathValue("sandbox_id"), r.PathValue("execution_id")
+		if !validSandboxID(sandboxID) || !validExecutionID(executionID) {
+			writeError(w, r, domain.ErrInvalid)
+			return
+		}
+		status, err := service.Status(r.Context(), sandboxID, executionID)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		mapped, err := mapExecutionStatus(status)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, mapped)
+	}
+}
+
+func mapExecutionStatus(status application.ExecutionStatus) (protocol.ExecutionStatus, error) {
+	descriptor, err := mapExecutionDescriptor(status.Descriptor)
+	if err != nil {
+		return protocol.ExecutionStatus{}, err
+	}
+	result := protocol.ExecutionStatus{ExecutionID: descriptor.ExecutionID, State: descriptor.State}
+	isTerminal := terminalPublicExecutionState(descriptor.State)
+	if isTerminal != (status.TerminalEvent != nil) {
+		return protocol.ExecutionStatus{}, domain.ErrRunnerUnhealthy
+	}
+	if status.TerminalEvent != nil {
+		if status.TerminalEvent.ExecutionID != descriptor.ExecutionID || !status.TerminalEvent.Terminal() || status.TerminalEvent.Validate() != nil {
+			return protocol.ExecutionStatus{}, domain.ErrRunnerUnhealthy
+		}
+		if !terminalEventMatchesState(status.TerminalEvent.Type, descriptor.State) {
+			return protocol.ExecutionStatus{}, domain.ErrRunnerUnhealthy
+		}
+		terminal := *status.TerminalEvent
+		result.TerminalEvent = &terminal
+	}
+	return result, nil
+}
+
+func terminalPublicExecutionState(state protocol.ExecutionState) bool {
+	switch state {
+	case protocol.ExecutionStateExited, protocol.ExecutionStateFailed, protocol.ExecutionStateCancelled, protocol.ExecutionStateTimedOut:
+		return true
+	default:
+		return false
+	}
+}
+
+func terminalEventMatchesState(eventType protocol.EventType, state protocol.ExecutionState) bool {
+	return state == protocol.ExecutionStateExited && eventType == protocol.EventExited ||
+		state == protocol.ExecutionStateFailed && eventType == protocol.EventFailed ||
+		state == protocol.ExecutionStateCancelled && eventType == protocol.EventCancelled ||
+		state == protocol.ExecutionStateTimedOut && eventType == protocol.EventTimedOut
+}
+
+func validExecutionID(id string) bool {
+	if !strings.HasPrefix(id, "exec_") || len(id) <= len("exec_") || len(id) > 128 {
+		return false
+	}
+	for _, character := range id {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '_' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 func executeSandboxHandler(service ExecutionService) http.HandlerFunc {

@@ -24,12 +24,41 @@ type ExecutionDescriptor struct {
 	State protocol.ExecutionState
 }
 
+// ExecutionStatus 是状态查询返回的内部快照。
+type ExecutionStatus struct {
+	// Descriptor 包含 execution ID 和当前稳定状态。
+	Descriptor ExecutionDescriptor
+	// TerminalEvent 只在终态中存在，并与 Descriptor 属于同一 execution。
+	TerminalEvent *protocol.ExecutionEvent
+}
+
 // ExecutionClient 定义 P2-056 创建 execution 所需的固定 runner 能力。
 type ExecutionClient interface {
 	// ExecuteForeground 启动前台 execution 并返回 typed stream。
 	ExecuteForeground(context.Context, domain.ExecutionSpec) (ExecutionEventStream, error)
 	// ExecuteBackground 启动后台 execution 并返回内部描述符。
 	ExecuteBackground(context.Context, domain.ExecutionSpec) (ExecutionDescriptor, error)
+	// Status 查询当前 client 所绑定 sandbox 内的 execution。
+	Status(context.Context, string) (ExecutionStatus, error)
+}
+
+// Status 在确认 sandbox 仍可执行后查询其绑定 runner，execution ID 不能选择其他 client。
+func (s *ExecutionService) Status(ctx context.Context, sandboxID, executionID string) (ExecutionStatus, error) {
+	if executionID == "" {
+		return ExecutionStatus{}, domain.ErrExecutionNotFound
+	}
+	client, err := s.runningClient(ctx, sandboxID)
+	if err != nil {
+		return ExecutionStatus{}, err
+	}
+	status, err := client.Status(ctx, executionID)
+	if err != nil {
+		return ExecutionStatus{}, mapRunnerClientError(err)
+	}
+	if status.Descriptor.ID != executionID {
+		return ExecutionStatus{}, domain.ErrRunnerUnhealthy
+	}
+	return status, nil
 }
 
 // ExecutionClientFactory 只允许按已通过 Store gate 的 sandbox ID 选择 runner。

@@ -92,6 +92,32 @@ func TestExecutionServiceForwardsForegroundAndBackgroundWithoutMutation(t *testi
 	}
 }
 
+func TestExecutionServiceStatusUsesSandboxBoundClient(t *testing.T) {
+	storeFake := testutil.NewFakeStore()
+	storeFake.SetGetResult(runningSandbox(), nil)
+	want := ExecutionStatus{Descriptor: ExecutionDescriptor{ID: "exec_test", State: protocol.ExecutionStateRunning}}
+	client := &executionClientFake{status: want}
+	factory := &executionFactoryFake{client: client}
+	service, _ := NewExecutionService(storeFake, factory)
+	got, err := service.Status(context.Background(), executionServiceSandboxID, "exec_test")
+	if err != nil || !reflect.DeepEqual(got, want) {
+		t.Fatalf("status: %+v err=%v", got, err)
+	}
+	if !reflect.DeepEqual(factory.ids, []string{executionServiceSandboxID}) || !reflect.DeepEqual(client.statusIDs, []string{"exec_test"}) {
+		t.Fatalf("selection: sandboxes=%v executions=%v", factory.ids, client.statusIDs)
+	}
+
+	client.statusErr = domain.ErrExecutionNotFound
+	if _, err := service.Status(context.Background(), executionServiceSandboxID, "missing"); !errors.Is(err, domain.ErrExecutionNotFound) {
+		t.Fatalf("not found mapping: %v", err)
+	}
+	storeFake.SetGetResult(domain.Sandbox{ID: executionServiceSandboxID, DesiredState: domain.DesiredRunning, ObservedState: domain.StateStopping}, nil)
+	before := len(client.statusIDs)
+	if _, err := service.Status(context.Background(), executionServiceSandboxID, "exec_test"); !errors.Is(err, domain.ErrSandboxNotRunning) || len(client.statusIDs) != before {
+		t.Fatalf("non-running query: err=%v calls=%v", err, client.statusIDs)
+	}
+}
+
 func validExecutionCommand(background bool) Execute {
 	return Execute{SandboxID: executionServiceSandboxID, Background: background, Spec: domain.ExecutionSpec{Argv: []string{"printf", "ok"}, Env: map[string]string{"A": "B"}, Cwd: "/workspace"}}
 }
@@ -118,6 +144,14 @@ type executionClientFake struct {
 	backgroundErr   error
 	foregroundSpecs []domain.ExecutionSpec
 	backgroundSpecs []domain.ExecutionSpec
+	status          ExecutionStatus
+	statusErr       error
+	statusIDs       []string
+}
+
+func (c *executionClientFake) Status(_ context.Context, id string) (ExecutionStatus, error) {
+	c.statusIDs = append(c.statusIDs, id)
+	return c.status, c.statusErr
 }
 
 func (c *executionClientFake) ExecuteForeground(_ context.Context, spec domain.ExecutionSpec) (ExecutionEventStream, error) {
