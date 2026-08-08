@@ -1,0 +1,128 @@
+package api
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"net/http"
+	"net/http/httptest"
+	"reflect"
+	"strconv"
+	"strings"
+	"testing"
+	"time"
+
+	"minisandbox/internal/application"
+	"minisandbox/internal/domain"
+	"minisandbox/pkg/protocol"
+)
+
+const executionHandlerSandboxID = "00010203-0405-4607-8809-0a0b0c0d0e0f"
+
+func TestForegroundExecutionHandlerMapsRequestAndForwardsSSE(t *testing.T) {
+	events := foregroundHandlerEvents()
+	stream := &apiExecutionStreamFake{events: events}
+	service := &apiExecutionServiceFake{result: application.ExecutionResult{Stream: stream}}
+	request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"argv":["printf","ok"],"env":{"A":"B"},"cwd":"/workspace","timeout_seconds":3}`))
+	request.Header.Set("Content-Type", "application/json; charset=utf-8")
+	request.Header.Set("Accept", "text/event-stream")
+	response := httptest.NewRecorder()
+
+	NewRouter(BuildInfo{Version: "test"}, RouterDependencies{Execution: service}).ServeHTTP(response, request)
+	if response.Code != http.StatusOK || response.Header().Get("Content-Type") != "text/event-stream" || response.Header().Get("Cache-Control") != "no-cache" {
+		t.Fatalf("foreground response: status=%d headers=%v", response.Code, response.Header())
+	}
+	wantCommand := application.Execute{SandboxID: executionHandlerSandboxID, Spec: domain.ExecutionSpec{Argv: []string{"printf", "ok"}, Env: map[string]string{"A": "B"}, Cwd: "/workspace", Timeout: 3 * time.Second}}
+	if !reflect.DeepEqual(service.commands, []application.Execute{wantCommand}) {
+		t.Fatalf("command mapping: %+v", service.commands)
+	}
+	for _, event := range events {
+		if !strings.Contains(response.Body.String(), "id: "+strconv.FormatUint(event.Sequence, 10)+"\n") || !strings.Contains(response.Body.String(), "event: "+string(event.Type)+"\n") {
+			t.Fatalf("missing SSE event %+v in %q", event, response.Body.String())
+		}
+	}
+	if !stream.closed {
+		t.Fatal("application stream was not closed")
+	}
+}
+
+func TestForegroundExecutionHandlerRejectsBeforeApplication(t *testing.T) {
+	tests := []struct {
+		name, path, contentType, accept, body string
+		status                                int
+	}{
+		{name: "bad sandbox", path: "/v1/sandboxes/not-an-id/executions", contentType: "application/json", accept: "text/event-stream", body: `{"argv":["true"]}`, status: http.StatusBadRequest},
+		{name: "content type", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "text/plain", accept: "text/event-stream", body: `{"argv":["true"]}`, status: http.StatusBadRequest},
+		{name: "unknown field", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "text/event-stream", body: `{"argv":["true"],"secret":"x"}`, status: http.StatusBadRequest},
+		{name: "trailing JSON", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "text/event-stream", body: `{"argv":["true"]}{}`, status: http.StatusBadRequest},
+		{name: "accept", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "application/json", body: `{"argv":["true"]}`, status: http.StatusBadRequest},
+		{name: "background pending task", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "application/json", body: `{"argv":["true"],"background":true}`, status: http.StatusNotImplemented},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			service := &apiExecutionServiceFake{}
+			request := httptest.NewRequest(http.MethodPost, test.path, strings.NewReader(test.body))
+			request.Header.Set("Content-Type", test.contentType)
+			request.Header.Set("Accept", test.accept)
+			response := httptest.NewRecorder()
+			NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, request)
+			if response.Code != test.status || len(service.commands) != 0 {
+				t.Fatalf("response=%d commands=%d", response.Code, len(service.commands))
+			}
+		})
+	}
+}
+
+func TestForegroundExecutionHandlerMapsServiceErrorBeforeSSE(t *testing.T) {
+	service := &apiExecutionServiceFake{err: domain.ErrSandboxNotRunning}
+	request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"argv":["true"]}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "text/event-stream")
+	response := httptest.NewRecorder()
+	NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, request)
+	if response.Code != http.StatusConflict || response.Header().Get("Content-Type") != "application/json" {
+		t.Fatalf("service error response: %d %v", response.Code, response.Header())
+	}
+	var envelope protocol.ErrorResponse
+	if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil || envelope.Error.Code != string(protocol.ErrorCodeSandboxNotRunning) {
+		t.Fatalf("error envelope: %+v err=%v", envelope, err)
+	}
+}
+
+type apiExecutionServiceFake struct {
+	result   application.ExecutionResult
+	err      error
+	commands []application.Execute
+}
+
+func (s *apiExecutionServiceFake) Execute(_ context.Context, command application.Execute) (application.ExecutionResult, error) {
+	s.commands = append(s.commands, command)
+	return s.result, s.err
+}
+
+type apiExecutionStreamFake struct {
+	events []protocol.ExecutionEvent
+	err    error
+	closed bool
+}
+
+func (s *apiExecutionStreamFake) Consume(consume func(protocol.ExecutionEvent) error) error {
+	for _, event := range s.events {
+		if err := consume(event); err != nil {
+			return err
+		}
+	}
+	return s.err
+}
+
+func (s *apiExecutionStreamFake) Close() error { s.closed = true; return nil }
+
+func foregroundHandlerEvents() []protocol.ExecutionEvent {
+	now := time.Date(2026, 8, 8, 1, 0, 0, 0, time.UTC)
+	duration, truncated, exitCode := int64(1), false, 0
+	return []protocol.ExecutionEvent{
+		{ExecutionID: "exec_test", Sequence: 1, Timestamp: now, Type: protocol.EventStarted},
+		{ExecutionID: "exec_test", Sequence: 2, Timestamp: now, Type: protocol.EventStdout, DataBase64: base64.StdEncoding.EncodeToString([]byte("ok"))},
+		{ExecutionID: "exec_test", Sequence: 3, Timestamp: now, Type: protocol.EventExited, ExitCode: &exitCode, DurationMS: &duration, OutputTruncated: &truncated},
+	}
+}
