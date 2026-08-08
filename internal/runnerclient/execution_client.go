@@ -23,6 +23,16 @@ type EventStream struct {
 	once sync.Once
 }
 
+// CancelDisposition 描述 runner DELETE 响应观察到的幂等状态。
+type CancelDisposition string
+
+const (
+	// CancelAccepted 表示活动 execution 的取消已接受。
+	CancelAccepted CancelDisposition = "accepted"
+	// CancelAlreadyTerminal 表示 execution 已终态，取消是成功 no-op。
+	CancelAlreadyTerminal CancelDisposition = "already_terminal"
+)
+
 // Consume 严格解码全部事件直到唯一 terminal；返回后 response body 已关闭。
 func (s *EventStream) Consume(consume func(protocol.ExecutionEvent) error) error {
 	if s == nil || s.body == nil {
@@ -117,27 +127,30 @@ func (c *Client) Status(ctx context.Context, executionID string) (protocol.Execu
 }
 
 // Cancel 幂等请求取消当前 sandbox 内一个 execution。
-func (c *Client) Cancel(ctx context.Context, executionID string) error {
+func (c *Client) Cancel(ctx context.Context, executionID string) (CancelDisposition, error) {
 	if err := c.ensureHealthy(ctx); err != nil {
-		return err
+		return "", err
 	}
 	request, err := c.newRequest(ctx, http.MethodDelete, executionPath(executionID), nil)
 	if err != nil {
-		return err
+		return "", err
 	}
 	response, err := c.do(request)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusNoContent {
-		return &StatusError{StatusCode: response.StatusCode}
+		return "", &StatusError{StatusCode: response.StatusCode}
 	}
 	limited, err := io.ReadAll(io.LimitReader(response.Body, 1))
 	if err != nil || len(limited) != 0 {
-		return &ProtocolMismatchError{}
+		return "", &ProtocolMismatchError{}
 	}
-	return nil
+	if response.StatusCode == http.StatusNoContent {
+		return CancelAlreadyTerminal, nil
+	}
+	return CancelAccepted, nil
 }
 
 // Logs 从 cursor 之后读取一页后台 execution 事件。

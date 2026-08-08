@@ -32,6 +32,16 @@ type ExecutionStatus struct {
 	TerminalEvent *protocol.ExecutionEvent
 }
 
+// CancelDisposition 描述 runner 接受取消时观察到的幂等状态。
+type CancelDisposition string
+
+const (
+	// CancelAccepted 表示活动 execution 的取消已被接受，但不等待终态。
+	CancelAccepted CancelDisposition = "accepted"
+	// CancelAlreadyTerminal 表示 execution 已终态，取消是成功 no-op。
+	CancelAlreadyTerminal CancelDisposition = "already_terminal"
+)
+
 // ExecutionClient 定义 P2-056 创建 execution 所需的固定 runner 能力。
 type ExecutionClient interface {
 	// ExecuteForeground 启动前台 execution 并返回 typed stream。
@@ -40,6 +50,8 @@ type ExecutionClient interface {
 	ExecuteBackground(context.Context, domain.ExecutionSpec) (ExecutionDescriptor, error)
 	// Status 查询当前 client 所绑定 sandbox 内的 execution。
 	Status(context.Context, string) (ExecutionStatus, error)
+	// Cancel 幂等取消当前 client 所绑定 sandbox 内的 execution。
+	Cancel(context.Context, string) (CancelDisposition, error)
 }
 
 // Status 在确认 sandbox 仍可执行后查询其绑定 runner，execution ID 不能选择其他 client。
@@ -59,6 +71,25 @@ func (s *ExecutionService) Status(ctx context.Context, sandboxID, executionID st
 		return ExecutionStatus{}, domain.ErrRunnerUnhealthy
 	}
 	return status, nil
+}
+
+// Cancel 在 sandbox admission 后转发固定按 ID 取消，不接受 PID、signal 或 force 参数。
+func (s *ExecutionService) Cancel(ctx context.Context, sandboxID, executionID string) (CancelDisposition, error) {
+	if executionID == "" {
+		return "", domain.ErrExecutionNotFound
+	}
+	client, err := s.runningClient(ctx, sandboxID)
+	if err != nil {
+		return "", err
+	}
+	disposition, err := client.Cancel(ctx, executionID)
+	if err != nil {
+		return "", mapRunnerClientError(err)
+	}
+	if disposition != CancelAccepted && disposition != CancelAlreadyTerminal {
+		return "", domain.ErrRunnerUnhealthy
+	}
+	return disposition, nil
 }
 
 // ExecutionClientFactory 只允许按已通过 Store gate 的 sandbox ID 选择 runner。

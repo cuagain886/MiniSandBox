@@ -57,7 +57,7 @@ func TestClientFixedExecutionOperations(t *testing.T) {
 	if err != nil || status.State != protocol.ExecutionStateRunning {
 		t.Fatalf("status: %+v err=%v", status, err)
 	}
-	if err := client.Cancel(context.Background(), "exec_test"); err != nil {
+	if disposition, err := client.Cancel(context.Background(), "exec_test"); err != nil || disposition != CancelAccepted {
 		t.Fatalf("cancel: %v", err)
 	}
 	page, err := client.Logs(context.Background(), "exec_test", 0)

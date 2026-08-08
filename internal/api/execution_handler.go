@@ -25,6 +25,8 @@ type ExecutionService interface {
 	Execute(context.Context, application.Execute) (application.ExecutionResult, error)
 	// Status 查询指定 sandbox 内的 execution，不允许 execution ID 选择 runner。
 	Status(context.Context, string, string) (application.ExecutionStatus, error)
+	// Cancel 幂等取消指定 sandbox 内的 execution。
+	Cancel(context.Context, string, string) (application.CancelDisposition, error)
 }
 
 func registerExecutionRoutes(mux *http.ServeMux, service ExecutionService) {
@@ -35,7 +37,46 @@ func registerExecutionRoutes(mux *http.ServeMux, service ExecutionService) {
 		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", executeSandboxHandler(service))
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}", executionStatusHandler(service))
 	}
-	mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented("execution cancellation"))
+	if service == nil {
+		mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented("execution cancellation"))
+	} else {
+		mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}/executions/{execution_id}", cancelExecutionHandler(service))
+	}
+}
+
+func cancelExecutionHandler(service ExecutionService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sandboxID, executionID := r.PathValue("sandbox_id"), r.PathValue("execution_id")
+		if !validSandboxID(sandboxID) || !validExecutionID(executionID) || r.URL.RawQuery != "" || requestHasBody(r) {
+			writeError(w, r, domain.ErrInvalid)
+			return
+		}
+		disposition, err := service.Cancel(r.Context(), sandboxID, executionID)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		switch disposition {
+		case application.CancelAccepted:
+			w.WriteHeader(http.StatusAccepted)
+		case application.CancelAlreadyTerminal:
+			w.WriteHeader(http.StatusNoContent)
+		default:
+			writeError(w, r, domain.ErrRunnerUnhealthy)
+		}
+	}
+}
+
+func requestHasBody(r *http.Request) bool {
+	if r == nil || r.Body == nil {
+		return false
+	}
+	if r.ContentLength > 0 || len(r.TransferEncoding) > 0 {
+		return true
+	}
+	var value [1]byte
+	count, err := r.Body.Read(value[:])
+	return count != 0 || err != io.EOF
 }
 
 func executionStatusHandler(service ExecutionService) http.HandlerFunc {

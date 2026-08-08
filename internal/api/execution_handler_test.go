@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -166,6 +167,61 @@ func TestExecutionStatusHandlerRejectsIDsAndMapsErrors(t *testing.T) {
 	}
 }
 
+func TestCancelExecutionHandlerMapsIdempotentDisposition(t *testing.T) {
+	for _, test := range []struct {
+		name        string
+		disposition application.CancelDisposition
+		want        int
+	}{
+		{name: "accepted", disposition: application.CancelAccepted, want: http.StatusAccepted},
+		{name: "terminal", disposition: application.CancelAlreadyTerminal, want: http.StatusNoContent},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &apiExecutionServiceFake{cancelDisposition: test.disposition}
+			path := "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_test"
+			for range 2 {
+				response := httptest.NewRecorder()
+				NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, httptest.NewRequest(http.MethodDelete, path, nil))
+				if response.Code != test.want {
+					t.Fatalf("cancel status: got %d want %d", response.Code, test.want)
+				}
+			}
+			if !reflect.DeepEqual(service.cancelCalls, [][2]string{{executionHandlerSandboxID, "exec_test"}, {executionHandlerSandboxID, "exec_test"}}) {
+				t.Fatalf("cancel selection: %v", service.cancelCalls)
+			}
+		})
+	}
+}
+
+func TestCancelExecutionHandlerRejectsControlsAndMapsErrors(t *testing.T) {
+	base := "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_test"
+	for _, test := range []struct {
+		name, path, body string
+		err              error
+		want             int
+	}{
+		{name: "query signal", path: base + "?signal=KILL", want: http.StatusBadRequest},
+		{name: "query force", path: base + "?force=true", want: http.StatusBadRequest},
+		{name: "body pid", path: base, body: `{"pid":1}`, want: http.StatusBadRequest},
+		{name: "unknown", path: base, err: domain.ErrExecutionNotFound, want: http.StatusNotFound},
+		{name: "not running", path: base, err: domain.ErrSandboxNotRunning, want: http.StatusConflict},
+		{name: "runner", path: base, err: domain.ErrRunnerUnhealthy, want: http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &apiExecutionServiceFake{cancelErr: test.err, cancelDisposition: application.CancelAccepted}
+			var body io.Reader
+			if test.body != "" {
+				body = strings.NewReader(test.body)
+			}
+			response := httptest.NewRecorder()
+			NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, httptest.NewRequest(http.MethodDelete, test.path, body))
+			if response.Code != test.want {
+				t.Fatalf("cancel status: got %d want %d", response.Code, test.want)
+			}
+		})
+	}
+}
+
 func TestForegroundExecutionHandlerMapsServiceErrorBeforeSSE(t *testing.T) {
 	service := &apiExecutionServiceFake{err: domain.ErrSandboxNotRunning}
 	request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"argv":["true"]}`))
@@ -183,17 +239,25 @@ func TestForegroundExecutionHandlerMapsServiceErrorBeforeSSE(t *testing.T) {
 }
 
 type apiExecutionServiceFake struct {
-	result      application.ExecutionResult
-	err         error
-	commands    []application.Execute
-	status      application.ExecutionStatus
-	statusErr   error
-	statusCalls [][2]string
+	result            application.ExecutionResult
+	err               error
+	commands          []application.Execute
+	status            application.ExecutionStatus
+	statusErr         error
+	statusCalls       [][2]string
+	cancelDisposition application.CancelDisposition
+	cancelErr         error
+	cancelCalls       [][2]string
 }
 
 func (s *apiExecutionServiceFake) Status(_ context.Context, sandboxID, executionID string) (application.ExecutionStatus, error) {
 	s.statusCalls = append(s.statusCalls, [2]string{sandboxID, executionID})
 	return s.status, s.statusErr
+}
+
+func (s *apiExecutionServiceFake) Cancel(_ context.Context, sandboxID, executionID string) (application.CancelDisposition, error) {
+	s.cancelCalls = append(s.cancelCalls, [2]string{sandboxID, executionID})
+	return s.cancelDisposition, s.cancelErr
 }
 
 func (s *apiExecutionServiceFake) Execute(_ context.Context, command application.Execute) (application.ExecutionResult, error) {

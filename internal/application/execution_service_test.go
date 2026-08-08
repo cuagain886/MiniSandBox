@@ -118,6 +118,33 @@ func TestExecutionServiceStatusUsesSandboxBoundClient(t *testing.T) {
 	}
 }
 
+func TestExecutionServiceCancelPreservesIdempotentDisposition(t *testing.T) {
+	storeFake := testutil.NewFakeStore()
+	storeFake.SetGetResult(runningSandbox(), nil)
+	client := &executionClientFake{cancelDisposition: CancelAccepted}
+	factory := &executionFactoryFake{client: client}
+	service, _ := NewExecutionService(storeFake, factory)
+	for range 2 {
+		disposition, err := service.Cancel(context.Background(), executionServiceSandboxID, "exec_test")
+		if err != nil || disposition != CancelAccepted {
+			t.Fatalf("accepted cancel: disposition=%s err=%v", disposition, err)
+		}
+	}
+	client.cancelDisposition = CancelAlreadyTerminal
+	if disposition, err := service.Cancel(context.Background(), executionServiceSandboxID, "exec_test"); err != nil || disposition != CancelAlreadyTerminal {
+		t.Fatalf("terminal cancel: disposition=%s err=%v", disposition, err)
+	}
+	client.cancelErr = domain.ErrExecutionNotFound
+	if _, err := service.Cancel(context.Background(), executionServiceSandboxID, "missing"); !errors.Is(err, domain.ErrExecutionNotFound) {
+		t.Fatalf("unknown cancel: %v", err)
+	}
+	storeFake.SetGetResult(domain.Sandbox{ID: executionServiceSandboxID, DesiredState: domain.DesiredTerminated, ObservedState: domain.StateRunning}, nil)
+	before := len(client.cancelIDs)
+	if _, err := service.Cancel(context.Background(), executionServiceSandboxID, "exec_test"); !errors.Is(err, domain.ErrSandboxNotRunning) || len(client.cancelIDs) != before {
+		t.Fatalf("deleting cancel: err=%v calls=%v", err, client.cancelIDs)
+	}
+}
+
 func validExecutionCommand(background bool) Execute {
 	return Execute{SandboxID: executionServiceSandboxID, Background: background, Spec: domain.ExecutionSpec{Argv: []string{"printf", "ok"}, Env: map[string]string{"A": "B"}, Cwd: "/workspace"}}
 }
@@ -138,20 +165,28 @@ func (f *executionFactoryFake) Client(id string) (ExecutionClient, error) {
 }
 
 type executionClientFake struct {
-	stream          ExecutionEventStream
-	descriptor      ExecutionDescriptor
-	foregroundErr   error
-	backgroundErr   error
-	foregroundSpecs []domain.ExecutionSpec
-	backgroundSpecs []domain.ExecutionSpec
-	status          ExecutionStatus
-	statusErr       error
-	statusIDs       []string
+	stream            ExecutionEventStream
+	descriptor        ExecutionDescriptor
+	foregroundErr     error
+	backgroundErr     error
+	foregroundSpecs   []domain.ExecutionSpec
+	backgroundSpecs   []domain.ExecutionSpec
+	status            ExecutionStatus
+	statusErr         error
+	statusIDs         []string
+	cancelDisposition CancelDisposition
+	cancelErr         error
+	cancelIDs         []string
 }
 
 func (c *executionClientFake) Status(_ context.Context, id string) (ExecutionStatus, error) {
 	c.statusIDs = append(c.statusIDs, id)
 	return c.status, c.statusErr
+}
+
+func (c *executionClientFake) Cancel(_ context.Context, id string) (CancelDisposition, error) {
+	c.cancelIDs = append(c.cancelIDs, id)
+	return c.cancelDisposition, c.cancelErr
 }
 
 func (c *executionClientFake) ExecuteForeground(_ context.Context, spec domain.ExecutionSpec) (ExecutionEventStream, error) {
