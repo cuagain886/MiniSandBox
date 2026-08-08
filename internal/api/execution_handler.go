@@ -7,6 +7,7 @@ import (
 	"io"
 	"mime"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -46,7 +47,7 @@ func executeSandboxHandler(service ExecutionService) http.HandlerFunc {
 			return
 		}
 		if request.Background {
-			writeError(w, r, domain.ErrNotImplemented)
+			handleBackgroundExecution(w, r, service, sandboxID, request)
 			return
 		}
 		if !acceptsExecutionMediaType(r.Header.Values("Accept"), "text/event-stream") {
@@ -84,6 +85,45 @@ func executeSandboxHandler(service ExecutionService) http.HandlerFunc {
 			}
 			return controller.Flush()
 		})
+	}
+}
+
+func handleBackgroundExecution(w http.ResponseWriter, r *http.Request, service ExecutionService, sandboxID string, request protocol.ExecuteRequest) {
+	if values := r.Header.Values("Accept"); len(values) > 0 && !acceptsExecutionMediaType(values, "application/json") {
+		writeError(w, r, domain.ErrInvalidExecutionRequest)
+		return
+	}
+	result, err := service.Execute(r.Context(), mapExecutionCommand(sandboxID, request))
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	if result.Stream != nil || result.Descriptor == nil {
+		writeError(w, r, domain.ErrRunnerUnhealthy)
+		return
+	}
+	descriptor, err := mapExecutionDescriptor(*result.Descriptor)
+	if err != nil {
+		writeError(w, r, err)
+		return
+	}
+	w.Header().Set("Location", "/v1/sandboxes/"+url.PathEscape(sandboxID)+"/executions/"+url.PathEscape(descriptor.ExecutionID))
+	writeJSON(w, http.StatusAccepted, descriptor)
+}
+
+func mapExecutionDescriptor(descriptor application.ExecutionDescriptor) (protocol.ExecutionDescriptor, error) {
+	if descriptor.ID == "" || !validPublicExecutionState(descriptor.State) {
+		return protocol.ExecutionDescriptor{}, domain.ErrRunnerUnhealthy
+	}
+	return protocol.ExecutionDescriptor{ExecutionID: descriptor.ID, State: descriptor.State}, nil
+}
+
+func validPublicExecutionState(state protocol.ExecutionState) bool {
+	switch state {
+	case protocol.ExecutionStatePending, protocol.ExecutionStateRunning, protocol.ExecutionStateExited, protocol.ExecutionStateFailed, protocol.ExecutionStateCancelled, protocol.ExecutionStateTimedOut:
+		return true
+	default:
+		return false
 	}
 }
 

@@ -56,7 +56,6 @@ func TestForegroundExecutionHandlerRejectsBeforeApplication(t *testing.T) {
 		{name: "unknown field", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "text/event-stream", body: `{"argv":["true"],"secret":"x"}`, status: http.StatusBadRequest},
 		{name: "trailing JSON", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "text/event-stream", body: `{"argv":["true"]}{}`, status: http.StatusBadRequest},
 		{name: "accept", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "application/json", body: `{"argv":["true"]}`, status: http.StatusBadRequest},
-		{name: "background pending task", path: "/v1/sandboxes/" + executionHandlerSandboxID + "/executions", contentType: "application/json", accept: "application/json", body: `{"argv":["true"],"background":true}`, status: http.StatusNotImplemented},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -68,6 +67,58 @@ func TestForegroundExecutionHandlerRejectsBeforeApplication(t *testing.T) {
 			NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, request)
 			if response.Code != test.status || len(service.commands) != 0 {
 				t.Fatalf("response=%d commands=%d", response.Code, len(service.commands))
+			}
+		})
+	}
+}
+
+func TestBackgroundExecutionHandlerReturnsMinimalDescriptorAndLocation(t *testing.T) {
+	service := &apiExecutionServiceFake{result: application.ExecutionResult{Descriptor: &application.ExecutionDescriptor{ID: "exec_test", State: protocol.ExecutionStateRunning}}}
+	request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"shell":"echo ok","background":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Accept", "application/json")
+	response := httptest.NewRecorder()
+	NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("background status: %d body=%s", response.Code, response.Body.String())
+	}
+	wantLocation := "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_test"
+	if response.Header().Get("Location") != wantLocation {
+		t.Fatalf("Location: %q", response.Header().Get("Location"))
+	}
+	encoded := response.Body.String()
+	var descriptor protocol.ExecutionDescriptor
+	if err := json.NewDecoder(strings.NewReader(encoded)).Decode(&descriptor); err != nil || descriptor.ExecutionID != "exec_test" || descriptor.State != protocol.ExecutionStateRunning {
+		t.Fatalf("descriptor: %+v err=%v", descriptor, err)
+	}
+	if len(service.commands) != 1 || !service.commands[0].Background || service.commands[0].Spec.Shell != "echo ok" {
+		t.Fatalf("background command: %+v", service.commands)
+	}
+	for _, forbidden := range []string{"socket", "token", "pid", "pgid", "/run/minisandbox"} {
+		if strings.Contains(strings.ToLower(encoded), forbidden) {
+			t.Fatalf("response leaked %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestBackgroundExecutionHandlerMapsApplicationFailures(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		err  error
+		want int
+	}{
+		{name: "limit", err: domain.ErrExecutionLimitReached, want: http.StatusTooManyRequests},
+		{name: "not running", err: domain.ErrSandboxNotRunning, want: http.StatusConflict},
+		{name: "runner", err: domain.ErrRunnerUnhealthy, want: http.StatusServiceUnavailable},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			service := &apiExecutionServiceFake{err: test.err}
+			request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"argv":["true"],"background":true}`))
+			request.Header.Set("Content-Type", "application/json")
+			response := httptest.NewRecorder()
+			NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, request)
+			if response.Code != test.want {
+				t.Fatalf("status: got %d want %d", response.Code, test.want)
 			}
 		})
 	}
