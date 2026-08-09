@@ -126,10 +126,6 @@ func policyPayload(t *testing.T, policy egresspolicy.Policy) []byte {
 	return payload
 }
 
-func framePolicy(t *testing.T, policy egresspolicy.Policy) []byte {
-	return frame(policyPayload(t, policy))
-}
-
 func frame(payload []byte) []byte {
 	result := make([]byte, 4+len(payload))
 	binary.BigEndian.PutUint32(result, uint32(len(payload)))

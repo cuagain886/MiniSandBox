@@ -96,7 +96,7 @@ func ensureEgressSidecar(ctx context.Context, engine EgressEngine, request runti
 		return egressSidecar{}, false, &ContainerCreateFailedError{cause: err}
 	}
 	if created.ID == "" {
-		return egressSidecar{}, true, &ContainerCreateFailedError{cause: errors.New("Docker returned empty egress sidecar ID")}
+		return egressSidecar{}, true, &ContainerCreateFailedError{cause: errors.New("docker returned empty egress sidecar ID")}
 	}
 	return egressSidecar{id: created.ID, state: runtimeport.ActualCreated}, true, nil
 }

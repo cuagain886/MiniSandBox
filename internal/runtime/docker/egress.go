@@ -33,7 +33,7 @@ func (r *Runtime) EnsureEgress(ctx context.Context, request runtimeport.EgressRe
 	if err != nil {
 		return runtimeport.EgressActual{}, errors.New("build managed egress policy")
 	}
-	sidecar, created, err := ensureEgressSidecar(ctx, engine, request, policy)
+	sidecar, _, err := ensureEgressSidecar(ctx, engine, request, policy)
 	if err != nil {
 		return runtimeport.EgressActual{}, err
 	}
@@ -41,10 +41,8 @@ func (r *Runtime) EnsureEgress(ctx context.Context, request runtimeport.EgressRe
 		return runtimeport.EgressActual{}, errors.New("egress sidecar is stopped")
 	}
 	if sidecar.state == runtimeport.ActualCreated {
-		if !created {
-			// 崩溃恢复允许继续尚未启动且配置精确匹配的 sidecar；OpenStdin/StdinOnce
-			// 保证仍只会有一个 attach 写端，任何 running/exited 漂移均走只读检查。
-		}
+		// 崩溃恢复允许继续尚未启动且配置精确匹配的 sidecar；OpenStdin/StdinOnce
+		// 保证仍只会有一个 attach 写端，任何 running/exited 漂移均走只读检查。
 		if err := writeEgressBootstrap(ctx, engine, r.netNSResolver, sidecar, request, policy); err != nil {
 			return runtimeport.EgressActual{}, err
 		}
@@ -186,7 +184,7 @@ func (r *Runtime) validateEgressRequest(request runtimeport.EgressRequest) (Egre
 	}
 	engine, ok := r.engine.(EgressEngine)
 	if !ok {
-		return nil, errors.New("Docker engine does not support egress resources")
+		return nil, errors.New("docker engine does not support egress resources")
 	}
 	return engine, nil
 }
