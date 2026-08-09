@@ -94,6 +94,7 @@ func TestRunAdvancesReadinessAfterEachSuccessfulStage(t *testing.T) {
 		cfg config.Config,
 		build controlapi.BuildInfo,
 		sandboxStore store.Store,
+		runtime runtimeport.Runtime,
 		queue *reconcile.WakeQueue,
 		readiness *controlapi.Readiness,
 	) (httpHandle, error) {
@@ -105,6 +106,7 @@ func TestRunAdvancesReadinessAfterEachSuccessfulStage(t *testing.T) {
 			cfg,
 			build,
 			sandboxStore,
+			runtime,
 			queue,
 			readiness,
 		)
@@ -171,6 +173,7 @@ func TestRunMarksNotReadyBeforeHTTPShutdown(t *testing.T) {
 		cfg config.Config,
 		build controlapi.BuildInfo,
 		sandboxStore store.Store,
+		runtime runtimeport.Runtime,
 		queue *reconcile.WakeQueue,
 		readiness *controlapi.Readiness,
 	) (httpHandle, error) {
@@ -178,6 +181,7 @@ func TestRunMarksNotReadyBeforeHTTPShutdown(t *testing.T) {
 			cfg,
 			build,
 			sandboxStore,
+			runtime,
 			queue,
 			readiness,
 		)

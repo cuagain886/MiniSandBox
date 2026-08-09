@@ -30,6 +30,10 @@ func main() {
 	switch os.Args[1] {
 	case "socket-probe":
 		probeSocket()
+	case "tcp-probe":
+		probeTCP(os.Args[2:])
+	case "tcp-server":
+		serveTCP(os.Args[2:])
 	case "argv":
 		writeArgv(os.Args[2:])
 	case "silent":
@@ -56,6 +60,39 @@ func main() {
 		writeEnvironment(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
+	}
+}
+
+func probeTCP(arguments []string) {
+	if len(arguments) != 2 {
+		os.Exit(exitProbeFailure)
+	}
+	timeoutMilliseconds, err := strconv.Atoi(arguments[1])
+	if err != nil || timeoutMilliseconds <= 0 || timeoutMilliseconds > 10_000 {
+		os.Exit(exitProbeFailure)
+	}
+	connection, err := net.DialTimeout("tcp", arguments[0], time.Duration(timeoutMilliseconds)*time.Millisecond)
+	if err != nil {
+		os.Exit(exitConnectDenied)
+	}
+	_ = connection.Close()
+}
+
+func serveTCP(arguments []string) {
+	if len(arguments) != 1 {
+		os.Exit(exitProbeFailure)
+	}
+	listener, err := net.Listen("tcp", arguments[0])
+	if err != nil {
+		os.Exit(exitProbeFailure)
+	}
+	defer listener.Close()
+	for {
+		connection, err := listener.Accept()
+		if err != nil {
+			os.Exit(exitProbeFailure)
+		}
+		_ = connection.Close()
 	}
 }
 

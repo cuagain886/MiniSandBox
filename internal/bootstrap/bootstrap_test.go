@@ -206,6 +206,7 @@ func recordingFactories(
 			config.Config,
 			controlapi.BuildInfo,
 			store.Store,
+			runtimeport.Runtime,
 			*reconcile.WakeQueue,
 			*controlapi.Readiness,
 		) (httpHandle, error) {

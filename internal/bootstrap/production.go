@@ -12,6 +12,7 @@ import (
 	"minisandbox/internal/application"
 	"minisandbox/internal/config"
 	"minisandbox/internal/datadir"
+	"minisandbox/internal/domain"
 	"minisandbox/internal/reconcile"
 	"minisandbox/internal/runnerauth"
 	"minisandbox/internal/runnerbootstrap"
@@ -181,6 +182,7 @@ func startProductionHTTP(
 	cfg config.Config,
 	build controlapi.BuildInfo,
 	sandboxStore store.Store,
+	runtime runtimeport.Runtime,
 	queue *reconcile.WakeQueue,
 	readiness *controlapi.Readiness,
 ) (httpHandle, error) {
@@ -204,7 +206,22 @@ func startProductionHTTP(
 	if err != nil {
 		return nil, err
 	}
-	execution, err := application.NewExecutionService(sandboxStore, applicationExecutionFactory{factory: runnerFactory}, cfg.Runner.MaxLogPageEvents)
+	var execution *application.ExecutionService
+	if cfg.Security.AllowOutbound {
+		egressGate, ok := runtime.(runtimeport.ExecutionEgressGate)
+		if !ok {
+			runnerFactory.Close()
+			return nil, errors.New("runtime does not provide outbound execution admission")
+		}
+		execution, err = application.NewExecutionServiceWithAdmissionGate(
+			sandboxStore,
+			applicationExecutionFactory{factory: runnerFactory},
+			outboundExecutionAdmission{runtime: egressGate},
+			cfg.Runner.MaxLogPageEvents,
+		)
+	} else {
+		execution, err = application.NewExecutionService(sandboxStore, applicationExecutionFactory{factory: runnerFactory}, cfg.Runner.MaxLogPageEvents)
+	}
 	if err != nil {
 		runnerFactory.Close()
 		return nil, err
@@ -241,6 +258,28 @@ func startProductionHTTP(
 		close(handle.done)
 	}()
 	return handle, nil
+}
+
+// outboundExecutionAdmission 在每次创建 outbound execution 前，把 runner 自报的 netns
+// 与 runtime 从受信 Docker 状态重建的 sidecar 身份进行只读比对；任一信息不可用都拒绝准入。
+type outboundExecutionAdmission struct {
+	runtime runtimeport.ExecutionEgressGate
+}
+
+// Check 不接受调用方提供的容器或 sidecar 标识，避免用未受信输入选择网络命名空间。
+func (gate outboundExecutionAdmission) Check(ctx context.Context, sandbox domain.Sandbox, client application.ExecutionClient) error {
+	identityClient, ok := client.(application.ExecutionNetworkIdentityClient)
+	if !ok || gate.runtime == nil {
+		return errors.New("runner does not provide network namespace identity")
+	}
+	identity, err := identityClient.NetworkNamespace(ctx)
+	if err != nil {
+		return errors.New("read runner network namespace identity")
+	}
+	if err := gate.runtime.CheckSandboxEgress(ctx, sandbox.ID, identity); err != nil {
+		return errors.New("outbound execution admission rejected")
+	}
+	return nil
 }
 
 // queueWaker 把带返回值的 WakeQueue 适配为 application 尽力通知端口。

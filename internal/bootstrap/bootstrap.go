@@ -83,6 +83,7 @@ type factories struct {
 		config.Config,
 		controlapi.BuildInfo,
 		store.Store,
+		runtimeport.Runtime,
 		*reconcile.WakeQueue,
 		*controlapi.Readiness,
 	) (httpHandle, error)
@@ -179,6 +180,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 		cfg,
 		options.Build,
 		sandboxStore,
+		runtime,
 		queue,
 		readiness,
 	)

@@ -72,11 +72,30 @@ func TestBuildKeepsMandatoryBaseline(t *testing.T) {
 	if err != nil {
 		t.Fatalf("build baseline policy: %v", err)
 	}
-	for _, want := range []string{"10.0.0.0/8", "127.0.0.0/8", "169.254.0.0/16", "fc00::/7", "fe80::/10"} {
+	for _, want := range []string{
+		"0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+		"169.254.0.0/16", "172.16.0.0/12", "192.168.0.0/16", "224.0.0.0/4",
+		"::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+	} {
 		if !containsPrefix(append(append([]netip.Prefix(nil), policy.IPv4...), policy.IPv6...), want) {
 			t.Fatalf("mandatory baseline does not contain %s", want)
 		}
 	}
+	for _, allowed := range []string{"11.0.0.0/8", "1.1.1.1/32", "2001:4860::/32"} {
+		if coveredBy(policy, allowed) {
+			t.Fatalf("public fixture prefix %s unexpectedly denied", allowed)
+		}
+	}
+}
+
+func coveredBy(policy Policy, value string) bool {
+	prefix := netip.MustParsePrefix(value)
+	for _, denied := range append(append([]netip.Prefix(nil), policy.IPv4...), policy.IPv6...) {
+		if denied.Bits() <= prefix.Bits() && denied.Contains(prefix.Addr()) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestBuildRejectsInvalidFacts 验证平台配置和 Docker inspect 事实缺失或非法时
