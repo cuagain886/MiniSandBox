@@ -54,6 +54,10 @@ func registerExecutionRoutes(mux *http.ServeMux, service ExecutionService, write
 
 func executionLogsHandler(service ExecutionService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.IsAbs() {
+			writeError(w, r, domain.ErrInvalid)
+			return
+		}
 		sandboxID, executionID := r.PathValue("sandbox_id"), r.PathValue("execution_id")
 		if !validSandboxID(sandboxID) || !validExecutionID(executionID) {
 			writeError(w, r, domain.ErrInvalid)
@@ -112,7 +116,7 @@ func parseCanonicalUint(values url.Values, key string) (uint64, error) {
 func cancelExecutionHandler(service ExecutionService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sandboxID, executionID := r.PathValue("sandbox_id"), r.PathValue("execution_id")
-		if !validSandboxID(sandboxID) || !validExecutionID(executionID) || r.URL.RawQuery != "" || requestHasBody(r) {
+		if r.URL.IsAbs() || !validSandboxID(sandboxID) || !validExecutionID(executionID) || r.URL.RawQuery != "" || requestHasBody(r) {
 			writeError(w, r, domain.ErrInvalid)
 			return
 		}
@@ -147,7 +151,7 @@ func requestHasBody(r *http.Request) bool {
 func executionStatusHandler(service ExecutionService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sandboxID, executionID := r.PathValue("sandbox_id"), r.PathValue("execution_id")
-		if !validSandboxID(sandboxID) || !validExecutionID(executionID) {
+		if r.URL.IsAbs() || r.URL.RawQuery != "" || !validSandboxID(sandboxID) || !validExecutionID(executionID) {
 			writeError(w, r, domain.ErrInvalid)
 			return
 		}
@@ -220,7 +224,7 @@ func validExecutionID(id string) bool {
 func executeSandboxHandler(service ExecutionService, writeTimeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sandboxID := r.PathValue("sandbox_id")
-		if !validSandboxID(sandboxID) {
+		if r.URL.IsAbs() || r.URL.RawQuery != "" || !validSandboxID(sandboxID) {
 			writeError(w, r, domain.ErrInvalid)
 			return
 		}
