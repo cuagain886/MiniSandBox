@@ -146,7 +146,7 @@ func runProcessTree(arguments []string) {
 	if _, err := fmt.Fprintf(os.Stdout, "leader=%d child=%d grandchild=%d\n", os.Getpid(), child.Process.Pid, grandchildPID); err != nil {
 		os.Exit(exitProbeFailure)
 	}
-	if mode == "race" {
+	if mode == "race" || mode == "boundary" {
 		_ = child.Wait()
 		return
 	}
@@ -169,8 +169,12 @@ func runTreeChild(arguments []string) {
 func runTreeGrandchild(arguments []string) {
 	mode := treeMode(arguments)
 	configureTreeSignal(mode)
-	if mode == "race" {
-		time.Sleep(150 * time.Millisecond)
+	if mode == "race" || mode == "boundary" {
+		duration := 150 * time.Millisecond
+		if mode == "boundary" {
+			duration = time.Second
+		}
+		time.Sleep(duration)
 		return
 	}
 	for {
@@ -179,7 +183,7 @@ func runTreeGrandchild(arguments []string) {
 }
 
 func treeMode(arguments []string) string {
-	if len(arguments) != 1 || arguments[0] != "term" && arguments[0] != "kill" && arguments[0] != "race" {
+	if len(arguments) != 1 || arguments[0] != "term" && arguments[0] != "kill" && arguments[0] != "race" && arguments[0] != "boundary" {
 		os.Exit(exitProbeFailure)
 	}
 	return arguments[0]

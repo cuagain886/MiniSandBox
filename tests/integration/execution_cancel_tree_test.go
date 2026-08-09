@@ -134,7 +134,7 @@ func waitContainerPIDsGone(t *testing.T, harness *dockerHarness, containerID str
 	t.Fatalf("process tree still exists: %v", pids)
 }
 
-func assertSingleStoredTerminal(t *testing.T, client *runnerclient.Client, executionID string, want protocol.EventType) {
+func assertSingleStoredTerminal(t *testing.T, client *runnerclient.Client, executionID string, want protocol.EventType) protocol.ExecutionLogPage {
 	t.Helper()
 	page, err := client.Logs(context.Background(), executionID, 0)
 	if err != nil || !page.Complete {
@@ -152,4 +152,5 @@ func assertSingleStoredTerminal(t *testing.T, client *runnerclient.Client, execu
 	if terminalCount != 1 {
 		t.Fatalf("stored terminal count: %d", terminalCount)
 	}
+	return page
 }
