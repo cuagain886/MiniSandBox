@@ -47,7 +47,7 @@ sidecar 通过 nftables 无条件屏蔽内部 CIDR”。egress sidecar 因而是
 | rule schema | 整数 `1` |
 | entrypoint | 固定第一方 `egressd bootstrap`，普通请求不能覆盖 |
 | user | bootstrap 阶段 root；Ready 前永久降为固定非 root anchor UID/GID |
-| capability | create 时 `CapDrop=ALL, CapAdd=NET_ADMIN`；Ready 时 `CapEff/CapPrm/CapAmb` 均不含 `NET_ADMIN` |
+| capability | create 时 `CapDrop=ALL, CapAdd=NET_ADMIN,SETUID,SETGID`；Ready 时 `CapEff/CapPrm/CapAmb` 全部为零 |
 | restart | `no` |
 | filesystem | read-only rootfs；只允许受管、有限大小的 attestation tmpfs |
 | network/listen | 不发布端口，不监听 TCP、HTTP 或 Unix Socket，不提供策略管理 endpoint |
@@ -126,11 +126,13 @@ attestation 不含完整 CIDR、凭据、container ID、host path 或错误文�
 
 ## 7. 永久降权
 
-Ready 之前按不可逆顺序执行：关闭 bootstrap stdin、拒绝主 GID 之外的任何
-supplementary group、清除 ambient/permitted/effective capabilities、回验固定
-非 root identity、设置 `no_new_privs` 并读取 `/proc/self/status`。Docker/runc
-重复注入的主 GID 不扩大组权限，可以保留；出现任意其他 GID 或非零 capability
-都立即退出。不得为了清空这个等价重复项而增加 `CAP_SETGID`。
+sidecar 以 root 启动，但从创建时即 `CapDrop=ALL`，只保留安装规则和完成不可逆
+身份切换所需的 `NET_ADMIN`、`SETGID`、`SETUID`；它不是 privileged 容器，也没有
+shell、host mount、Docker socket、device 或监听端口。严格 bootstrap EOF 后先安装
+并回验 nft，再关闭 bootstrap stdin、`setgroups(nil)`、`setresgid`、`setresuid`，
+清除 ambient/permitted/effective capabilities、设置 `no_new_privs` 并读取
+`/proc/self/status` 回验固定非 root identity。出现任意额外 GID、非零 capability
+或 `NoNewPrivs!=1` 都立即退出，且不得发布 attestation。
 
 Ready 后 anchor 不再拥有安装、修改或删除 nft 规则的能力，不接受新配置，也不
 fork/exec `nft`。主 sandbox 共享 netns 但不共享 sidecar filesystem、PID namespace
