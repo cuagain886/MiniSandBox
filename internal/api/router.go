@@ -8,6 +8,7 @@ import (
 	"context"
 	"encoding/json"
 	"net/http"
+	"time"
 
 	"minisandbox/internal/application"
 	"minisandbox/internal/domain"
@@ -47,6 +48,8 @@ type RouterDependencies struct {
 	Lifecycle LifecycleService
 	// Execution 提供当前 sandbox 的命令创建、查询和取消用例。
 	Execution ExecutionService
+	// SSEWriteTimeout 是外部前台流每个 frame 的写出上限；零值使用安全默认值。
+	SSEWriteTimeout time.Duration
 	// Readiness 保存启动依赖的并发安全就绪状态；nil 等价于全部未就绪。
 	Readiness *Readiness
 }
@@ -74,7 +77,7 @@ func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler
 	})
 	mux.HandleFunc("GET /readyz", readinessHandler(deps.Readiness))
 	registerLifecycleRoutes(mux, deps.Lifecycle)
-	registerExecutionRoutes(mux, deps.Execution)
+	registerExecutionRoutes(mux, deps.Execution, deps.SSEWriteTimeout)
 	return requestIDMiddleware(mux)
 }
 

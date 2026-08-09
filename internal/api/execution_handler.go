@@ -18,6 +18,7 @@ import (
 )
 
 const maxExecutionRequestBodyBytes int64 = 1 << 20
+const defaultExternalSSEWriteTimeout = 5 * time.Second
 
 // ExecutionService 定义公共 execution handler 可调用的应用层用例。
 type ExecutionService interface {
@@ -31,13 +32,16 @@ type ExecutionService interface {
 	Logs(context.Context, string, string, uint64, int) (application.ExecutionLogPage, error)
 }
 
-func registerExecutionRoutes(mux *http.ServeMux, service ExecutionService) {
+func registerExecutionRoutes(mux *http.ServeMux, service ExecutionService, writeTimeout time.Duration) {
+	if writeTimeout <= 0 {
+		writeTimeout = defaultExternalSSEWriteTimeout
+	}
 	if service == nil {
 		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", notImplemented("command execution"))
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented("execution status"))
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/logs", notImplemented("execution logs"))
 	} else {
-		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", executeSandboxHandler(service))
+		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", executeSandboxHandler(service, writeTimeout))
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}", executionStatusHandler(service))
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/logs", executionLogsHandler(service))
 	}
@@ -213,7 +217,7 @@ func validExecutionID(id string) bool {
 	return true
 }
 
-func executeSandboxHandler(service ExecutionService) http.HandlerFunc {
+func executeSandboxHandler(service ExecutionService, writeTimeout time.Duration) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		sandboxID := r.PathValue("sandbox_id")
 		if !validSandboxID(sandboxID) {
@@ -242,7 +246,18 @@ func executeSandboxHandler(service ExecutionService) http.HandlerFunc {
 			writeError(w, r, domain.ErrRunnerUnhealthy)
 			return
 		}
-		defer result.Stream.Close()
+		streamDone := make(chan struct{})
+		go func() {
+			select {
+			case <-r.Context().Done():
+				_ = result.Stream.Close()
+			case <-streamDone:
+			}
+		}()
+		defer func() {
+			close(streamDone)
+			_ = result.Stream.Close()
+		}()
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.Header().Set("Cache-Control", "no-cache")
 		w.Header().Set("X-Accel-Buffering", "no")
@@ -259,11 +274,18 @@ func executeSandboxHandler(service ExecutionService) http.HandlerFunc {
 			frame := "id: " + strconv.FormatUint(event.Sequence, 10) + "\n" +
 				"event: " + string(event.Type) + "\n" +
 				"data: " + string(encoded) + "\n\n"
+			if err := controller.SetWriteDeadline(time.Now().Add(writeTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+				return err
+			}
 			if _, err := io.WriteString(w, frame); err != nil {
 				return err
 			}
-			return controller.Flush()
+			if err := controller.Flush(); err != nil {
+				return err
+			}
+			return nil
 		})
+		_ = controller.SetWriteDeadline(time.Time{})
 	}
 }
 
