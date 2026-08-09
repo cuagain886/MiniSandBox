@@ -118,7 +118,9 @@ func (l *ExecutionLauncher) start(ctx context.Context, request ExecutionLaunchRe
 		l.completePendingFailure(execution, store, TerminationInternalFailure, internalExecutionErrorCode, internalExecutionErrorMessage)
 		return nil, err
 	}
-	startedAt := l.clock.Now().UTC()
+	// startedAt 保留 systemClock 的单调时钟读数；对外事件时间戳由 EventStore
+	// 独立规范化为 UTC，duration 计算不能提前剥离单调部分。
+	startedAt := l.clock.Now()
 	reaped := make(chan struct{})
 	finalized := make(chan struct{})
 	arbiter, err := NewTerminalArbiter(execution, store, finalized)
@@ -159,7 +161,7 @@ func (l *ExecutionLauncher) start(ctx context.Context, request ExecutionLaunchRe
 		return nil, err
 	}
 	cancelHandler := func(reason TerminationReason) error {
-		duration := l.clock.Now().UTC().Sub(startedAt)
+		duration := l.clock.Now().Sub(startedAt)
 		if duration < 0 {
 			duration = 0
 		}
@@ -234,7 +236,7 @@ func (l *ExecutionLauncher) supervise(
 	outputErr := <-outputDone
 	_ = timeout.Stop()
 	if outputErr != nil {
-		_, _ = arbiter.Submit(context.Background(), internalFailureCandidate(nonNegativeDuration(l.clock.Now().UTC().Sub(startedAt))))
+		_, _ = arbiter.Submit(context.Background(), internalFailureCandidate(nonNegativeDuration(l.clock.Now().Sub(startedAt))))
 	}
 	if outcome.PipeFailure != nil {
 		_, _ = arbiter.Submit(context.Background(), *outcome.PipeFailure)

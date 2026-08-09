@@ -36,6 +36,19 @@ func TestWaitProcessMapsZeroNonzeroAndSignalToExited(t *testing.T) {
 	}
 }
 
+// TestWaitProcessClockRollbackDoesNotChangeExit 验证缺少单调读数的注入时钟即使
+// 向后跳变，也只能把 duration 钳制为零，不能覆盖内核提供的真实退出状态。
+func TestWaitProcessClockRollbackDoesNotChangeExit(t *testing.T) {
+	command, readers := startWaitFixture(t, "exit 20")
+	finishedAt := time.Now()
+	outcome := WaitProcess(command, readers.Results, finishedAt.Add(time.Second), fixedClock{value: finishedAt})
+	candidate := outcome.WaitCandidate
+	if candidate.Reason != TerminationProcessExited || candidate.ExitCode == nil || *candidate.ExitCode != 20 ||
+		candidate.Duration != 0 || outcome.PipeFailure != nil {
+		t.Fatalf("clock rollback changed exit semantics: %+v", outcome)
+	}
+}
+
 // TestWaitProcessWaitsForBothReaders 验证 cmd 已退出时仍会等待两个 reader result 后才返回。
 func TestWaitProcessWaitsForBothReaders(t *testing.T) {
 	command := exec.Command("/bin/true")

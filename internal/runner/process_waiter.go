@@ -26,10 +26,11 @@ func WaitProcess(command *exec.Cmd, results <-chan PipeReadResult, startedAt tim
 		return ProcessWaitOutcome{WaitCandidate: candidate, PipeFailure: pipeFailure}
 	}
 	waitErr := command.Wait()
-	duration := clock.Now().UTC().Sub(startedAt.UTC())
+	// startedAt 与生产 systemClock 都保留 time.Time 的单调时钟读数。duration 不得
+	// 先转换 UTC，否则 WSL/NTP 校时造成的墙钟回拨会把正常退出误判成内部失败。
+	duration := clock.Now().Sub(startedAt)
 	if duration < 0 {
 		duration = 0
-		waitErr = errors.New("execution clock moved backwards")
 	}
 	candidate := mapProcessWaitResult(waitErr, command.ProcessState, duration)
 	if pipeFailure != nil {
