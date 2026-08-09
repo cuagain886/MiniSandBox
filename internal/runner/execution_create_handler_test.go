@@ -104,6 +104,7 @@ func TestForegroundCreateHandlerReturnsJSONBeforeHeadersOnStartFailure(t *testin
 		{ErrInvalidCWD, http.StatusUnprocessableEntity},
 		{ErrShellNotFound, http.StatusUnprocessableEntity},
 		{ErrProcessStartFailed, http.StatusUnprocessableEntity},
+		{ErrInvalidExecutionEnvironment, http.StatusUnprocessableEntity},
 		{errors.New("secret internal cause"), http.StatusInternalServerError},
 	} {
 		streamed := false

@@ -11,6 +11,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"syscall"
@@ -51,6 +52,8 @@ func main() {
 		writeLogPages(os.Args[2:])
 	case "count-active-groups":
 		countActiveGroups(os.Args[2:])
+	case "environment":
+		writeEnvironment(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -303,5 +306,18 @@ func countActiveGroups(arguments []string) {
 	}
 	if err := os.WriteFile(arguments[0], []byte(strconv.Itoa(count)), 0o600); err != nil {
 		os.Exit(exitProbeFailure)
+	}
+}
+
+func writeEnvironment(arguments []string) {
+	if len(arguments) != 0 {
+		os.Exit(exitProbeFailure)
+	}
+	environment := os.Environ()
+	sort.Strings(environment)
+	for _, entry := range environment {
+		if _, err := fmt.Fprintln(os.Stdout, entry); err != nil {
+			os.Exit(exitProbeFailure)
+		}
 	}
 }

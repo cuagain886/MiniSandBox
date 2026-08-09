@@ -224,6 +224,8 @@ func writeLaunchError(w http.ResponseWriter, err error) {
 		writeRunnerError(w, http.StatusUnprocessableEntity, string(protocol.ErrorCodeShellNotFound), "execution shell is unavailable", false)
 	case errors.Is(err, ErrProcessStartFailed):
 		writeRunnerError(w, http.StatusUnprocessableEntity, "EXECUTION_START_FAILED", "execution could not be started", false)
+	case errors.Is(err, ErrInvalidExecutionEnvironment):
+		writeRunnerError(w, http.StatusUnprocessableEntity, string(protocol.ErrorCodeInvalidExecutionRequest), "execution environment is invalid", false)
 	default:
 		writeRunnerError(w, http.StatusInternalServerError, "INTERNAL_ERROR", "execution could not be started", false)
 	}
