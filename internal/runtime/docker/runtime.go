@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"sync"
 	"time"
 
 	mobyclient "github.com/moby/moby/client"
@@ -140,6 +141,8 @@ type Runtime struct {
 	egressConfig    *EgressPlatformConfig
 	bootstrap       RunnerBootstrapProvider
 	bootstrapCloser io.Closer
+	egressLocksMu   sync.Mutex
+	egressLocks     map[string]*egressAttachLock
 }
 
 // RunnerBootstrapProvider 为单个 sandbox 在受管 runtime 目录准备可信配置与一次性凭据。
