@@ -14,7 +14,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 )
 
-const executionHelperPath = "/minisandbox-execution-helper"
+const executionHelperPath = "/usr/local/bin/minisandbox-execution-helper"
 
 // buildExecutionHelper 构建与测试宿主同架构的静态 Linux 探针，避免依赖测试镜像内的调试工具。
 func buildExecutionHelper(t *testing.T) []byte {
@@ -36,7 +36,7 @@ func buildExecutionHelper(t *testing.T) []byte {
 // installExecutionHelper 把测试专用探针注入当前 sandbox，不改变镜像或生产 artifact。
 func installExecutionHelper(t *testing.T, client *mobyclient.Client, containerID string, helper []byte) {
 	t.Helper()
-	archive := executableArchive(t, map[string][]byte{"minisandbox-execution-helper": helper})
+	archive := executableArchive(t, map[string][]byte{"usr/local/bin/minisandbox-execution-helper": helper})
 	if _, err := client.CopyToContainer(context.Background(), containerID, mobyclient.CopyToContainerOptions{
 		DestinationPath: "/",
 		Content:         io.NopCloser(bytes.NewReader(archive)),

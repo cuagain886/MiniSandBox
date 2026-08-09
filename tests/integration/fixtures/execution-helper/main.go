@@ -3,10 +3,12 @@ package main
 
 import (
 	"bufio"
+	"encoding/base64"
 	"errors"
 	"fmt"
 	"net"
 	"os"
+	"strconv"
 	"syscall"
 	"time"
 )
@@ -17,7 +19,23 @@ const (
 )
 
 func main() {
-	if len(os.Args) != 4 || os.Args[1] != "socket-probe" {
+	if len(os.Args) < 2 {
+		os.Exit(exitProbeFailure)
+	}
+	switch os.Args[1] {
+	case "socket-probe":
+		probeSocket()
+	case "argv":
+		writeArgv(os.Args[2:])
+	case "silent":
+		return
+	default:
+		os.Exit(exitProbeFailure)
+	}
+}
+
+func probeSocket() {
+	if len(os.Args) != 4 {
 		os.Exit(exitProbeFailure)
 	}
 	connection, err := net.DialTimeout("unix", os.Args[2], time.Second)
@@ -40,5 +58,14 @@ func main() {
 	}
 	if _, err := bufio.NewReader(connection).ReadString('\n'); err != nil {
 		os.Exit(exitProbeFailure)
+	}
+}
+
+func writeArgv(arguments []string) {
+	for _, argument := range arguments {
+		encoded := base64.StdEncoding.EncodeToString([]byte(argument))
+		if _, err := fmt.Fprintln(os.Stdout, strconv.Itoa(len(argument))+":"+encoded); err != nil {
+			os.Exit(exitProbeFailure)
+		}
 	}
 }
