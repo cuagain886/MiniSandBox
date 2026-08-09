@@ -1,10 +1,8 @@
 package egressanchor
 
 import (
-	"context"
+	"encoding/json"
 	"errors"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -12,36 +10,6 @@ import (
 	"minisandbox/internal/egressnft"
 	"minisandbox/internal/egresspolicy"
 )
-
-// TestActivatePublishesReadyAfterDrop 验证 bootstrap stdin、netns、降权回验和
-// attestation 发布按顺序完成，取消信号使纯 anchor 正常退出。
-func TestActivatePublishesReadyAfterDrop(t *testing.T) {
-	bootstrap := testBootstrap(t)
-	path := filepath.Join(t.TempDir(), "attestation.json")
-	platform := &fakePlatform{
-		networkNamespace: bootstrap.NetworkNamespace,
-		snapshot:         Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, NoNewPrivileges: true},
-	}
-	input := &fakeCloser{}
-	ctx, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := Activate(ctx, bootstrap, Options{
-		Platform: platform, BootstrapInput: input, AttestationPath: path,
-		Now: func() time.Time { return time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC) },
-	}); err != nil {
-		t.Fatalf("activate anchor: %v", err)
-	}
-	if !input.closed || platform.dropUID != bootstrap.AnchorUID || platform.dropGID != bootstrap.AnchorGID {
-		t.Fatalf("bootstrap resources were not closed/dropped: input=%+v platform=%+v", input, platform)
-	}
-	attestation, err := ReadAttestation(path)
-	if err != nil {
-		t.Fatalf("read attestation: %v", err)
-	}
-	if attestation.PolicyHash != bootstrap.Policy.Hash || attestation.NetworkNamespace != bootstrap.NetworkNamespace || attestation.ImageDigest != bootstrap.ImageDigest {
-		t.Fatalf("attestation mismatch: %+v", attestation)
-	}
-}
 
 // TestPrepareAndVerifyInMemory 验证新控制通道可以在不关闭 stdin、不写文件的前提下
 // 完成降权并生成内存证明，后续 inspect 会重新回读权限并拒绝漂移。
@@ -67,38 +35,36 @@ func TestPrepareAndVerifyInMemory(t *testing.T) {
 	}
 }
 
-// TestActivateFailClosed 验证 netns 漂移、降权失败、身份/capability 回验失败和 stdin
-// 关闭失败均不会创建 readiness 文件。
-func TestActivateFailClosed(t *testing.T) {
+// TestPrepareFailClosed 验证无效 bootstrap、netns 漂移、降权失败及权限回验失败均
+// 不会生成可返回的内存 attestation。
+func TestPrepareFailClosed(t *testing.T) {
 	bootstrap := testBootstrap(t)
+	invalidBootstrap := bootstrap
+	invalidBootstrap.AnchorUID = 0
+	invalidPlatform := validPlatform(bootstrap)
+	if _, err := Prepare(invalidBootstrap, invalidPlatform, nil); err == nil || invalidPlatform.dropUID != 0 {
+		t.Fatal("invalid bootstrap reached irreversible privilege drop")
+	}
 	const netAdmin = uint64(1) << 12
 	tests := []struct {
 		name     string
 		platform *fakePlatform
-		closer   *fakeCloser
 	}{
-		{name: "stdin close failure", platform: validPlatform(bootstrap), closer: &fakeCloser{err: errors.New("close")}},
-		{name: "netns lookup failure", platform: &fakePlatform{networkErr: errors.New("stat")}, closer: &fakeCloser{}},
-		{name: "netns mismatch", platform: &fakePlatform{networkNamespace: "linux-netns:1:2"}, closer: &fakeCloser{}},
-		{name: "drop failure", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, dropErr: errors.New("capset")}, closer: &fakeCloser{}},
-		{name: "snapshot failure", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshotErr: errors.New("status")}, closer: &fakeCloser{}},
-		{name: "wrong uid", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: 1, GID: bootstrap.AnchorGID}}, closer: &fakeCloser{}},
-		{name: "additional supplementary group", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, SupplementaryGroups: []uint32{bootstrap.AnchorGID, 10}}}, closer: &fakeCloser{}},
-		{name: "effective NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapEffective: netAdmin}}, closer: &fakeCloser{}},
-		{name: "permitted NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapPermitted: netAdmin}}, closer: &fakeCloser{}},
-		{name: "ambient NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapAmbient: netAdmin}}, closer: &fakeCloser{}},
-		{name: "no_new_privs disabled", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID}}, closer: &fakeCloser{}},
+		{name: "netns lookup failure", platform: &fakePlatform{networkErr: errors.New("stat")}},
+		{name: "netns mismatch", platform: &fakePlatform{networkNamespace: "linux-netns:1:2"}},
+		{name: "drop failure", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, dropErr: errors.New("capset")}},
+		{name: "snapshot failure", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshotErr: errors.New("status")}},
+		{name: "wrong uid", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: 1, GID: bootstrap.AnchorGID, NoNewPrivileges: true}}},
+		{name: "additional supplementary group", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, SupplementaryGroups: []uint32{bootstrap.AnchorGID, 10}, NoNewPrivileges: true}}},
+		{name: "effective NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapEffective: netAdmin, NoNewPrivileges: true}}},
+		{name: "permitted NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapPermitted: netAdmin, NoNewPrivileges: true}}},
+		{name: "ambient NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapAmbient: netAdmin, NoNewPrivileges: true}}},
+		{name: "no_new_privs disabled", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID}}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "attestation.json")
-			ctx, cancel := context.WithCancel(context.Background())
-			cancel()
-			if err := Activate(ctx, bootstrap, Options{Platform: test.platform, BootstrapInput: test.closer, AttestationPath: path}); err == nil {
-				t.Fatal("expected activation failure")
-			}
-			if _, err := os.Lstat(path); !os.IsNotExist(err) {
-				t.Fatalf("failed anchor declared Ready: %v", err)
+			if attestation, err := Prepare(bootstrap, test.platform, nil); err == nil || attestation != (Attestation{}) {
+				t.Fatalf("failed anchor declared Ready: attestation=%+v err=%v", attestation, err)
 			}
 		})
 	}
@@ -118,7 +84,7 @@ func TestVerifySnapshotAllowsOnlyPrimarySupplementaryGroup(t *testing.T) {
 	}
 }
 
-// TestAttestationValidation 验证文件类型、权限、大小、封闭 schema 与不可覆盖语义。
+// TestAttestationValidation 验证 attach payload 的大小、封闭 schema、重复字段和版本。
 func TestAttestationValidation(t *testing.T) {
 	bootstrap := testBootstrap(t)
 	valid := Attestation{
@@ -126,34 +92,26 @@ func TestAttestationValidation(t *testing.T) {
 		PolicyHash: bootstrap.Policy.Hash, NetworkNamespace: bootstrap.NetworkNamespace,
 		ImageDigest: bootstrap.ImageDigest, CreatedAt: time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC),
 	}
-	path := filepath.Join(t.TempDir(), "attestation.json")
-	if err := WriteAttestation(path, valid); err != nil {
-		t.Fatalf("write attestation: %v", err)
+	encoded, err := json.Marshal(valid)
+	if err != nil {
+		t.Fatalf("marshal attestation: %v", err)
 	}
-	if err := WriteAttestation(path, valid); err == nil {
-		t.Fatal("existing attestation was overwritten")
-	}
-	if _, err := ReadAttestation(path); err != nil {
-		t.Fatalf("read valid attestation: %v", err)
+	if _, err := ParseAttestation(encoded); err != nil {
+		t.Fatalf("parse valid attestation: %v", err)
 	}
 
 	tests := []struct {
 		name    string
 		content string
-		mode    os.FileMode
 	}{
-		{name: "unknown field", content: `{"unknown":true}`, mode: 0o400},
-		{name: "trailing JSON", content: `{}` + `{}`, mode: 0o400},
-		{name: "oversized", content: strings.Repeat("x", MaxAttestationBytes+1), mode: 0o400},
-		{name: "writable", content: `{}`, mode: 0o600},
+		{name: "unknown field", content: strings.TrimSuffix(string(encoded), "}") + `,"unknown":true}`},
+		{name: "duplicate field", content: strings.TrimSuffix(string(encoded), "}") + `,"policy_hash":"` + valid.PolicyHash + `"}`},
+		{name: "trailing JSON", content: string(encoded) + `{}`},
+		{name: "oversized", content: strings.Repeat("x", MaxAttestationBytes+1)},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			candidate := filepath.Join(t.TempDir(), "candidate")
-			if err := os.WriteFile(candidate, []byte(test.content), test.mode); err != nil {
-				t.Fatalf("write candidate: %v", err)
-			}
-			if _, err := ReadAttestation(candidate); err == nil {
+			if _, err := ParseAttestation([]byte(test.content)); err == nil {
 				t.Fatal("invalid attestation accepted")
 			}
 		})
@@ -200,14 +158,4 @@ func (platform *fakePlatform) DropPrivileges(uid, gid uint32) error {
 
 func (platform *fakePlatform) Snapshot() (Snapshot, error) {
 	return platform.snapshot, platform.snapshotErr
-}
-
-type fakeCloser struct {
-	closed bool
-	err    error
-}
-
-func (closer *fakeCloser) Close() error {
-	closer.closed = true
-	return closer.err
 }

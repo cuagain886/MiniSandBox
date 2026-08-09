@@ -5,16 +5,11 @@
 package egressanchor
 
 import (
-	"context"
 	"errors"
-	"io"
 	"time"
 
 	"minisandbox/internal/egressnft"
 )
-
-// DefaultAttestationPath 是 sidecar 受限 tmpfs 内的固定 readiness 文件路径。
-const DefaultAttestationPath = "/run/minisandbox-egress/attestation.json"
 
 // Snapshot 是降权回验所需的进程身份与 capability 视图。
 type Snapshot struct {
@@ -42,46 +37,6 @@ type Platform interface {
 	DropPrivileges(uint32, uint32) error
 	// Snapshot 回读当前身份与 capability 状态。
 	Snapshot() (Snapshot, error)
-}
-
-// Options 提供 Activate 的可信进程资源和可测试依赖。
-type Options struct {
-	// Platform 是 Linux 安全系统调用实现。
-	Platform Platform
-	// BootstrapInput 是必须在降权前关闭的一次性 bootstrap 输入。
-	BootstrapInput io.Closer
-	// AttestationPath 是受限 tmpfs 内的固定输出路径。
-	AttestationPath string
-	// Now 返回 attestation 使用的 UTC 时间。
-	Now func() time.Time
-}
-
-// Activate 校验 netns、永久降权、回验并原子发布 attestation，随后只等待 ctx
-// 结束以维持 namespace；函数本身不会创建任何监听 socket 或子进程。
-func Activate(ctx context.Context, bootstrap egressnft.Bootstrap, options Options) error {
-	if options.Platform == nil || options.BootstrapInput == nil {
-		return errors.New("egress anchor dependencies are incomplete")
-	}
-	path := options.AttestationPath
-	if path == "" {
-		path = DefaultAttestationPath
-	}
-	now := options.Now
-	if now == nil {
-		now = time.Now
-	}
-	if err := options.BootstrapInput.Close(); err != nil {
-		return errors.New("close egress bootstrap input")
-	}
-	attestation, err := Prepare(bootstrap, options.Platform, now)
-	if err != nil {
-		return err
-	}
-	if err := WriteAttestation(path, attestation); err != nil {
-		return err
-	}
-	<-ctx.Done()
-	return nil
 }
 
 // Prepare 校验预期 netns、执行永久降权并回读权限状态，随后构造仅保存在进程内存

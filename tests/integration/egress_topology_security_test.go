@@ -3,9 +3,12 @@
 package integration
 
 import (
+	"bufio"
 	"bytes"
 	"context"
+	"encoding/binary"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -18,6 +21,7 @@ import (
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/egressanchor"
+	"minisandbox/internal/egresscontrol"
 	dockerruntime "minisandbox/internal/runtime/docker"
 	"minisandbox/pkg/protocol"
 )
@@ -83,6 +87,8 @@ func TestEgressSidecarTopologyAndLeastPrivilege(t *testing.T) {
 		t.Fatal("sidecar immutable identity or labels drifted")
 	}
 	if sidecar.HostConfig.Privileged || !sidecar.HostConfig.ReadonlyRootfs || sidecar.HostConfig.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled ||
+		sidecar.HostConfig.LogConfig.Type != "none" || len(sidecar.HostConfig.Tmpfs) != 0 ||
+		!sidecar.Config.AttachStdin || !sidecar.Config.AttachStdout || sidecar.Config.AttachStderr || !sidecar.Config.OpenStdin || sidecar.Config.StdinOnce || sidecar.Config.Tty ||
 		len(sidecar.Config.Env) != 0 || len(sidecar.Config.Cmd) != 0 || len(sidecar.Config.ExposedPorts) != 0 || len(sidecar.HostConfig.PortBindings) != 0 ||
 		len(sidecar.HostConfig.Binds) != 0 || len(sidecar.HostConfig.Mounts) != 0 || len(sidecar.HostConfig.Devices) != 0 || len(sidecar.HostConfig.VolumesFrom) != 0 {
 		t.Fatal("sidecar least-privilege profile drifted")
@@ -111,11 +117,7 @@ func TestEgressSidecarTopologyAndLeastPrivilege(t *testing.T) {
 		t.Fatalf("sidecar anchor NoNewPrivs: %v", values)
 	}
 
-	attestationRaw := copyRegularFile(t, harness.client, sidecar.ID, egressanchor.DefaultAttestationPath)
-	attestation, err := egressanchor.ParseAttestation(attestationRaw)
-	if err != nil {
-		t.Fatalf("parse sidecar attestation: %v", err)
-	}
+	attestation := inspectSidecarAttestation(t, harness.client, sidecar.ID)
 	health, err := instance.runnerClient(t, outbound.ID).Health(t.Context(), 1)
 	if err != nil || health.NetNSIdentity != attestation.NetworkNamespace || attestation.ImageDigest != egressImage || attestation.PolicyHash != sidecar.Config.Labels[dockerruntime.LabelEgressPolicyHash] {
 		t.Fatalf("netns/image/policy attestation mismatch: health=%+v attestation=%+v err=%v", health, attestation, err)
@@ -184,4 +186,76 @@ func inspectContainer(t *testing.T, client *mobyclient.Client, name string) moby
 		t.Fatalf("inspect container: %v", err)
 	}
 	return result.Container
+}
+
+func inspectSidecarAttestation(t *testing.T, client *mobyclient.Client, containerID string) egressanchor.Attestation {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+	defer cancel()
+	attached, err := client.ContainerAttach(ctx, containerID, mobyclient.ContainerAttachOptions{
+		Stream: true, Stdin: true, Stdout: true,
+	})
+	if err != nil {
+		t.Fatalf("attach sidecar inspect: %v", err)
+	}
+	defer attached.Close()
+	if attached.Conn == nil || attached.Reader == nil {
+		t.Fatal("sidecar inspect attach is incomplete")
+	}
+	if err := attached.Conn.SetDeadline(time.Now().Add(10 * time.Second)); err != nil {
+		t.Fatalf("set sidecar inspect deadline: %v", err)
+	}
+	requestID, nonce, err := egresscontrol.NewCorrelation()
+	if err != nil {
+		t.Fatalf("generate sidecar inspect correlation: %v", err)
+	}
+	request := egresscontrol.Request{Type: egresscontrol.RequestInspect, RequestID: requestID, Nonce: nonce}
+	framed, err := egresscontrol.EncodeRequest(request)
+	if err != nil {
+		t.Fatalf("encode sidecar inspect: %v", err)
+	}
+	for len(framed) > 0 {
+		written, err := attached.Conn.Write(framed)
+		if err != nil || written <= 0 {
+			t.Fatalf("write sidecar inspect: written=%d err=%v", written, err)
+		}
+		framed = framed[written:]
+	}
+	response, err := egresscontrol.ReadResponse(&integrationDockerStdoutReader{reader: attached.Reader})
+	if err != nil {
+		t.Fatalf("read sidecar inspect: %v", err)
+	}
+	if response.RequestID != requestID || response.Nonce != nonce {
+		t.Fatal("sidecar inspect correlation mismatch")
+	}
+	return response.Attestation
+}
+
+type integrationDockerStdoutReader struct {
+	reader    *bufio.Reader
+	remaining uint32
+}
+
+func (reader *integrationDockerStdoutReader) Read(target []byte) (int, error) {
+	if len(target) == 0 {
+		return 0, nil
+	}
+	if reader.remaining == 0 {
+		header := make([]byte, 8)
+		if _, err := io.ReadFull(reader.reader, header); err != nil {
+			return 0, err
+		}
+		length := binary.BigEndian.Uint32(header[4:])
+		if header[0] != 1 || header[1] != 0 || header[2] != 0 || header[3] != 0 ||
+			length == 0 || length > egresscontrol.MaxResponseBytes+4 {
+			return 0, errors.New("invalid Docker stdout frame")
+		}
+		reader.remaining = length
+	}
+	if uint32(len(target)) > reader.remaining {
+		target = target[:reader.remaining]
+	}
+	count, err := reader.reader.Read(target)
+	reader.remaining -= uint32(count)
+	return count, err
 }

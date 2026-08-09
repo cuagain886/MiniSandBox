@@ -5,18 +5,16 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
-	"os"
-	"path/filepath"
 	"time"
 
 	"minisandbox/internal/egressnft"
 	"minisandbox/internal/egresspolicy"
 )
 
-// MaxAttestationBytes 是 readiness attestation regular file 的大小上限。
+// MaxAttestationBytes 是 attach 控制响应中 attestation envelope 的大小上限。
 const MaxAttestationBytes = 4096
 
-// Attestation 是 sidecar Ready 后由 adapter 只读取得的封闭 JSON 模型。
+// Attestation 是 sidecar Ready 后保存在 egressd 内存并通过 attach 返回的封闭模型。
 type Attestation struct {
 	// ProtocolVersion 是 egress bootstrap 精确协议版本。
 	ProtocolVersion int `json:"protocol_version"`
@@ -28,71 +26,17 @@ type Attestation struct {
 	NetworkNamespace string `json:"network_namespace"`
 	// ImageDigest 是 sidecar artifact 的精确 OCI digest reference。
 	ImageDigest string `json:"image_digest"`
-	// CreatedAt 是 attestation 原子发布前的 UTC 时间。
+	// CreatedAt 是初次 nft 回验及永久降权完成后的 UTC 时间；inspect 不会改写它。
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// WriteAttestation 以 0400 regular file 原子发布有界 JSON；已存在目标不会被覆盖，
-// 防止同一 sidecar 进程重复声明 Ready。
-func WriteAttestation(path string, attestation Attestation) error {
-	if err := validateAttestation(attestation); err != nil {
-		return err
-	}
-	encoded, err := json.Marshal(attestation)
-	if err != nil || len(encoded) == 0 || len(encoded) > MaxAttestationBytes {
-		return errors.New("encode egress attestation")
-	}
-	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
-		return errors.New("create egress attestation directory")
-	}
-	temporaryPath := path + ".tmp"
-	temporary, err := os.OpenFile(temporaryPath, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o400)
-	if err != nil {
-		return errors.New("create egress attestation temporary file")
-	}
-	removeTemporary := true
-	defer func() {
-		_ = temporary.Close()
-		if removeTemporary {
-			_ = os.Remove(temporaryPath)
-		}
-	}()
-	if _, err := temporary.Write(encoded); err != nil {
-		return errors.New("write egress attestation")
-	}
-	if err := temporary.Sync(); err != nil {
-		return errors.New("sync egress attestation")
-	}
-	if err := temporary.Close(); err != nil {
-		return errors.New("close egress attestation")
-	}
-	if _, err := os.Lstat(path); err == nil || !os.IsNotExist(err) {
-		return errors.New("egress attestation already exists")
-	}
-	if err := os.Rename(temporaryPath, path); err != nil {
-		return errors.New("publish egress attestation")
-	}
-	removeTemporary = false
-	return nil
-}
-
-// ReadAttestation 只接受不超过 4096 bytes、只读、字段封闭且版本有效的 regular file。
-func ReadAttestation(path string) (Attestation, error) {
-	info, err := os.Lstat(path)
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > MaxAttestationBytes || info.Mode().Perm()&0o222 != 0 {
-		return Attestation{}, errors.New("egress attestation file is invalid")
-	}
-	content, err := os.ReadFile(path)
-	if err != nil {
-		return Attestation{}, errors.New("read egress attestation")
-	}
-	return ParseAttestation(content)
-}
-
-// ParseAttestation 验证 adapter 从 Docker archive 只读取得的有界 attestation JSON。
+// ParseAttestation 验证 attach 控制协议取得的有界、字段封闭 attestation JSON。
 func ParseAttestation(content []byte) (Attestation, error) {
 	if len(content) == 0 || len(content) > MaxAttestationBytes {
 		return Attestation{}, errors.New("egress attestation content size is invalid")
+	}
+	if err := rejectDuplicateAttestationFields(content); err != nil {
+		return Attestation{}, err
 	}
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.DisallowUnknownFields()
@@ -108,6 +52,37 @@ func ParseAttestation(content []byte) (Attestation, error) {
 		return Attestation{}, err
 	}
 	return attestation, nil
+}
+
+func rejectDuplicateAttestationFields(content []byte) error {
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return errors.New("egress attestation JSON is invalid")
+	}
+	seen := make(map[string]struct{})
+	for decoder.More() {
+		keyToken, err := decoder.Token()
+		if err != nil {
+			return errors.New("egress attestation JSON is invalid")
+		}
+		key, ok := keyToken.(string)
+		if !ok {
+			return errors.New("egress attestation JSON is invalid")
+		}
+		if _, exists := seen[key]; exists {
+			return errors.New("egress attestation field is duplicated")
+		}
+		seen[key] = struct{}{}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return errors.New("egress attestation JSON is invalid")
+		}
+	}
+	if _, err := decoder.Token(); err != nil {
+		return errors.New("egress attestation JSON is invalid")
+	}
+	return nil
 }
 
 func validateAttestation(attestation Attestation) error {
