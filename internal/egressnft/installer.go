@@ -83,7 +83,7 @@ func verifyReadback(observed string, policy egresspolicy.Policy) error {
 		"schema=" + intString(policy.RuleSchemaVersion), "policy=" + policy.Hash,
 	}
 	for _, prefix := range append(append([]netip.Prefix(nil), policy.IPv4...), policy.IPv6...) {
-		markers = append(markers, prefix.String())
+		markers = append(markers, readbackPrefixMarker(prefix))
 	}
 	for _, marker := range markers {
 		if !strings.Contains(observed, marker) {
@@ -91,4 +91,11 @@ func verifyReadback(observed string, policy egresspolicy.Policy) error {
 		}
 	}
 	return nil
+}
+
+func readbackPrefixMarker(prefix netip.Prefix) string {
+	if prefix.IsValid() && prefix.Bits() == prefix.Addr().BitLen() {
+		return prefix.Addr().String()
+	}
+	return prefix.String()
 }
