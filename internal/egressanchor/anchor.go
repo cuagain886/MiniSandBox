@@ -22,7 +22,7 @@ type Snapshot struct {
 	UID uint32
 	// GID 是当前进程的有效 GID。
 	GID uint32
-	// SupplementaryGroups 是当前进程仍持有的附加组。
+	// SupplementaryGroups 是当前进程仍持有的附加组；只允许与主 GID 等价的重复项。
 	SupplementaryGroups []uint32
 	// CapEffective 是 Linux CapEff 位图。
 	CapEffective uint64
@@ -36,7 +36,7 @@ type Snapshot struct {
 type Platform interface {
 	// NetworkNamespace 返回当前进程 netns 的稳定 linux-netns:<dev>:<inode> 身份。
 	NetworkNamespace() (string, error)
-	// DropPrivileges 清空附加组、切换固定身份、清除 capability 并设置 no_new_privs。
+	// DropPrivileges 拒绝额外组权限、切换固定身份、清除 capability 并设置 no_new_privs。
 	DropPrivileges(uint32, uint32) error
 	// Snapshot 回读当前身份与 capability 状态。
 	Snapshot() (Snapshot, error)
@@ -101,12 +101,13 @@ func verifySnapshot(snapshot Snapshot, uid, gid uint32) error {
 	if snapshot.UID != uid || snapshot.GID != gid || uid == 0 || gid == 0 {
 		return errors.New("egress anchor identity mismatch")
 	}
-	if len(snapshot.SupplementaryGroups) != 0 {
-		return errors.New("egress anchor supplementary groups remain")
+	for _, supplementaryGID := range snapshot.SupplementaryGroups {
+		if supplementaryGID != gid {
+			return errors.New("egress anchor retains additional group privileges")
+		}
 	}
-	const netAdminMask = uint64(1) << 12
-	if snapshot.CapEffective&netAdminMask != 0 || snapshot.CapPermitted&netAdminMask != 0 || snapshot.CapAmbient&netAdminMask != 0 {
-		return errors.New("egress anchor retains NET_ADMIN")
+	if snapshot.CapEffective != 0 || snapshot.CapPermitted != 0 || snapshot.CapAmbient != 0 {
+		return errors.New("egress anchor retains capabilities")
 	}
 	return nil
 }

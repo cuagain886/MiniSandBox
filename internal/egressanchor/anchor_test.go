@@ -59,7 +59,7 @@ func TestActivateFailClosed(t *testing.T) {
 		{name: "drop failure", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, dropErr: errors.New("capset")}, closer: &fakeCloser{}},
 		{name: "snapshot failure", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshotErr: errors.New("status")}, closer: &fakeCloser{}},
 		{name: "wrong uid", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: 1, GID: bootstrap.AnchorGID}}, closer: &fakeCloser{}},
-		{name: "supplementary group", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, SupplementaryGroups: []uint32{10}}}, closer: &fakeCloser{}},
+		{name: "additional supplementary group", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, SupplementaryGroups: []uint32{bootstrap.AnchorGID, 10}}}, closer: &fakeCloser{}},
 		{name: "effective NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapEffective: netAdmin}}, closer: &fakeCloser{}},
 		{name: "permitted NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapPermitted: netAdmin}}, closer: &fakeCloser{}},
 		{name: "ambient NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapAmbient: netAdmin}}, closer: &fakeCloser{}},
@@ -76,6 +76,20 @@ func TestActivateFailClosed(t *testing.T) {
 				t.Fatalf("failed anchor declared Ready: %v", err)
 			}
 		})
+	}
+}
+
+// TestVerifySnapshotAllowsOnlyPrimarySupplementaryGroup 验证 Docker/runc 重复主 GID
+// 不被误判为额外权限，同时任何不同 GID 都继续 fail closed。
+func TestVerifySnapshotAllowsOnlyPrimarySupplementaryGroup(t *testing.T) {
+	const uid, gid = uint32(65532), uint32(65532)
+	for _, groups := range [][]uint32{nil, {gid}, {gid, gid}} {
+		if err := verifySnapshot(Snapshot{UID: uid, GID: gid, SupplementaryGroups: groups}, uid, gid); err != nil {
+			t.Fatalf("equivalent primary groups rejected: groups=%v err=%v", groups, err)
+		}
+	}
+	if err := verifySnapshot(Snapshot{UID: uid, GID: gid, SupplementaryGroups: []uint32{gid, 1000}}, uid, gid); err == nil {
+		t.Fatal("additional group privilege was accepted")
 	}
 }
 
@@ -135,7 +149,9 @@ func testBootstrap(t *testing.T) egressnft.Bootstrap {
 }
 
 func validPlatform(bootstrap egressnft.Bootstrap) *fakePlatform {
-	return &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID}}
+	return &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{
+		UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, SupplementaryGroups: []uint32{bootstrap.AnchorGID},
+	}}
 }
 
 type fakePlatform struct {

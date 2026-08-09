@@ -97,11 +97,18 @@ func TestEgressSidecarTopologyAndLeastPrivilege(t *testing.T) {
 		t.Fatalf("read sidecar anchor status: %v", err)
 	}
 	statusFields := parseStatusFields(statusContent)
-	assertRestrictedStatus(t, statusContent, 65532, 65532)
+	assertIdentityAndCapabilities(t, statusFields, 65532, 65532)
+	groups := statusFields["Groups"]
+	if len(groups) > 1 || len(groups) == 1 && groups[0] != "65532" {
+		t.Fatalf("sidecar anchor has additional group privileges: %v", groups)
+	}
 	for _, field := range []string{"CapEff", "CapPrm", "CapAmb"} {
 		if len(statusFields[field]) != 1 || statusFields[field][0] != "0000000000000000" {
 			t.Fatalf("sidecar anchor %s: %v", field, statusFields[field])
 		}
+	}
+	if values := statusFields["NoNewPrivs"]; len(values) != 1 || values[0] != "1" {
+		t.Fatalf("sidecar anchor NoNewPrivs: %v", values)
 	}
 
 	attestationRaw := copyRegularFile(t, harness.client, sidecar.ID, egressanchor.DefaultAttestationPath)
