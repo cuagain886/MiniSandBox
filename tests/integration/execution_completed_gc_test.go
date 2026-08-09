@@ -95,7 +95,9 @@ func startGCExecutionSandbox(t *testing.T, retention string, maxRetained int) (*
 
 func waitRunnerExecutionsNotFound(t *testing.T, client *runnerclient.Client, executionIDs ...string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
+	// 完整验收矩阵会并行争用 Docker 与 CPU；这里给周期 GC 留出与其他进程收敛测试一致的裕量，
+	// 但仍远低于 suite 总超时，避免把 collector 停滞误判为通过。
+	deadline := time.Now().Add(15 * time.Second)
 	for time.Now().Before(deadline) {
 		allMissing := true
 		for _, executionID := range executionIDs {
