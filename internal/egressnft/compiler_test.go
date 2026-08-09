@@ -22,7 +22,6 @@ func TestCompileStaticRules(t *testing.T) {
 	}
 	rules := string(first)
 	markers := []string{
-		"destroy table inet minisandbox_egress",
 		"table inet minisandbox_egress",
 		"set ipv4_denied { type ipv4_addr; flags interval;",
 		"set ipv6_denied { type ipv6_addr; flags interval;",

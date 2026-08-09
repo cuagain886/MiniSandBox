@@ -15,7 +15,6 @@ func Compile(policy egresspolicy.Policy) ([]byte, error) {
 		return nil, errors.New("cannot compile invalid egress policy")
 	}
 	var builder strings.Builder
-	builder.WriteString("destroy table inet " + TableName + "\n")
 	builder.WriteString("table inet " + TableName + " {\n")
 	builder.WriteString("  comment \"minisandbox schema=")
 	builder.WriteString(intString(policy.RuleSchemaVersion))
