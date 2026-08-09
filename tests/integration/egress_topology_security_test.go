@@ -78,7 +78,7 @@ func TestEgressSidecarTopologyAndLeastPrivilege(t *testing.T) {
 		t.Fatal("main sandbox exposes a network port")
 	}
 
-	if sidecar.Config.Image != egressImage || sidecar.Config.User != "65532:65532" || sidecar.Config.Labels[dockerruntime.LabelSandboxID] != outbound.ID ||
+	if sidecar.Config.Image != egressImage || sidecar.Config.User != "0:0" || sidecar.Config.Labels[dockerruntime.LabelSandboxID] != outbound.ID ||
 		sidecar.Config.Labels[dockerruntime.LabelResourceRole] != "egress-sidecar" || sidecar.Config.Labels[dockerruntime.LabelEgressImage] != egressImage {
 		t.Fatal("sidecar immutable identity or labels drifted")
 	}
@@ -88,7 +88,7 @@ func TestEgressSidecarTopologyAndLeastPrivilege(t *testing.T) {
 		t.Fatal("sidecar least-privilege profile drifted")
 	}
 	assertCapabilitySet(t, "sidecar CapDrop", sidecar.HostConfig.CapDrop, []string{"ALL"})
-	assertCapabilitySet(t, "sidecar CapAdd", sidecar.HostConfig.CapAdd, []string{"NET_ADMIN"})
+	assertCapabilitySet(t, "sidecar CapAdd", sidecar.HostConfig.CapAdd, []string{"NET_ADMIN", "SETUID", "SETGID"})
 	if !containsSecurityOption(sidecar.HostConfig.SecurityOpt, "no-new-privileges:true") || sidecar.State.Pid <= 1 {
 		t.Fatal("sidecar security option or PID is invalid")
 	}

@@ -25,9 +25,9 @@ func (LinuxPlatform) NetworkNamespace() (string, error) {
 	return fmt.Sprintf("linux-netns:%d:%d", uint64(stat.Dev), stat.Ino), nil
 }
 
-// DropPrivileges 拒绝主 GID 之外的附加组、切换固定非 root 身份、清空三组
-// capability 并设置 no_new_privs；Docker/runc 重复注入的主 GID 不扩大权限，
-// 因此无需为了清空列表而临时授予 CAP_SETGID。
+// DropPrivileges 清空 bootstrap root 的附加组、切换固定非 root 身份、清空三组
+// capability 并设置 no_new_privs；SETGID/SETUID 只服务于这次不可逆身份切换，
+// 任一步失败都阻止 Ready。
 func (LinuxPlatform) DropPrivileges(uid, gid uint32) error {
 	if uid == 0 || gid == 0 {
 		return errors.New("anchor identity must be non-root")
@@ -36,9 +36,9 @@ func (LinuxPlatform) DropPrivileges(uid, gid uint32) error {
 	if err != nil {
 		return err
 	}
-	for _, supplementaryGID := range groups {
-		if supplementaryGID != int(gid) {
-			return errors.New("anchor has additional group privileges")
+	if len(groups) != 0 {
+		if err := unix.Setgroups(nil); err != nil {
+			return err
 		}
 	}
 	if os.Getegid() != int(gid) {

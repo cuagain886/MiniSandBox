@@ -98,13 +98,13 @@ func TestBuildEgressSidecarSecuritySnapshot(t *testing.T) {
 		t.Fatalf("build sidecar options: %v", err)
 	}
 	if options.Name != egressSidecarName(request.SandboxID) || options.Config.Image != request.Image ||
-		options.Config.User != "65532:65532" || strings.Join(options.Config.Entrypoint, " ") != egressEntrypoint+" bootstrap" ||
+		options.Config.User != "0:0" || strings.Join(options.Config.Entrypoint, " ") != egressEntrypoint+" bootstrap" ||
 		!options.Config.OpenStdin || !options.Config.StdinOnce || len(options.Config.Env) != 0 || len(options.Config.Cmd) != 0 {
 		t.Fatalf("unsafe sidecar config: %+v", options.Config)
 	}
 	host := options.HostConfig
 	if host.NetworkMode != mobycontainer.NetworkMode(EgressNetworkName) || host.Privileged ||
-		!reflect.DeepEqual(host.CapDrop, []string{"ALL"}) || !reflect.DeepEqual(host.CapAdd, []string{"NET_ADMIN"}) ||
+		!reflect.DeepEqual(host.CapDrop, []string{"ALL"}) || !reflect.DeepEqual(host.CapAdd, []string{"NET_ADMIN", "SETUID", "SETGID"}) ||
 		!host.ReadonlyRootfs || host.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled ||
 		host.Tmpfs[egressTmpfsPath] != egressTmpfsOptions(request.AnchorUID, request.AnchorGID) ||
 		!strings.Contains(host.Tmpfs[egressTmpfsPath], "uid=65532,gid=65532") || len(host.Binds) != 0 || len(host.Mounts) != 0 ||

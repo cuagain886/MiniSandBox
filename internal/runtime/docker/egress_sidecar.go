@@ -59,13 +59,13 @@ func buildEgressSidecarOptions(request runtimeport.EgressRequest, policy egressp
 	return mobyclient.ContainerCreateOptions{
 		Name: egressSidecarName(request.SandboxID),
 		Config: &mobycontainer.Config{
-			User: fmt.Sprintf("%d:%d", request.AnchorUID, request.AnchorGID), Image: request.Image,
+			User: "0:0", Image: request.Image,
 			Entrypoint: []string{egressEntrypoint, "bootstrap"}, OpenStdin: true, StdinOnce: true,
 			NetworkDisabled: false, Labels: sidecarLabels(request, policy),
 		},
 		HostConfig: &mobycontainer.HostConfig{
 			NetworkMode: mobycontainer.NetworkMode(EgressNetworkName), Privileged: false,
-			CapDrop: []string{"ALL"}, CapAdd: []string{"NET_ADMIN"},
+			CapDrop: []string{"ALL"}, CapAdd: []string{"NET_ADMIN", "SETUID", "SETGID"},
 			SecurityOpt: []string{noNewPrivilegesSecurity}, ReadonlyRootfs: true,
 			RestartPolicy: mobycontainer.RestartPolicy{Name: mobycontainer.RestartPolicyDisabled},
 			Resources:     resources, Tmpfs: map[string]string{
