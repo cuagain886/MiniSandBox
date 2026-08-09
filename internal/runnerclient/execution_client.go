@@ -79,8 +79,9 @@ func (c *Client) ExecuteForeground(ctx context.Context, request protocol.Execute
 		return nil, err
 	}
 	if response.StatusCode != http.StatusOK {
+		statusErr := decodeStatusError(response)
 		response.Body.Close()
-		return nil, &StatusError{StatusCode: response.StatusCode}
+		return nil, statusErr
 	}
 	mediaType, _, err := mime.ParseMediaType(response.Header.Get("Content-Type"))
 	if err != nil || mediaType != "text/event-stream" {
@@ -141,7 +142,7 @@ func (c *Client) Cancel(ctx context.Context, executionID string) (CancelDisposit
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusAccepted && response.StatusCode != http.StatusNoContent {
-		return "", &StatusError{StatusCode: response.StatusCode}
+		return "", decodeStatusError(response)
 	}
 	limited, err := io.ReadAll(io.LimitReader(response.Body, 1))
 	if err != nil || len(limited) != 0 {
@@ -203,7 +204,7 @@ func (c *Client) doJSON(ctx context.Context, method, path string, input any, exp
 	}
 	defer response.Body.Close()
 	if response.StatusCode != expectedStatus {
-		return &StatusError{StatusCode: response.StatusCode}
+		return decodeStatusError(response)
 	}
 	limited, err := io.ReadAll(io.LimitReader(response.Body, maxRunnerResponseBytes+1))
 	if err != nil || int64(len(limited)) > maxRunnerResponseBytes {
@@ -218,6 +219,25 @@ func (c *Client) doJSON(ctx context.Context, method, path string, input any, exp
 		return &ProtocolMismatchError{}
 	}
 	return nil
+}
+
+func decodeStatusError(response *http.Response) *StatusError {
+	result := &StatusError{}
+	if response == nil {
+		return result
+	}
+	result.StatusCode = response.StatusCode
+	limited, err := io.ReadAll(io.LimitReader(response.Body, maxRunnerResponseBytes+1))
+	if err != nil || int64(len(limited)) > maxRunnerResponseBytes {
+		return result
+	}
+	var envelope protocol.ErrorResponse
+	decoder := json.NewDecoder(bytes.NewReader(limited))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&envelope); err == nil && envelope.Error.Code != "" {
+		result.Code = envelope.Error.Code
+	}
+	return result
 }
 
 func (c *Client) newRequest(ctx context.Context, method, path string, body io.Reader) (*http.Request, error) {

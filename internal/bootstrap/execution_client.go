@@ -78,6 +78,18 @@ func mapRunnerStatusError(err error) error {
 	if !errors.As(err, &status) {
 		return err
 	}
+	switch status.Code {
+	case string(protocol.ErrorCodeInvalidCWD):
+		return domain.ErrInvalidCWD
+	case string(protocol.ErrorCodeShellNotFound):
+		return domain.ErrShellNotFound
+	case string(protocol.ErrorCodeExecutionNotFound):
+		return domain.ErrExecutionNotFound
+	case string(protocol.ErrorCodeExecutionLimitReached):
+		return domain.ErrExecutionLimitReached
+	case string(protocol.ErrorCodeInvalidExecutionRequest):
+		return domain.ErrInvalidExecutionRequest
+	}
 	switch status.StatusCode {
 	case http.StatusBadRequest, http.StatusUnprocessableEntity:
 		return domain.ErrInvalidExecutionRequest

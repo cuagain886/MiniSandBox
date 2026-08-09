@@ -159,10 +159,15 @@ func (*ProtocolMismatchError) FailureReason() string {
 // StatusError 表示 runner 返回了非成功 HTTP 状态码。
 type StatusError struct {
 	StatusCode int
+	// Code 是 runner 返回的稳定机器错误码；响应不可解析时为空。
+	Code string
 }
 
 // Error 返回不包含响应正文和秘密信息的安全错误文本。
 func (e *StatusError) Error() string {
-	data, _ := json.Marshal(map[string]int{"status_code": e.StatusCode})
+	data, _ := json.Marshal(struct {
+		StatusCode int    `json:"status_code"`
+		Code       string `json:"code,omitempty"`
+	}{StatusCode: e.StatusCode, Code: e.Code})
 	return "runner request failed: " + string(data)
 }
