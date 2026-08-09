@@ -24,8 +24,8 @@ RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debia
     && apt-get install -y --no-install-recommends "nftables=${NFTABLES_VERSION}" \
     && mkdir -p /rootfs/usr/sbin \
     && cp /usr/sbin/nft /rootfs/usr/sbin/nft \
-    && ldd /usr/sbin/nft | awk '$(NF-1) == "=>" { print $NF } $1 ~ /^\// { print $1 }' \
-       | sort -u | xargs -r -I '{}' cp --parents '{}' /rootfs \
+    && ldd /usr/sbin/nft | awk '$(NF-2) == "=>" { print $(NF-1) } $1 ~ /^\// { print $1 }' \
+       | sort -u | xargs -r -I '{}' cp -L --parents '{}' /rootfs \
     && /usr/sbin/nft --version | grep -F "v${NFTABLES_VERSION%%-*}"
 
 FROM scratch

@@ -63,6 +63,7 @@ func TestEgressDockerfileIsMinimal(t *testing.T) {
 		"FROM scratch", "COPY --from=nft-runtime /rootfs /", "COPY --from=go-build /out/egressd",
 		"USER 65532:65532", `ENTRYPOINT ["/usr/local/bin/egressd", "bootstrap"]`,
 		`nftables=${NFTABLES_VERSION}`, "CGO_ENABLED=0 GOOS=linux GOARCH=amd64",
+		`awk '$(NF-2) == "=>" { print $(NF-1) }`, "cp -L --parents",
 	}
 	for _, marker := range required {
 		if !strings.Contains(dockerfile, marker) {
