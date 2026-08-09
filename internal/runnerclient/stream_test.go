@@ -73,6 +73,14 @@ func TestDecodeSSEPropagatesConsumerErrorAndCloses(t *testing.T) {
 	}
 }
 
+func TestDecodeSSEAcceptsBoundedLargeOutputFrame(t *testing.T) {
+	events := validStreamEvents()
+	events[1].DataBase64 = base64.StdEncoding.EncodeToString(bytes.Repeat([]byte{0x5a}, 32*1024))
+	if err := DecodeSSE(strings.NewReader(encodeClientFrames(t, events, "\n")), func(protocol.ExecutionEvent) error { return nil }); err != nil {
+		t.Fatalf("decode bounded large frame: %v", err)
+	}
+}
+
 func TestDecodeSSEAcceptsEveryTerminalType(t *testing.T) {
 	base := validStreamEvents()
 	for _, eventType := range []protocol.EventType{protocol.EventExited, protocol.EventFailed, protocol.EventCancelled, protocol.EventTimedOut} {

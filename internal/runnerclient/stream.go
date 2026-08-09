@@ -85,17 +85,24 @@ func DecodeSSE(reader io.Reader, consume func(protocol.ExecutionEvent) error) er
 }
 
 func readSSELine(reader *bufio.Reader) ([]byte, bool, error) {
-	line, err := reader.ReadSlice('\n')
-	if errors.Is(err, bufio.ErrBufferFull) || len(line) > maxSSELineBytes {
-		return nil, false, errors.New("SSE line exceeds limit")
+	var line []byte
+	for {
+		fragment, err := reader.ReadSlice('\n')
+		if len(fragment) > maxSSELineBytes-len(line) {
+			return nil, false, errors.New("SSE line exceeds limit")
+		}
+		line = append(line, fragment...)
+		if errors.Is(err, bufio.ErrBufferFull) {
+			continue
+		}
+		eof := errors.Is(err, io.EOF)
+		if err != nil && !eof {
+			return nil, false, err
+		}
+		line = bytes.TrimSuffix(line, []byte{'\n'})
+		line = bytes.TrimSuffix(line, []byte{'\r'})
+		return line, eof, nil
 	}
-	eof := errors.Is(err, io.EOF)
-	if err != nil && !eof {
-		return nil, false, err
-	}
-	line = bytes.TrimSuffix(line, []byte{'\n'})
-	line = bytes.TrimSuffix(line, []byte{'\r'})
-	return line, eof, nil
 }
 
 func appendSSELine(frame *sseFrame, line []byte) error {
