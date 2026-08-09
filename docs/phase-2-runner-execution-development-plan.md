@@ -5,6 +5,9 @@
 > - 上位设计：[全 Go Agent Sandbox Runtime 设计](./all-go-agent-sandbox-runtime-design.md)
 > - 阶段定义：本文的“第二阶段”对应上位设计中的 **Phase 2：Init 与 Runner 执行**
 
+> Phase 2 egress artifact、可重连 attach 控制协议与进程内 attestation 的最终契约见
+> [ADR-0002](./decisions/0002-phase2-egress-sidecar-artifact.md)；该 ADR 覆盖本文更早的 one-shot/tmpfs 草案。
+
 ## 1. 文档目的
 
 本文把 Phase 2 拆成可以逐个开发、逐个测试、逐个提交和逐个审查的小任务。
