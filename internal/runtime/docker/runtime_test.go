@@ -48,11 +48,6 @@ type fakeEngine struct {
 		string,
 		mobyclient.ContainerAttachOptions,
 	) (mobyclient.ContainerAttachResult, error)
-	copyFromContainerFunc func(
-		context.Context,
-		string,
-		mobyclient.CopyFromContainerOptions,
-	) (mobyclient.CopyFromContainerResult, error)
 	copyToContainerFunc func(
 		context.Context,
 		string,
@@ -105,14 +100,6 @@ func (f *fakeEngine) ContainerAttach(ctx context.Context, id string, options mob
 		return mobyclient.ContainerAttachResult{}, nil
 	}
 	return f.containerAttachFunc(ctx, id, options)
-}
-
-// CopyFromContainer 调用测试注入函数；未配置时返回零值结果。
-func (f *fakeEngine) CopyFromContainer(ctx context.Context, id string, options mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error) {
-	if f.copyFromContainerFunc == nil {
-		return mobyclient.CopyFromContainerResult{}, nil
-	}
-	return f.copyFromContainerFunc(ctx, id, options)
 }
 
 // NetworkInspect 调用测试注入函数；未配置时返回零值结果。
