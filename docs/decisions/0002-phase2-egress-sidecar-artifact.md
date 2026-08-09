@@ -1,6 +1,6 @@
 # ADR-0002：固定 Phase 2 egress sidecar 与 artifact contract
 
-- 状态：已接受（2026-08-09，依据 G5、G7 与 P2-064）
+- 状态：已接受（2026-08-09，依据 G5、G7 与 P2-064；同日补充可重连控制协议）
 - 决策日期：2026-08-09
 - 对应任务：P2-064
 - 适用范围：Phase 2 outbound sandbox 的 egress namespace anchor
@@ -28,10 +28,10 @@ sidecar 通过 nftables 无条件屏蔽内部 CIDR”。egress sidecar 因而是
 4. Phase 2 只发布 `linux/amd64`，不做运行时架构模拟；
 5. egress bootstrap protocol version 固定为 `1`，规则 schema version 固定为
    `1`；未知、旧版或未来版本均不得 Ready；
-6. bootstrap 只通过 Docker attach/start 的一次性长度前缀 stdin 传入，不进入
-   environment、command、labels、主 sandbox mount 或 host bind mount；
-7. nft 安装与回验完成后写出有界 attestation，永久丢弃 `NET_ADMIN`，随后仅作为
-   network namespace anchor 存活；
+6. sandboxd 只通过可重连 Docker attach stdin/stdout 与 sidecar 交互；首个请求是
+   唯一 bootstrap，后续请求只能 inspect，每次都有新的 request ID 与随机 nonce；
+7. nft 安装与回验完成后，egressd 永久丢弃 `NET_ADMIN`，把 attestation 仅保存在
+   进程内存，并在每次 inspect 时重新回验身份、capability 与 netns 后返回；
 8. `RestartPolicy=no`。anchor 退出后关闭新 execution admission、取消已有受管
    execution，并通过删除和完整重建恢复，不做无配置自动重启。
 
@@ -49,7 +49,9 @@ sidecar 通过 nftables 无条件屏蔽内部 CIDR”。egress sidecar 因而是
 | user | bootstrap 阶段 root；Ready 前永久降为固定非 root anchor UID/GID |
 | capability | create 时 `CapDrop=ALL, CapAdd=NET_ADMIN,SETUID,SETGID`；Ready 时 `CapEff/CapPrm/CapAmb` 全部为零 |
 | restart | `no` |
-| filesystem | read-only rootfs；只允许受管、有限大小的 attestation tmpfs |
+| filesystem | read-only rootfs；不挂载 tmpfs、bind mount 或 volume |
+| control | `OpenStdin=true`、`StdinOnce=false` 的 Docker attach stdin/stdout；每次 exchange 有界且可取消 |
+| logs | Docker `log-driver=none`；控制响应不得进入 Docker logs |
 | network/listen | 不发布端口，不监听 TCP、HTTP 或 Unix Socket，不提供策略管理 endpoint |
 
 镜像 digest 是完整供应链版本。具体 `egressd` commit、Go toolchain、`nft --version`、
@@ -69,24 +71,34 @@ image digest -> source commit -> egress protocol -> rule schema
 P2-064 不选择一个公共 registry 或虚构 digest。部署者可以镜像到私有 registry，
 但内容 digest、SBOM 和 provenance 必须保持一致；registry hostname 不是信任根。
 
-## 4. 一次性 bootstrap framing
+## 4. 可重连 attach 控制协议
 
-stdin 恰好包含一帧：
+egressd 的 stdin/stdout 是唯一控制通道。sandboxd 每次操作重新 Docker attach，写入
+一个请求帧并读取一个响应帧，然后关闭本次 attach；关闭连接不关闭容器 stdin，
+egressd 继续在同一进程中等待下一帧。每个帧都是：
 
 ```text
 4-byte uint32 big-endian JSON length
-1..65536 bytes strict UTF-8 JSON
-EOF
+1..上限 bytes strict UTF-8 JSON
 ```
 
-JSON schema 只允许：protocol version、rule schema version、policy hash、规范化 IPv4
-deny set、规范化 IPv6 deny set、受管 network identity 以及固定 anchor identity。
-字段由 sandboxd 从可信配置、Docker inspect 和 immutable policy 重建，公共
-sandbox/execution 请求不能提供或覆盖。
+请求 envelope 字段封闭，包含 `protocol_version`、`type`、`request_id`、`nonce`，
+以及仅 bootstrap 请求允许出现的 `bootstrap`。`request_id` 是每次新生成的 128-bit
+小写十六进制值，`nonce` 是每次新生成的 256-bit 随机挑战；响应必须原样回显二者，
+否则 sandboxd 拒绝结果。外层请求上限为 bootstrap 最大 65536 bytes 加固定 envelope
+余量，响应上限为 4096 bytes；读取不依赖 EOF，也不接受一帧中的尾随 JSON 值。
 
-以下情况全部非零退出且不得写 Ready attestation：空帧、超限、提前 EOF、尾随
-字节、第二帧、未知字段、重复字段、非法 UTF-8、未知版本、policy hash 不匹配、
-network identity 不匹配和 stdin 中断。读取完成后立即关闭输入并清零暂存 buffer。
+状态机封闭为：首个请求必须是 `bootstrap`，成功后只能是 `inspect`。bootstrap
+payload 只允许 protocol/rule schema、policy hash、规范化 IPv4/IPv6 deny sets、
+预期 netns、image digest 与固定 anchor UID/GID；字段由 sandboxd 从可信配置、Docker
+inspect 和 immutable policy 重建，公共 sandbox/execution 请求不能提供或覆盖。
+inspect 不含策略 payload，也不能更新任何状态。
+
+空帧、超限、提前 EOF、未知或重复字段、尾随 JSON、未知版本/类型、无效关联字段、
+inspect-before-bootstrap、重复 bootstrap、policy hash/netns 不匹配以及读写中断都会
+使 egressd 非零退出并关闭该 network namespace。sandboxd 对 attach、读写和响应
+校验使用同一有界 deadline/context，并按 sandbox 串行化控制 exchange；不会把未知
+状态当作 Ready。
 
 ## 5. nft 职责与规则边界
 
@@ -108,10 +120,11 @@ ADR 第 10 节的完整回归，不能原地替换。
 set 内容和 policy hash；任何缺失或额外允许规则均 fail closed。失败路径不得清空
 规则后继续 Ready，也不得退化为未过滤公网网络。
 
-## 6. Readiness attestation
+## 6. 进程内 attestation
 
-只有规则安装和回验成功后才能原子写入最大 4096 bytes 的 UTF-8 JSON regular
-file。schema 封闭且只含：
+只有规则安装、netns 校验与永久降权全部成功后，egressd 才在当前进程内构造
+attestation。它不写入文件、tmpfs、Docker logs、environment、labels 或命令行；
+容器退出即丢失，不能跨重启恢复。schema 封闭且只含：
 
 - egress protocol version；
 - rule schema version；
@@ -120,23 +133,26 @@ file。schema 封闭且只含：
 - artifact image digest；
 - UTC 生成时间。
 
-attestation 不含完整 CIDR、凭据、container ID、host path 或错误文本。sandboxd
-必须把 attestation、Docker network mode、sidecar/main sandbox netns identity 和
-期望 policy hash 一起验证；单独存在文件不代表 Ready。
+attestation 不含完整 CIDR、凭据、container ID、host path 或错误文本。每次 inspect
+返回前，egressd 都重新回读当前 netns、UID/GID、supplementary groups、
+`CapEff/CapPrm/CapAmb` 与 `NoNewPrivs`；任一漂移直接退出而不返回旧证明。sandboxd
+还必须验证响应的 request ID/nonce、Docker network mode、sidecar/main sandbox netns
+identity、期望 policy hash 与 image digest。单独收到一个结构合法的 JSON 不代表
+Ready。
 
 ## 7. 永久降权
 
 sidecar 以 root 启动，但从创建时即 `CapDrop=ALL`，只保留安装规则和完成不可逆
 身份切换所需的 `NET_ADMIN`、`SETGID`、`SETUID`；它不是 privileged 容器，也没有
-shell、host mount、Docker socket、device 或监听端口。严格 bootstrap EOF 后先安装
-并回验 nft，再关闭 bootstrap stdin、`setgroups(nil)`、`setresgid`、`setresuid`，
+shell、host mount、Docker socket、device 或监听端口。首个 bootstrap 请求后先安装
+并回验 nft，再执行 `setgroups(nil)`、`setresgid`、`setresuid`，
 清除 ambient/permitted/effective capabilities、设置 `no_new_privs` 并读取
 `/proc/self/status` 回验固定非 root identity。出现任意额外 GID、非零 capability
 或 `NoNewPrivs!=1` 都立即退出，且不得发布 attestation。
 
-Ready 后 anchor 不再拥有安装、修改或删除 nft 规则的能力，不接受新配置，也不
-fork/exec `nft`。主 sandbox 共享 netns 但不共享 sidecar filesystem、PID namespace
-或 capability，且自身仍为 `CapDrop=ALL`。
+Ready 后 anchor 不再拥有安装、修改或删除 nft 规则的能力，只接受无 payload 的
+只读 inspect，不 fork/exec `nft`。主 sandbox 共享 netns 但不共享 sidecar filesystem、
+PID namespace 或 capability，且自身仍为 `CapDrop=ALL`。
 
 ## 8. 供应链与发布门禁
 
@@ -146,7 +162,8 @@ fork/exec `nft`。主 sandbox 共享 netns 但不共享 sidecar filesystem、PID
 2. SPDX SBOM 与许可证清单；
 3. vulnerability scan 结果及明确的风险接受记录；
 4. `linux/amd64` 平台证明；
-5. `egressd`、bootstrap framing、nft transaction、attestation 和 capability drop
+5. `egressd`、可重连 attach framing/state machine、nft transaction、进程内
+   attestation 和 capability drop
    测试；
 6. 使用该精确 digest 的真实 Linux/Docker outbound 隔离验收。
 
@@ -167,13 +184,15 @@ Go module、动态策略服务或额外守护进程，必须另建 ADR 并重新
 
 ## 10. 必须验证的场景
 
-- bootstrap framing 的长度、EOF、尾随、重放、未知字段和版本矩阵；
+- attach framing 的长度、提前 EOF、尾随 JSON、关联字段、重连、重复 bootstrap、
+  inspect-before-bootstrap、未知字段和版本矩阵；
 - IPv4/IPv6 deny、内部 subnet/gateway、INPUT 主动连接拒绝、FORWARD 全拒绝；
 - nft 不存在、transaction 失败、回验漂移和 policy hash 不符；
 - `CapEff/CapPrm/CapAmb` 清零、无监听 socket、无 Docker socket/host mount/device；
 - anchor 信号退出、sidecar unhealthy、execution admission 关闭和完整重建；
 - image digest、SBOM、provenance、protocol/schema 和 attestation 的一致性；
-- 日志、错误、labels、inspect 和公共 API 中不存在完整 policy 或 bootstrap secret。
+- 无 tmpfs/volume/bind mount、`log-driver=none`，Docker logs、错误、labels、inspect
+  和公共 API 中不存在完整 policy、attestation 或 bootstrap secret。
 
 ## 11. 明确不做
 
