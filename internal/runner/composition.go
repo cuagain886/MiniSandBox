@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
-	"net/http"
 	"time"
 
 	"minisandbox/internal/runnerauth"
@@ -59,6 +58,27 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	if err != nil {
 		return err
 	}
+	validator, err := NewRequestValidator(bootstrap.Limits)
+	if err != nil {
+		return err
+	}
+	launcher, err := NewExecutionLauncher(manager, bootstrap)
+	if err != nil {
+		return err
+	}
+	stream, err := NewForegroundEventStream(ctx, manager, bootstrap.Limits.SSEWriteTimeoutNanoseconds, 15*time.Second)
+	if err != nil {
+		return err
+	}
+	create, err := NewExecutionCreateHandler(ExecutionCreateHandlerConfig{
+		MaxRequestBytes:    bootstrap.Limits.MaxRequestBytes,
+		Validator:          validator,
+		ForegroundLauncher: launcher,
+		ForegroundStream:   stream.Serve,
+	})
+	if err != nil {
+		return err
+	}
 	if err := readiness.MarkReady(); err != nil {
 		return err
 	}
@@ -66,7 +86,7 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	base64.RawURLEncoding.Encode(encodedToken, token[:])
 	defer clear(encodedToken)
 	routes := ServerRoutes{
-		Create: http.HandlerFunc(notImplemented), Status: status, Cancel: cancelHandler, Logs: logs,
+		Create: create, Status: status, Cancel: cancelHandler, Logs: logs,
 		Shutdown: NewShutdownHandler(manager, readiness, 5*time.Second),
 	}
 	handler, err := NewConfiguredServer(version, string(encodedToken), readiness, routes)
