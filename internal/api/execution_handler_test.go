@@ -222,6 +222,36 @@ func TestCancelExecutionHandlerRejectsControlsAndMapsErrors(t *testing.T) {
 	}
 }
 
+func TestExecutionLogsHandlerMapsCursorPage(t *testing.T) {
+	events := foregroundHandlerEvents()
+	service := &apiExecutionServiceFake{logPage: application.ExecutionLogPage{Events: events[1:], NextCursor: 3, Complete: true}}
+	path := "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_test/logs?cursor=1&limit=2"
+	response := httptest.NewRecorder()
+	NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, path, nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("logs status: %d %s", response.Code, response.Body.String())
+	}
+	if !reflect.DeepEqual(service.logCalls, []apiLogCall{{sandboxID: executionHandlerSandboxID, executionID: "exec_test", cursor: 1, limit: 2}}) {
+		t.Fatalf("log call: %+v", service.logCalls)
+	}
+	var page protocol.ExecutionLogPage
+	if err := json.NewDecoder(response.Body).Decode(&page); err != nil || len(page.Events) != 2 || page.NextCursor != 3 || !page.Complete {
+		t.Fatalf("log page: %+v err=%v", page, err)
+	}
+}
+
+func TestExecutionLogsHandlerRejectsArbitraryQueryAndInvalidNumbers(t *testing.T) {
+	base := "/v1/sandboxes/" + executionHandlerSandboxID + "/executions/exec_test/logs"
+	for _, query := range []string{"?path=/run/secret", "?cursor=-1", "?cursor=01", "?cursor=1&cursor=2", "?limit=-1", "?limit=01", "?limit=1&limit=2"} {
+		service := &apiExecutionServiceFake{}
+		response := httptest.NewRecorder()
+		NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(response, httptest.NewRequest(http.MethodGet, base+query, nil))
+		if response.Code != http.StatusBadRequest || len(service.logCalls) != 0 {
+			t.Fatalf("query %q: status=%d calls=%v", query, response.Code, service.logCalls)
+		}
+	}
+}
+
 func TestForegroundExecutionHandlerMapsServiceErrorBeforeSSE(t *testing.T) {
 	service := &apiExecutionServiceFake{err: domain.ErrSandboxNotRunning}
 	request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"argv":["true"]}`))
@@ -248,6 +278,9 @@ type apiExecutionServiceFake struct {
 	cancelDisposition application.CancelDisposition
 	cancelErr         error
 	cancelCalls       [][2]string
+	logPage           application.ExecutionLogPage
+	logErr            error
+	logCalls          []apiLogCall
 }
 
 func (s *apiExecutionServiceFake) Status(_ context.Context, sandboxID, executionID string) (application.ExecutionStatus, error) {
@@ -258,6 +291,18 @@ func (s *apiExecutionServiceFake) Status(_ context.Context, sandboxID, execution
 func (s *apiExecutionServiceFake) Cancel(_ context.Context, sandboxID, executionID string) (application.CancelDisposition, error) {
 	s.cancelCalls = append(s.cancelCalls, [2]string{sandboxID, executionID})
 	return s.cancelDisposition, s.cancelErr
+}
+
+func (s *apiExecutionServiceFake) Logs(_ context.Context, sandboxID, executionID string, cursor uint64, limit int) (application.ExecutionLogPage, error) {
+	s.logCalls = append(s.logCalls, apiLogCall{sandboxID: sandboxID, executionID: executionID, cursor: cursor, limit: limit})
+	return s.logPage, s.logErr
+}
+
+type apiLogCall struct {
+	sandboxID   string
+	executionID string
+	cursor      uint64
+	limit       int
 }
 
 func (s *apiExecutionServiceFake) Execute(_ context.Context, command application.Execute) (application.ExecutionResult, error) {

@@ -27,21 +27,82 @@ type ExecutionService interface {
 	Status(context.Context, string, string) (application.ExecutionStatus, error)
 	// Cancel 幂等取消指定 sandbox 内的 execution。
 	Cancel(context.Context, string, string) (application.CancelDisposition, error)
+	// Logs 读取指定 sandbox 内 execution 的 cursor 日志页。
+	Logs(context.Context, string, string, uint64, int) (application.ExecutionLogPage, error)
 }
 
 func registerExecutionRoutes(mux *http.ServeMux, service ExecutionService) {
 	if service == nil {
 		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", notImplemented("command execution"))
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented("execution status"))
+		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/logs", notImplemented("execution logs"))
 	} else {
 		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/executions", executeSandboxHandler(service))
 		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}", executionStatusHandler(service))
+		mux.HandleFunc("GET /v1/sandboxes/{sandbox_id}/executions/{execution_id}/logs", executionLogsHandler(service))
 	}
 	if service == nil {
 		mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}/executions/{execution_id}", notImplemented("execution cancellation"))
 	} else {
 		mux.HandleFunc("DELETE /v1/sandboxes/{sandbox_id}/executions/{execution_id}", cancelExecutionHandler(service))
 	}
+}
+
+func executionLogsHandler(service ExecutionService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		sandboxID, executionID := r.PathValue("sandbox_id"), r.PathValue("execution_id")
+		if !validSandboxID(sandboxID) || !validExecutionID(executionID) {
+			writeError(w, r, domain.ErrInvalid)
+			return
+		}
+		cursor, limit, err := parseExecutionLogQuery(r.URL.RawQuery)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		page, err := service.Logs(r.Context(), sandboxID, executionID, cursor, limit)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, protocol.ExecutionLogPage{Events: append([]protocol.ExecutionEvent(nil), page.Events...), NextCursor: page.NextCursor, Complete: page.Complete})
+	}
+}
+
+func parseExecutionLogQuery(raw string) (uint64, int, error) {
+	values, err := url.ParseQuery(raw)
+	if err != nil {
+		return 0, 0, domain.ErrInvalidExecutionRequest
+	}
+	for key := range values {
+		if key != "cursor" && key != "limit" {
+			return 0, 0, domain.ErrInvalidExecutionRequest
+		}
+	}
+	cursor, err := parseCanonicalUint(values, "cursor")
+	if err != nil {
+		return 0, 0, err
+	}
+	limit64, err := parseCanonicalUint(values, "limit")
+	if err != nil || limit64 > uint64(^uint(0)>>1) {
+		return 0, 0, domain.ErrInvalidExecutionRequest
+	}
+	return cursor, int(limit64), nil
+}
+
+func parseCanonicalUint(values url.Values, key string) (uint64, error) {
+	items, exists := values[key]
+	if !exists {
+		return 0, nil
+	}
+	if len(items) != 1 || items[0] == "" {
+		return 0, domain.ErrInvalidExecutionRequest
+	}
+	value, err := strconv.ParseUint(items[0], 10, 64)
+	if err != nil || strconv.FormatUint(value, 10) != items[0] {
+		return 0, domain.ErrInvalidExecutionRequest
+	}
+	return value, nil
 }
 
 func cancelExecutionHandler(service ExecutionService) http.HandlerFunc {

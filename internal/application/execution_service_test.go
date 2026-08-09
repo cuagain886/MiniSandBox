@@ -5,6 +5,7 @@ import (
 	"errors"
 	"reflect"
 	"testing"
+	"time"
 
 	"minisandbox/internal/domain"
 	"minisandbox/internal/testutil"
@@ -145,6 +146,41 @@ func TestExecutionServiceCancelPreservesIdempotentDisposition(t *testing.T) {
 	}
 }
 
+func TestExecutionServiceLogsValidatesAndLimitsPage(t *testing.T) {
+	storeFake := testutil.NewFakeStore()
+	storeFake.SetGetResult(runningSandbox(), nil)
+	client := &executionClientFake{logPage: ExecutionLogPage{Events: applicationLogEvents("exec_test", 1, 4), NextCursor: 4, Complete: true}}
+	factory := &executionFactoryFake{client: client}
+	service, err := NewExecutionService(storeFake, factory, 4)
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	page, err := service.Logs(context.Background(), executionServiceSandboxID, "exec_test", 0, 2)
+	if err != nil || len(page.Events) != 2 || page.NextCursor != 2 || page.Complete {
+		t.Fatalf("limited page: %+v err=%v", page, err)
+	}
+	if !reflect.DeepEqual(client.logCalls, []executionLogCall{{id: "exec_test", cursor: 0}}) {
+		t.Fatalf("log calls: %+v", client.logCalls)
+	}
+	for _, invalid := range []int{-1, 5} {
+		if _, err := service.Logs(context.Background(), executionServiceSandboxID, "exec_test", 0, invalid); !errors.Is(err, domain.ErrInvalidExecutionRequest) {
+			t.Fatalf("limit %d: %v", invalid, err)
+		}
+	}
+	client.logPage = ExecutionLogPage{Events: applicationLogEvents("other", 1, 1), NextCursor: 1}
+	if _, err := service.Logs(context.Background(), executionServiceSandboxID, "exec_test", 0, 0); !errors.Is(err, domain.ErrRunnerProtocolMismatch) {
+		t.Fatalf("ID mismatch: %v", err)
+	}
+	client.logPage = ExecutionLogPage{Events: applicationLogEvents("exec_test", 2, 2), NextCursor: 2}
+	if _, err := service.Logs(context.Background(), executionServiceSandboxID, "exec_test", 0, 0); !errors.Is(err, domain.ErrRunnerProtocolMismatch) {
+		t.Fatalf("sequence gap: %v", err)
+	}
+	client.logPage = ExecutionLogPage{Events: []protocol.ExecutionEvent{}, NextCursor: 4, Complete: true}
+	if page, err := service.Logs(context.Background(), executionServiceSandboxID, "exec_test", 4, 0); err != nil || !page.Complete || len(page.Events) != 0 {
+		t.Fatalf("complete empty continuation: %+v err=%v", page, err)
+	}
+}
+
 func validExecutionCommand(background bool) Execute {
 	return Execute{SandboxID: executionServiceSandboxID, Background: background, Spec: domain.ExecutionSpec{Argv: []string{"printf", "ok"}, Env: map[string]string{"A": "B"}, Cwd: "/workspace"}}
 }
@@ -177,6 +213,9 @@ type executionClientFake struct {
 	cancelDisposition CancelDisposition
 	cancelErr         error
 	cancelIDs         []string
+	logPage           ExecutionLogPage
+	logErr            error
+	logCalls          []executionLogCall
 }
 
 func (c *executionClientFake) Status(_ context.Context, id string) (ExecutionStatus, error) {
@@ -187,6 +226,30 @@ func (c *executionClientFake) Status(_ context.Context, id string) (ExecutionSta
 func (c *executionClientFake) Cancel(_ context.Context, id string) (CancelDisposition, error) {
 	c.cancelIDs = append(c.cancelIDs, id)
 	return c.cancelDisposition, c.cancelErr
+}
+
+func (c *executionClientFake) Logs(_ context.Context, id string, cursor uint64) (ExecutionLogPage, error) {
+	c.logCalls = append(c.logCalls, executionLogCall{id: id, cursor: cursor})
+	return c.logPage, c.logErr
+}
+
+type executionLogCall struct {
+	id     string
+	cursor uint64
+}
+
+func applicationLogEvents(id string, first, last uint64) []protocol.ExecutionEvent {
+	now := time.Date(2026, 8, 9, 0, 0, 0, 0, time.UTC)
+	result := make([]protocol.ExecutionEvent, 0, last-first+1)
+	for sequence := first; sequence <= last; sequence++ {
+		event := protocol.ExecutionEvent{ExecutionID: id, Sequence: sequence, Timestamp: now, Type: protocol.EventOutputLimitReached}
+		if sequence == last && last == 4 {
+			duration, truncated, exitCode := int64(1), false, 0
+			event = protocol.ExecutionEvent{ExecutionID: id, Sequence: sequence, Timestamp: now, Type: protocol.EventExited, ExitCode: &exitCode, DurationMS: &duration, OutputTruncated: &truncated}
+		}
+		result = append(result, event)
+	}
+	return result
 }
 
 func (c *executionClientFake) ExecuteForeground(_ context.Context, spec domain.ExecutionSpec) (ExecutionEventStream, error) {

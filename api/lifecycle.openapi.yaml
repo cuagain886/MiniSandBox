@@ -180,6 +180,7 @@ paths:
       operationId: getSandboxExecutionLogs
       parameters:
         - $ref: "#/components/parameters/LogCursor"
+        - $ref: "#/components/parameters/LogPageLimit"
       responses:
         "200":
           description: Execution events after the supplied sequence cursor
@@ -220,6 +221,15 @@ components:
         format: int64
         minimum: 0
         default: 0
+    LogPageLimit:
+      name: limit
+      in: query
+      required: false
+      description: Maximum events requested; omitted or zero uses the server-side maximum
+      schema:
+        type: integer
+        format: int32
+        minimum: 0
   responses:
     BadRequest:
       description: Request is invalid
