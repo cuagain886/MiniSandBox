@@ -15,6 +15,7 @@ import (
 func TestCreateSandboxRequestMapping(t *testing.T) {
 	createdAt := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
 	updatedAt := createdAt.Add(time.Second)
+	expiresAt := createdAt.Add(time.Hour)
 	server := httptest.NewServer(http.HandlerFunc(func(
 		response http.ResponseWriter,
 		request *http.Request,
@@ -55,6 +56,7 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 			Reason:    protocol.SandboxReasonCreateAccepted,
 			Message:   "Sandbox creation has been accepted.",
 			Image:     "alpine:3.22",
+			ExpiresAt: expiresAt,
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
 		})
@@ -80,6 +82,9 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 	if !sandbox.CreatedAt.Equal(createdAt) {
 		t.Fatalf("unexpected created time: got %s, want %s", sandbox.CreatedAt, createdAt)
 	}
+	if !sandbox.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("unexpected expiration time: got %s, want %s", sandbox.ExpiresAt, expiresAt)
+	}
 	if got, want := sandbox.Reason, protocol.SandboxReasonCreateAccepted; got != want {
 		t.Fatalf("unexpected sandbox reason: got %s, want %s", got, want)
 	}
@@ -95,6 +100,7 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 func TestGetSandboxResponseMapping(t *testing.T) {
 	createdAt := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
 	updatedAt := createdAt.Add(time.Minute)
+	expiresAt := createdAt.Add(time.Hour)
 	server := httptest.NewServer(http.HandlerFunc(func(
 		response http.ResponseWriter,
 		request *http.Request,
@@ -113,6 +119,7 @@ func TestGetSandboxResponseMapping(t *testing.T) {
 			Reason:    protocol.SandboxReasonRunning,
 			Message:   "Sandbox is running.",
 			Image:     "alpine:3.22",
+			ExpiresAt: expiresAt,
 			CreatedAt: createdAt,
 			UpdatedAt: updatedAt,
 		})
@@ -133,4 +140,60 @@ func TestGetSandboxResponseMapping(t *testing.T) {
 	if !sandbox.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("unexpected updated time: got %s, want %s", sandbox.UpdatedAt, updatedAt)
 	}
+	if !sandbox.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("unexpected expiration time: got %s, want %s", sandbox.ExpiresAt, expiresAt)
+	}
 }
+
+// TestCreateSandboxRequestWireTTLMapping 验证 SDK 只接受协议边界内的整秒 TTL。
+func TestCreateSandboxRequestWireTTLMapping(t *testing.T) {
+	tests := []struct {
+		name    string
+		ttl     *time.Duration
+		want    int64
+		wantErr bool
+	}{
+		{name: "omitted"},
+		{name: "minimum", ttl: durationPointer(time.Minute), want: 60},
+		{name: "maximum", ttl: durationPointer(24 * time.Hour), want: 86_400},
+		{name: "zero", ttl: durationPointer(0), wantErr: true},
+		{name: "negative", ttl: durationPointer(-time.Second), wantErr: true},
+		{name: "below minimum", ttl: durationPointer(time.Minute - time.Second), wantErr: true},
+		{name: "above maximum", ttl: durationPointer(24*time.Hour + time.Second), wantErr: true},
+		{name: "fractional second", ttl: durationPointer(time.Minute + time.Millisecond), wantErr: true},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			wire, err := (CreateSandboxRequest{
+				Image: "alpine:3.22",
+				TTL:   test.ttl,
+				Network: &SandboxNetworkRequest{
+					Outbound: true,
+				},
+			}).wire()
+			if test.wantErr {
+				if err == nil {
+					t.Fatal("expected TTL mapping error")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("map TTL: %v", err)
+			}
+			if wire.Network == nil || !wire.Network.Outbound {
+				t.Fatalf("network mapping: %#v", wire.Network)
+			}
+			if test.ttl == nil {
+				if wire.TTLSeconds != nil {
+					t.Fatalf("omitted TTL mapped to %#v", wire.TTLSeconds)
+				}
+				return
+			}
+			if wire.TTLSeconds == nil || *wire.TTLSeconds != test.want {
+				t.Fatalf("TTL seconds: got %#v, want %d", wire.TTLSeconds, test.want)
+			}
+		})
+	}
+}
+
+func durationPointer(value time.Duration) *time.Duration { return &value }

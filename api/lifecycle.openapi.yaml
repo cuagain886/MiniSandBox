@@ -1,7 +1,7 @@
 openapi: 3.1.0
 info:
   title: MiniSandbox Lifecycle API
-  version: 0.2.0
+  version: 0.3.0
 servers:
   - url: http://127.0.0.1:8080
 paths:
@@ -339,6 +339,12 @@ components:
       properties:
         image:
           type: string
+        ttl_seconds:
+          type: integer
+          format: int64
+          minimum: 60
+          maximum: 86400
+          description: Optional lease duration in whole seconds; omission selects the server default
         network:
           $ref: "#/components/schemas/SandboxNetworkRequest"
     SandboxNetworkRequest:
@@ -584,7 +590,7 @@ components:
     Sandbox:
       type: object
       additionalProperties: false
-      required: [id, state, reason, message, image, created_at, updated_at]
+      required: [id, state, reason, message, image, expires_at, created_at, updated_at]
       properties:
         id:
           type: string
@@ -597,6 +603,10 @@ components:
           description: Safe lifecycle detail without secrets or host paths
         image:
           type: string
+        expires_at:
+          type: string
+          format: date-time
+          description: Non-empty current lease expiration normalized to UTC
         created_at:
           type: string
           format: date-time
@@ -609,5 +619,6 @@ components:
         reason: CREATE_ACCEPTED
         message: Sandbox creation has been accepted.
         image: alpine:3.22
+        expires_at: "2026-07-25T11:30:00Z"
         created_at: "2026-07-25T10:30:00Z"
         updated_at: "2026-07-25T10:30:00Z"

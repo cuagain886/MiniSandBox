@@ -9,8 +9,8 @@ import (
 	"testing"
 )
 
-// TestPhase2LifecycleOpenAPISurface 验证 Phase 2 公开生命周期与 execution 契约。
-func TestPhase2LifecycleOpenAPISurface(t *testing.T) {
+// TestPhase3LifecycleOpenAPISurface 验证 Phase 3 增量生命周期与既有 execution 契约。
+func TestPhase3LifecycleOpenAPISurface(t *testing.T) {
 	document := readLifecycleOpenAPI(t)
 
 	required := []string{
@@ -39,7 +39,6 @@ func TestPhase2LifecycleOpenAPISurface(t *testing.T) {
 		"Idempotency-Key",
 		"/renew:",
 		"renewSandbox",
-		"        ttl_seconds:",
 		"working_dir:",
 		"description: Timeout in nanoseconds",
 		"sidecar_image:",
@@ -55,8 +54,8 @@ func TestPhase2LifecycleOpenAPISurface(t *testing.T) {
 	}
 }
 
-// TestPhase1SandboxResponseSchema 验证 create 和 get 复用完整的 Phase 1 响应 schema。
-func TestPhase1SandboxResponseSchema(t *testing.T) {
+// TestPhase3SandboxResponseSchema 验证 create 和 get 复用带租约的公共响应 schema。
+func TestPhase3SandboxResponseSchema(t *testing.T) {
 	document := readLifecycleOpenAPI(t)
 
 	if got, want := strings.Count(
@@ -69,9 +68,11 @@ func TestPhase1SandboxResponseSchema(t *testing.T) {
 	required := []string{
 		"    SandboxState:",
 		"    SandboxReason:",
-		"      required: [id, state, reason, message, image, created_at, updated_at]",
+		"      required: [id, state, reason, message, image, expires_at, created_at, updated_at]",
+		"        expires_at:",
 		"        updated_at:",
 		"        reason: CREATE_ACCEPTED",
+		"        expires_at: \"2026-07-25T11:30:00Z\"",
 		"        updated_at: \"2026-07-25T10:30:00Z\"",
 	}
 	for _, fragment := range required {
@@ -105,11 +106,37 @@ func TestPhase1SandboxResponseSchema(t *testing.T) {
 		}
 	}
 
-	forbidden := []string{"expires_at:", "failure_reason:"}
+	forbidden := []string{"failure_reason:"}
 	for _, fragment := range forbidden {
 		if strings.Contains(document, fragment) {
-			t.Errorf("Sandbox response contains unsupported Phase 1 field %q", fragment)
+			t.Errorf("Sandbox response contains unsupported field %q", fragment)
 		}
+	}
+}
+
+// TestPhase3CreateTTLContract 固定可选 TTL 的秒单位、边界和 presence 语义。
+func TestPhase3CreateTTLContract(t *testing.T) {
+	document := readLifecycleOpenAPI(t)
+	requestSchema := openAPISchemaBlock(
+		t,
+		document,
+		"    CreateSandboxRequest:",
+		"    SandboxNetworkRequest:",
+	)
+	for _, fragment := range []string{
+		"        ttl_seconds:",
+		"          type: integer",
+		"          format: int64",
+		"          minimum: 60",
+		"          maximum: 86400",
+		"          description: Optional lease duration in whole seconds; omission selects the server default",
+	} {
+		if !strings.Contains(requestSchema, fragment) {
+			t.Errorf("create TTL schema is missing %q", fragment)
+		}
+	}
+	if strings.Contains(requestSchema, "expires_at") {
+		t.Fatal("create request must not accept absolute expires_at")
 	}
 }
 
@@ -221,4 +248,22 @@ func readLifecycleOpenAPI(t *testing.T) string {
 		t.Fatalf("read lifecycle OpenAPI: %v", err)
 	}
 	return string(content)
+}
+
+func openAPISchemaBlock(
+	t *testing.T,
+	document string,
+	startMarker string,
+	endMarker string,
+) string {
+	t.Helper()
+	start := strings.Index(document, startMarker)
+	if start < 0 {
+		t.Fatalf("OpenAPI is missing schema marker %q", startMarker)
+	}
+	end := strings.Index(document[start+len(startMarker):], endMarker)
+	if end < 0 {
+		t.Fatalf("OpenAPI is missing schema marker %q", endMarker)
+	}
+	return document[start : start+len(startMarker)+end]
 }

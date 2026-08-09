@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"slices"
 	"testing"
+	"time"
 
 	"minisandbox/pkg/protocol"
 )
@@ -56,6 +57,8 @@ func TestLifecycleFixtures(t *testing.T) {
 			"create-accepted.json",
 			"create-request-network-false.json",
 			"create-request-network-true.json",
+			"create-request-ttl-max.json",
+			"create-request-ttl-min.json",
 			"create-request.json",
 			"delete-not-found.json",
 			"get-running.json",
@@ -65,6 +68,29 @@ func TestLifecycleFixtures(t *testing.T) {
 		slices.Sort(actual)
 		if !slices.Equal(actual, expected) {
 			t.Fatalf("unexpected fixture set: got %v, want %v", actual, expected)
+		}
+	})
+
+	t.Run("create request ttl boundaries", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			want int64
+		}{
+			{name: "create-request-ttl-min.json", want: 60},
+			{name: "create-request-ttl-max.json", want: 86_400},
+		} {
+			request := decodeLifecycleFixture[protocol.CreateSandboxRequest](
+				t,
+				test.name,
+			)
+			if request.TTLSeconds == nil || *request.TTLSeconds != test.want {
+				t.Fatalf(
+					"%s ttl_seconds: got %#v, want %d",
+					test.name,
+					request.TTLSeconds,
+					test.want,
+				)
+			}
 		}
 	})
 
@@ -229,8 +255,14 @@ func assertSandboxFixture(
 	if sandbox.ID == "" || sandbox.Image == "" || sandbox.Message == "" {
 		t.Fatal("sandbox string fields must not be empty")
 	}
-	if sandbox.CreatedAt.IsZero() || sandbox.UpdatedAt.IsZero() {
+	if sandbox.ExpiresAt.IsZero() || sandbox.CreatedAt.IsZero() || sandbox.UpdatedAt.IsZero() {
 		t.Fatal("sandbox timestamps must not be zero")
+	}
+	if sandbox.ExpiresAt.Location() != time.UTC {
+		t.Fatalf("sandbox expires_at must be UTC: %s", sandbox.ExpiresAt)
+	}
+	if !sandbox.ExpiresAt.After(sandbox.CreatedAt) {
+		t.Fatal("sandbox expires_at must follow created_at")
 	}
 	if sandbox.UpdatedAt.Before(sandbox.CreatedAt) {
 		t.Fatal("sandbox updated_at must not precede created_at")

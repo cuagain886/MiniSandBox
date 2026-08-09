@@ -68,6 +68,10 @@ const (
 type CreateSandboxRequest struct {
 	// Image 是 sandbox 使用的容器镜像引用。
 	Image string `json:"image"`
+	// TTLSeconds 是请求的租约时长秒数；nil 表示使用服务端默认 TTL。
+	//
+	// 指针保留“字段缺失”和“显式零值”的区别，服务端必须拒绝非正数和越界值。
+	TTLSeconds *int64 `json:"ttl_seconds,omitempty"`
 	// Network 是可选网络请求；缺失时等价于 outbound=false。
 	Network *SandboxNetworkRequest `json:"network,omitempty"`
 }
@@ -90,6 +94,8 @@ type Sandbox struct {
 	Message string `json:"message"`
 	// Image 是创建 sandbox 时请求的镜像引用。
 	Image string `json:"image"`
+	// ExpiresAt 是当前租约的非空 UTC 到期时间，wire 使用 RFC3339。
+	ExpiresAt time.Time `json:"expires_at"`
 	// CreatedAt 是控制面接受创建请求的 UTC 时间。
 	CreatedAt time.Time `json:"created_at"`
 	// UpdatedAt 是状态记录最近一次更新的 UTC 时间。

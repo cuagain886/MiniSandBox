@@ -7,8 +7,10 @@ import (
 	"time"
 )
 
-// TestCreateSandboxRequestJSONRoundTrip 验证网络字段缺失、false 和 true 的 wire 语义。
+// TestCreateSandboxRequestJSONRoundTrip 验证可选 TTL 与网络字段的 wire 语义。
 func TestCreateSandboxRequestJSONRoundTrip(t *testing.T) {
+	minimumTTL := int64(60)
+	maximumTTL := int64(86_400)
 	tests := []struct {
 		name     string
 		original CreateSandboxRequest
@@ -37,6 +39,22 @@ func TestCreateSandboxRequestJSONRoundTrip(t *testing.T) {
 			},
 			encoded: `{"image":"alpine:3.22","network":{"outbound":true}}`,
 		},
+		{
+			name: "minimum ttl",
+			original: CreateSandboxRequest{
+				Image:      "alpine:3.22",
+				TTLSeconds: &minimumTTL,
+			},
+			encoded: `{"image":"alpine:3.22","ttl_seconds":60}`,
+		},
+		{
+			name: "maximum ttl",
+			original: CreateSandboxRequest{
+				Image:      "alpine:3.22",
+				TTLSeconds: &maximumTTL,
+			},
+			encoded: `{"image":"alpine:3.22","ttl_seconds":86400}`,
+		},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -61,10 +79,10 @@ func TestCreateSandboxRequestJSONRoundTrip(t *testing.T) {
 // TestCreateSandboxRequestSurface 防止公共请求暴露 egress 实现参数。
 func TestCreateSandboxRequestSurface(t *testing.T) {
 	requestType := reflect.TypeOf(CreateSandboxRequest{})
-	if got, want := requestType.NumField(), 2; got != want {
+	if got, want := requestType.NumField(), 3; got != want {
 		t.Fatalf("unexpected field count: got %d, want %d", got, want)
 	}
-	for index, name := range []string{"Image", "Network"} {
+	for index, name := range []string{"Image", "TTLSeconds", "Network"} {
 		if got := requestType.Field(index).Name; got != name {
 			t.Fatalf("unexpected request field: got %s, want %s", got, name)
 		}
@@ -78,12 +96,14 @@ func TestCreateSandboxRequestSurface(t *testing.T) {
 // TestSandboxJSONRoundTrip 验证 Phase 1 状态响应的字段名称、枚举和时间格式。
 func TestSandboxJSONRoundTrip(t *testing.T) {
 	timestamp := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
+	expiresAt := timestamp.Add(time.Hour)
 	original := Sandbox{
 		ID:        "sbx-01",
 		State:     SandboxStatePending,
 		Reason:    SandboxReasonCreateAccepted,
 		Message:   "Sandbox creation has been accepted.",
 		Image:     "alpine:3.22",
+		ExpiresAt: expiresAt,
 		CreatedAt: timestamp,
 		UpdatedAt: timestamp,
 	}
@@ -92,7 +112,7 @@ func TestSandboxJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("marshal sandbox: %v", err)
 	}
-	const expected = `{"id":"sbx-01","state":"Pending","reason":"CREATE_ACCEPTED","message":"Sandbox creation has been accepted.","image":"alpine:3.22","created_at":"2026-07-25T10:30:00Z","updated_at":"2026-07-25T10:30:00Z"}`
+	const expected = `{"id":"sbx-01","state":"Pending","reason":"CREATE_ACCEPTED","message":"Sandbox creation has been accepted.","image":"alpine:3.22","expires_at":"2026-07-25T11:30:00Z","created_at":"2026-07-25T10:30:00Z","updated_at":"2026-07-25T10:30:00Z"}`
 	if got := string(encoded); got != expected {
 		t.Fatalf("unexpected JSON: got %s, want %s", got, expected)
 	}
