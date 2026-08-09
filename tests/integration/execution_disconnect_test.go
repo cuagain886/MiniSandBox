@@ -115,7 +115,9 @@ func postPublicForeground(t *testing.T, baseURL, sandboxID string, request proto
 
 func readPublicSSEEvent(t *testing.T, reader *bufio.Reader) protocol.ExecutionEvent {
 	t.Helper()
-	deadline := time.Now().Add(10 * time.Second)
+	// runner 的空闲 keepalive 周期为 15 秒；测试等待窗口必须覆盖至少一次
+	// keepalive，否则冷启动编译等合法静默命令会被测试工具误判为超时。
+	deadline := time.Now().Add(lifecycleTimeout)
 	var data []byte
 	for time.Now().Before(deadline) {
 		line, err := reader.ReadString('\n')
