@@ -79,11 +79,19 @@ func (h *dockerHarness) startSandboxd(t *testing.T) *sandboxdInstance {
 	}
 	keyPath := filepath.Join(h.dataDirectory, "runner-master-key")
 	var key runnerauth.MasterKey
-	if _, err := rand.Read(key[:]); err != nil {
-		t.Fatalf("generate runner master key")
-	}
-	if err := os.WriteFile(keyPath, key[:], 0o400); err != nil {
-		t.Fatalf("write runner master key: %v", err)
+	if _, err := os.Lstat(keyPath); os.IsNotExist(err) {
+		if _, err := rand.Read(key[:]); err != nil {
+			t.Fatalf("generate runner master key")
+		}
+		if err := os.WriteFile(keyPath, key[:], 0o400); err != nil {
+			t.Fatalf("write runner master key: %v", err)
+		}
+	} else {
+		loaded, err := runnerauth.LoadMasterKey(keyPath)
+		if err != nil {
+			t.Fatalf("reuse runner master key: %v", err)
+		}
+		key = loaded
 	}
 	content := integrationConfig(h.dataDirectory, address, dockerHost, keyPath)
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
