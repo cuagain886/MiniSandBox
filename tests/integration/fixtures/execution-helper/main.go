@@ -45,6 +45,8 @@ func main() {
 		runTreeGrandchild(os.Args[2:])
 	case "marker":
 		writeMarker(os.Args[2:])
+	case "output-limit":
+		writeOutputLimit(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -210,4 +212,33 @@ func writeMarker(arguments []string) {
 		os.Exit(exitProbeFailure)
 	}
 	_, _ = fmt.Fprint(os.Stdout, "marker-written")
+}
+
+func writeOutputLimit(arguments []string) {
+	if len(arguments) != 3 {
+		os.Exit(exitProbeFailure)
+	}
+	byteCount, err := strconv.Atoi(arguments[1])
+	if err != nil || byteCount < 0 || byteCount > 1<<20 {
+		os.Exit(exitProbeFailure)
+	}
+	write := func(file *os.File, size int, value byte) {
+		if _, err := file.Write(bytes.Repeat([]byte{value}, size)); err != nil {
+			os.Exit(exitProbeFailure)
+		}
+	}
+	switch arguments[0] {
+	case "stdout":
+		write(os.Stdout, byteCount, 'O')
+	case "stderr":
+		write(os.Stderr, byteCount, 'E')
+	case "combined":
+		write(os.Stdout, byteCount/2, 'O')
+		write(os.Stderr, byteCount-byteCount/2, 'E')
+	default:
+		os.Exit(exitProbeFailure)
+	}
+	if err := os.WriteFile(arguments[2], []byte("output-complete"), 0o600); err != nil {
+		os.Exit(exitProbeFailure)
+	}
 }

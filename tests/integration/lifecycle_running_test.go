@@ -70,6 +70,11 @@ func TestCreateSandboxEventuallyRunning(t *testing.T) {
 
 // startSandboxd 使用当前 harness data directory 启动真实控制面。
 func (h *dockerHarness) startSandboxd(t *testing.T) *sandboxdInstance {
+	return h.startSandboxdWithConfig(t, nil)
+}
+
+// startSandboxdWithConfig 允许单个集成测试只覆盖其验收所需的配置上限。
+func (h *dockerHarness) startSandboxdWithConfig(t *testing.T, mutate func(string) string) *sandboxdInstance {
 	t.Helper()
 	address := reserveLoopbackAddress(t)
 	configPath := filepath.Join(h.dataDirectory, "sandboxd.yaml")
@@ -94,6 +99,9 @@ func (h *dockerHarness) startSandboxd(t *testing.T) *sandboxdInstance {
 		key = loaded
 	}
 	content := integrationConfig(h.dataDirectory, address, dockerHost, keyPath)
+	if mutate != nil {
+		content = mutate(content)
+	}
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write sandboxd integration config: %v", err)
 	}
