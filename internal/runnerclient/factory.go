@@ -115,11 +115,24 @@ func (f *Factory) ProbeNetwork(ctx context.Context, sandboxID string, expectedPr
 	f.mu.RUnlock()
 	probeContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
-	health, err := client.Health(probeContext, expectedProtocolVersion)
-	if err != nil {
-		return "", err
+	for {
+		health, err := client.Health(probeContext, expectedProtocolVersion)
+		if err == nil {
+			return health.NetNSIdentity, nil
+		}
+		if !isRetryableConnectError(err) {
+			return "", err
+		}
+		timer := time.NewTimer(runnerProbeRetryInterval)
+		select {
+		case <-probeContext.Done():
+			if !timer.Stop() {
+				<-timer.C
+			}
+			return "", probeContextError(probeContext.Err(), err)
+		case <-timer.C:
+		}
 	}
-	return health.NetNSIdentity, nil
 }
 
 func (f *Factory) authorization(sandboxID string) ([]byte, error) {
