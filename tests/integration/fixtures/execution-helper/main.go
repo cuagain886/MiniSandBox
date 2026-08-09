@@ -9,7 +9,10 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"os/exec"
+	"os/signal"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 )
@@ -34,6 +37,12 @@ func main() {
 		writeStreams(os.Args[2:])
 	case "exit":
 		exitWithCode(os.Args[2:])
+	case "process-tree":
+		runProcessTree(os.Args[2:])
+	case "tree-child":
+		runTreeChild(os.Args[2:])
+	case "tree-grandchild":
+		runTreeGrandchild(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -119,4 +128,65 @@ func exitWithCode(arguments []string) {
 		os.Exit(exitProbeFailure)
 	}
 	os.Exit(code)
+}
+
+func runProcessTree(arguments []string) {
+	mode := treeMode(arguments)
+	configureTreeSignal(mode)
+	child := exec.Command(os.Args[0], "tree-child", mode)
+	childOutput, err := child.StdoutPipe()
+	if err != nil || child.Start() != nil {
+		os.Exit(exitProbeFailure)
+	}
+	line, err := bufio.NewReader(childOutput).ReadString('\n')
+	grandchildPID, parseErr := strconv.Atoi(strings.TrimSpace(line))
+	if err != nil || parseErr != nil || grandchildPID <= 1 {
+		os.Exit(exitProbeFailure)
+	}
+	if _, err := fmt.Fprintf(os.Stdout, "leader=%d child=%d grandchild=%d\n", os.Getpid(), child.Process.Pid, grandchildPID); err != nil {
+		os.Exit(exitProbeFailure)
+	}
+	if mode == "race" {
+		_ = child.Wait()
+		return
+	}
+	_ = child.Wait()
+}
+
+func runTreeChild(arguments []string) {
+	mode := treeMode(arguments)
+	configureTreeSignal(mode)
+	grandchild := exec.Command(os.Args[0], "tree-grandchild", mode)
+	if err := grandchild.Start(); err != nil {
+		os.Exit(exitProbeFailure)
+	}
+	if _, err := fmt.Fprintln(os.Stdout, grandchild.Process.Pid); err != nil {
+		os.Exit(exitProbeFailure)
+	}
+	_ = grandchild.Wait()
+}
+
+func runTreeGrandchild(arguments []string) {
+	mode := treeMode(arguments)
+	configureTreeSignal(mode)
+	if mode == "race" {
+		time.Sleep(150 * time.Millisecond)
+		return
+	}
+	for {
+		time.Sleep(time.Hour)
+	}
+}
+
+func treeMode(arguments []string) string {
+	if len(arguments) != 1 || arguments[0] != "term" && arguments[0] != "kill" && arguments[0] != "race" {
+		os.Exit(exitProbeFailure)
+	}
+	return arguments[0]
+}
+
+func configureTreeSignal(mode string) {
+	if mode == "kill" {
+		signal.Ignore(syscall.SIGTERM)
+	}
 }

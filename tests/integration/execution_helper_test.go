@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"testing"
 
 	mobyclient "github.com/moby/moby/client"
@@ -43,4 +44,22 @@ func installExecutionHelper(t *testing.T, client *mobyclient.Client, containerID
 	}); err != nil {
 		t.Fatalf("inject execution helper")
 	}
+}
+
+// registerBackgroundLogOwnershipCleanup 在容器销毁前临时开放本测试日志目录，避免 WSL bind mount 的 UID 阻止临时目录清理。
+func registerBackgroundLogOwnershipCleanup(t *testing.T, client *mobyclient.Client, containerID string) {
+	t.Helper()
+	owner := strconv.Itoa(os.Geteuid()) + ":" + strconv.Itoa(os.Getegid())
+	t.Cleanup(func() {
+		if code := execAndWait(t, client, containerID, owner, []string{"/bin/chmod", "0711", "/run/minisandbox"}); code != 0 {
+			t.Errorf("open runtime traversal for cleanup: exit=%d", code)
+			return
+		}
+		if code := execAndWait(t, client, containerID, "65532:65532", []string{"/bin/chmod", "-R", "0777", "/run/minisandbox/executions"}); code != 0 {
+			t.Errorf("open background logs for cleanup: exit=%d", code)
+		}
+		if code := execAndWait(t, client, containerID, owner, []string{"/bin/chmod", "0700", "/run/minisandbox"}); code != 0 {
+			t.Errorf("restore runtime directory mode: exit=%d", code)
+		}
+	})
 }
