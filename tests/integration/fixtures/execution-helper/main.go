@@ -3,6 +3,7 @@ package main
 
 import (
 	"bufio"
+	"bytes"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -29,6 +30,8 @@ func main() {
 		writeArgv(os.Args[2:])
 	case "silent":
 		return
+	case "streams":
+		writeStreams(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -67,5 +70,40 @@ func writeArgv(arguments []string) {
 		if _, err := fmt.Fprintln(os.Stdout, strconv.Itoa(len(argument))+":"+encoded); err != nil {
 			os.Exit(exitProbeFailure)
 		}
+	}
+}
+
+func writeStreams(arguments []string) {
+	if len(arguments) != 1 {
+		os.Exit(exitProbeFailure)
+	}
+	var stdout, stderr []byte
+	switch arguments[0] {
+	case "small":
+		stdout, stderr = []byte("stdout-small"), []byte("stderr-small")
+	case "large":
+		stdout, stderr = bytes.Repeat([]byte("OUT-0123456789abcdef"), 8192), bytes.Repeat([]byte("ERR-fedcba9876543210"), 6144)
+	case "binary":
+		stdout, stderr = []byte{0x00, 0xff, 0x80, 'O', '\n'}, []byte{0xfe, 0x00, 0x81, 'E', '\r', '\n'}
+	case "empty-stderr":
+		stdout = []byte("stdout-only")
+	case "interleaved":
+		for index := 0; index < 128; index++ {
+			if _, err := fmt.Fprintf(os.Stdout, "O%03d|", index); err != nil {
+				os.Exit(exitProbeFailure)
+			}
+			if _, err := fmt.Fprintf(os.Stderr, "E%03d|", index); err != nil {
+				os.Exit(exitProbeFailure)
+			}
+		}
+		return
+	default:
+		os.Exit(exitProbeFailure)
+	}
+	if _, err := os.Stdout.Write(stdout); err != nil {
+		os.Exit(exitProbeFailure)
+	}
+	if _, err := os.Stderr.Write(stderr); err != nil {
+		os.Exit(exitProbeFailure)
 	}
 }
