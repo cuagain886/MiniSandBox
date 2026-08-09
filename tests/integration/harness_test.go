@@ -155,7 +155,7 @@ func (h *dockerHarness) trackImage(imageID string) {
 func (h *dockerHarness) cleanup() error {
 	ctx, cancel := context.WithTimeout(context.Background(), cleanupTimeout)
 	defer cancel()
-	failures := make([]string, 0, 3)
+	failures := make([]string, 0, 4)
 	h.mu.Lock()
 	sandboxIDs := append([]string(nil), h.sandboxIDs...)
 	imageIDs := append([]string(nil), h.imageIDs...)
@@ -208,6 +208,18 @@ func (h *dockerHarness) cleanup() error {
 				)
 				if removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
 					failures = append(failures, "remove volume")
+				}
+			}
+		}
+
+		networks, err := h.client.NetworkList(ctx, mobyclient.NetworkListOptions{Filters: make(mobyclient.Filters).Add("label", label)})
+		if err != nil {
+			failures = append(failures, "list networks")
+		} else {
+			for _, network := range networks.Items {
+				_, removeErr := h.client.NetworkRemove(ctx, network.ID, mobyclient.NetworkRemoveOptions{})
+				if removeErr != nil && !cerrdefs.IsNotFound(removeErr) {
+					failures = append(failures, "remove network")
 				}
 			}
 		}

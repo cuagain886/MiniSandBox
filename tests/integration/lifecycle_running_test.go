@@ -18,6 +18,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	controlapi "minisandbox/internal/api"
 	"minisandbox/internal/bootstrap"
+	"minisandbox/internal/runnerbootstrap"
 	"minisandbox/internal/runnerclient"
 	dockerruntime "minisandbox/internal/runtime/docker"
 	"minisandbox/pkg/protocol"
@@ -64,7 +65,7 @@ func TestCreateSandboxEventuallyRunning(t *testing.T) {
 	client := runnerclient.New(socketPath, "")
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := client.Health(ctx); err != nil {
+	if _, err := client.Health(ctx, runnerbootstrap.CurrentProtocolVersion); err != nil {
 		t.Fatalf("runner socket health failed: %v", err)
 	}
 }

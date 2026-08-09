@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"minisandbox/internal/runnerbootstrap"
 	"minisandbox/internal/runnerclient"
 	"minisandbox/pkg/protocol"
 )
@@ -108,7 +109,7 @@ func assertRunnerHealthy(t *testing.T, socketPath string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if err := runnerclient.New(socketPath, "").Health(ctx); err != nil {
+	if _, err := runnerclient.New(socketPath, "").Health(ctx, runnerbootstrap.CurrentProtocolVersion); err != nil {
 		t.Fatal("runner socket health failed")
 	}
 }

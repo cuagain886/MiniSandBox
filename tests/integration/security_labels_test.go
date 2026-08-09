@@ -123,6 +123,7 @@ func assertReviewedManagedLabels(
 		dockerruntime.LabelSpecHash,
 		dockerruntime.LabelExpiresAt,
 		dockerruntime.LabelWorkspace,
+		dockerruntime.LabelRunnerProtocolVersion,
 	}
 	actualKeys := slices.Sorted(maps.Keys(managed))
 	slices.Sort(wantKeys)
