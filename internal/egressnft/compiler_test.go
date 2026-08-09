@@ -33,6 +33,7 @@ func TestCompileStaticRules(t *testing.T) {
 		"meta nfproto ipv6 accept",
 		"icmp type { destination-unreachable, time-exceeded, parameter-problem } accept",
 		"icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept",
+		"ip6 nexthdr icmpv6",
 		"chain forward",
 	}
 	for _, marker := range markers {

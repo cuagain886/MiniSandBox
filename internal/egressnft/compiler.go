@@ -30,7 +30,7 @@ func Compile(policy egresspolicy.Policy) ([]byte, error) {
 	builder.WriteString("  chain input {\n    type filter hook input priority filter; policy drop;\n")
 	builder.WriteString("    iifname \"lo\" accept\n    ct state established,related accept\n")
 	builder.WriteString("    ip protocol icmp icmp type { destination-unreachable, time-exceeded, parameter-problem } accept\n")
-	builder.WriteString("    ip6 nexthdr ipv6-icmp icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept\n  }\n")
+	builder.WriteString("    ip6 nexthdr icmpv6 icmpv6 type { destination-unreachable, packet-too-big, time-exceeded, parameter-problem, nd-router-advert, nd-neighbor-solicit, nd-neighbor-advert } accept\n  }\n")
 	builder.WriteString("  chain forward {\n    type filter hook forward priority filter; policy drop;\n  }\n}\n")
 	return []byte(builder.String()), nil
 }
