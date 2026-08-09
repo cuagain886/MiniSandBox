@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"syscall"
@@ -175,6 +176,39 @@ func TestRunnerExitCode(t *testing.T) {
 func TestRunMapsMissingRunnerTo127(t *testing.T) {
 	if got := run([]string{"/definitely/missing/minisandbox-runnerd"}); got != 127 {
 		t.Fatalf("missing runner exit code: got %d, want 127", got)
+	}
+}
+
+// TestReleaseExecutionDirectoryOwnerRestoresManagedDirectory 验证 PID 1 只恢复真实子目录且拒绝 symlink。
+func TestReleaseExecutionDirectoryOwnerRestoresManagedDirectory(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("directory ownership handoff requires container root with CAP_CHOWN")
+	}
+	parent := t.TempDir()
+	directory := filepath.Join(parent, "executions")
+	if err := os.Mkdir(directory, 0o755); err != nil {
+		t.Fatalf("create execution directory: %v", err)
+	}
+	if err := releaseExecutionDirectoryOwner(directory); err != nil {
+		t.Fatalf("release execution directory: %v", err)
+	}
+	info, err := os.Stat(directory)
+	if err != nil {
+		t.Fatalf("stat restored execution directory: %v", err)
+	}
+	if info.Mode().Perm() != 0o700 {
+		t.Fatalf("restored execution directory mode: %v", info.Mode().Perm())
+	}
+	target := filepath.Join(parent, "target")
+	if err := os.Mkdir(target, 0o700); err != nil {
+		t.Fatalf("create symlink target: %v", err)
+	}
+	link := filepath.Join(parent, "link")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	if err := releaseExecutionDirectoryOwner(link); err == nil {
+		t.Fatal("execution directory symlink accepted")
 	}
 }
 

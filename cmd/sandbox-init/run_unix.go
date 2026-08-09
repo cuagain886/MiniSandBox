@@ -7,7 +7,10 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"syscall"
+
+	"minisandbox/internal/runnerbootstrap"
 )
 
 type wait4Func func(int, *syscall.WaitStatus, int, *syscall.Rusage) (int, error)
@@ -49,7 +52,8 @@ func run(args []string) int {
 		syscall.Wait4,
 		syscall.Kill,
 	)
-	if err != nil {
+	cleanupErr := releaseExecutionDirectoryOwner(runnerbootstrap.ExecutionDataDirectory)
+	if err != nil || cleanupErr != nil {
 		return 1
 	}
 	exitCode, err := runnerExitCode(result.runnerStatus)
@@ -57,6 +61,60 @@ func run(args []string) int {
 		return 1
 	}
 	return exitCode
+}
+
+// releaseExecutionDirectoryOwner 在 runner 退出后把日志目录归还给 bind mount 父目录所有者。
+// runner 运行期间目录仍严格属于降权 UID；只有 PID 1 收尾时才恢复宿主删除所需的遍历权限。
+func releaseExecutionDirectoryOwner(path string) error {
+	if !filepath.IsAbs(path) {
+		return errors.New("execution directory path must be absolute")
+	}
+	parent := filepath.Dir(path)
+	parentInfo, err := os.Lstat(parent)
+	if err != nil || parentInfo.Mode()&os.ModeSymlink != 0 || !parentInfo.IsDir() {
+		return errors.New("runtime parent directory is unsafe")
+	}
+	stat, ok := parentInfo.Sys().(*syscall.Stat_t)
+	if !ok {
+		return errors.New("runtime parent owner is unavailable")
+	}
+	// runtime 父目录在服务期为宿主 sandboxd 的 0700 目录；PID 1 没有 DAC_OVERRIDE，
+	// 因此先用 CAP_CHOWN 临时取得遍历权，完成子目录归还后再恢复原 owner/mode。
+	if err := os.Chown(parent, 0, 0); err != nil {
+		return errors.New("acquire runtime parent directory failed")
+	}
+	restoreParent := func() error {
+		if err := os.Chmod(parent, parentInfo.Mode().Perm()); err != nil {
+			return err
+		}
+		return os.Chown(parent, int(stat.Uid), int(stat.Gid))
+	}
+	restored := false
+	defer func() {
+		if !restored {
+			_ = restoreParent()
+		}
+	}()
+	targetInfo, err := os.Lstat(path)
+	if os.IsNotExist(err) {
+		err := restoreParent()
+		restored = err == nil
+		return err
+	}
+	if err != nil || targetInfo.Mode()&os.ModeSymlink != 0 || !targetInfo.IsDir() {
+		return errors.New("execution directory is unsafe")
+	}
+	if err := os.Chown(path, int(stat.Uid), int(stat.Gid)); err != nil {
+		return errors.New("restore execution directory owner failed")
+	}
+	if err := os.Chmod(path, 0o700); err != nil {
+		return errors.New("restore execution directory mode failed")
+	}
+	if err := restoreParent(); err != nil {
+		return errors.New("restore runtime parent owner failed")
+	}
+	restored = true
+	return nil
 }
 
 // runnerExitCode 把 Linux wait status 映射为 Docker 可观测的稳定 init 退出码。
