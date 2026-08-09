@@ -18,8 +18,15 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	}
 	defer token.Clear()
 	if err := InitializeManagedDirectories(bootstrap); err != nil {
+		_ = RestoreBootstrapDirectoryOwner(bootstrap)
 		return err
 	}
+	executionDirectory, err := OpenManagedExecutionDirectory(bootstrap)
+	if err != nil {
+		_ = RestoreBootstrapDirectoryOwner(bootstrap)
+		return err
+	}
+	defer executionDirectory.Close()
 	listener, err := BindManagedSocket(bootstrap)
 	if err != nil {
 		return err
@@ -38,18 +45,18 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	if err != nil {
 		return err
 	}
-	reader, err := NewBackgroundLogReader(bootstrap.Paths.ExecutionDataDirectory, bootstrap.Limits.MaxLogPageEvents, bootstrap.Limits.MaxLogPageBytes)
+	if err := DropPrivileges(listener, bootstrap.Identity); err != nil {
+		return err
+	}
+	if err := VerifyRestrictedIdentity(bootstrap.Identity); err != nil {
+		return err
+	}
+	reader, err := NewBackgroundLogReaderFromDirectory(executionDirectory, bootstrap.Limits.MaxLogPageEvents, bootstrap.Limits.MaxLogPageBytes)
 	if err != nil {
 		return err
 	}
 	logs, err := NewExecutionLogsHandler(manager, reader)
 	if err != nil {
-		return err
-	}
-	if err := DropPrivileges(listener, bootstrap.Identity); err != nil {
-		return err
-	}
-	if err := VerifyRestrictedIdentity(bootstrap.Identity); err != nil {
 		return err
 	}
 	if err := readiness.MarkReady(); err != nil {

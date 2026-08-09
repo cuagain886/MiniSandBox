@@ -20,6 +20,43 @@ type managedDirectoryPaths struct {
 	workspace     string
 }
 
+// OpenManagedExecutionDirectory 在降权前取得固定 execution 数据目录的受信句柄。
+// 目录 owner 会在打开后立即恢复；句柄用于绕过 socket 父目录 0700 的路径遍历限制，
+// 不能被替换为调用方提供的路径。
+func OpenManagedExecutionDirectory(bootstrap runnerbootstrap.Config) (*os.File, error) {
+	if bootstrap.Paths.ExecutionDataDirectory != runnerbootstrap.ExecutionDataDirectory ||
+		bootstrap.Identity.ExecutionUID == 0 || bootstrap.Identity.ExecutionGID == 0 {
+		return nil, errors.New("runner execution data directory bootstrap is invalid")
+	}
+	path := runnerbootstrap.ExecutionDataDirectory
+	info, err := os.Lstat(path)
+	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != managedDirectoryMode {
+		return nil, errors.New("runner execution data directory is unsafe")
+	}
+	stat, ok := info.Sys().(*syscall.Stat_t)
+	if !ok || stat.Uid != bootstrap.Identity.ExecutionUID || stat.Gid != bootstrap.Identity.ExecutionGID {
+		return nil, errors.New("runner execution data directory owner is invalid")
+	}
+	if err := os.Chown(path, 0, 0); err != nil {
+		return nil, errors.New("acquire runner execution data directory failed")
+	}
+	restore := func() error {
+		if err := os.Chmod(path, managedDirectoryMode); err != nil {
+			return err
+		}
+		return os.Chown(path, int(bootstrap.Identity.ExecutionUID), int(bootstrap.Identity.ExecutionGID))
+	}
+	directory, openErr := os.Open(path)
+	restoreErr := restore()
+	if openErr != nil || restoreErr != nil {
+		if directory != nil {
+			_ = directory.Close()
+		}
+		return nil, errors.New("open runner execution data directory failed")
+	}
+	return directory, nil
+}
+
 type directoryOps struct {
 	lstat func(string) (os.FileInfo, error)
 	mkdir func(string, os.FileMode) error
@@ -111,10 +148,12 @@ func ensureManagedDirectory(
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return errors.New("managed path must be a real directory")
 	}
-	if err := ops.chown(path, int(uid), int(gid)); err != nil {
+	// runner 没有 CAP_FOWNER；目录仍由 root 持有时先收敛 mode，再把 owner
+	// 一次性移交给 execution 身份，移交后不再执行需要 owner 权限的操作。
+	if err := ops.chmod(path, managedDirectoryMode); err != nil {
 		return err
 	}
-	if err := ops.chmod(path, managedDirectoryMode); err != nil {
+	if err := ops.chown(path, int(uid), int(gid)); err != nil {
 		return err
 	}
 

@@ -49,8 +49,8 @@ func bindManagedSocketAt(
 	}
 	if err := secureDirectory(
 		runtimeDirectory,
-		identity.SocketOwnerUID,
-		identity.SocketOwnerGID,
+		0,
+		0,
 		runtimeDirectoryMode,
 	); err != nil {
 		return nil, fmt.Errorf("secure runner runtime directory: %w", err)
@@ -68,18 +68,28 @@ func bindManagedSocketAt(
 	defer func() {
 		if err != nil {
 			_ = listener.Close()
+			// 最后恢复目录 owner 后若回验失败，先用 CAP_CHOWN 重新取得目录，
+			// 才能在没有 DAC_OVERRIDE 的 profile 下撤销 socket pathname。
+			_ = os.Chown(runtimeDirectory, 0, 0)
+			_ = os.Chmod(runtimeDirectory, runtimeDirectoryMode)
 			_ = os.Remove(socketPath)
+			_ = secureDirectory(runtimeDirectory, identity.SocketOwnerUID, identity.SocketOwnerGID, runtimeDirectoryMode)
 			listener = nil
 		}
 	}()
-	if err = os.Chown(socketPath, int(identity.SocketOwnerUID), int(identity.SocketOwnerGID)); err != nil {
-		return nil, fmt.Errorf("set runner socket owner: %w", err)
-	}
 	if err = os.Chmod(socketPath, runnerSocketMode); err != nil {
 		return nil, fmt.Errorf("set runner socket mode: %w", err)
 	}
+	if err = os.Chown(socketPath, int(identity.SocketOwnerUID), int(identity.SocketOwnerGID)); err != nil {
+		return nil, fmt.Errorf("set runner socket owner: %w", err)
+	}
 	if err = verifyManagedPath(socketPath, identity.SocketOwnerUID, identity.SocketOwnerGID, runnerSocketMode, os.ModeSocket); err != nil {
 		return nil, fmt.Errorf("verify runner socket: %w", err)
+	}
+	// runtime 目录必须最后移交给 sandboxd；移交后 root runner 在无 DAC_OVERRIDE/FOWNER
+	// 的最小 capability profile 下不再能按 pathname 访问目录，只继续持有 listener fd。
+	if err = secureDirectory(runtimeDirectory, identity.SocketOwnerUID, identity.SocketOwnerGID, runtimeDirectoryMode); err != nil {
+		return nil, fmt.Errorf("restore runner runtime directory owner: %w", err)
 	}
 	return listener, nil
 }
@@ -92,10 +102,11 @@ func secureDirectory(path string, uid, gid uint32, mode os.FileMode) error {
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
 		return errors.New("runner runtime path must be a real directory")
 	}
-	if err := os.Chown(path, int(uid), int(gid)); err != nil {
+	// chmod 必须发生在移交 owner 之前；profile 没有 CAP_FOWNER，移交后再 chmod 会失败。
+	if err := os.Chmod(path, mode); err != nil {
 		return err
 	}
-	if err := os.Chmod(path, mode); err != nil {
+	if err := os.Chown(path, int(uid), int(gid)); err != nil {
 		return err
 	}
 	return verifyManagedPath(path, uid, gid, mode, os.ModeDir)

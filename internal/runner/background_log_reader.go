@@ -7,6 +7,8 @@ import (
 	"errors"
 	"io"
 	"os"
+	"path/filepath"
+	"strconv"
 
 	"minisandbox/pkg/protocol"
 )
@@ -23,8 +25,23 @@ var (
 // BackgroundLogReader 从固定 execution 日志生成有界、可重复的 sequence cursor 页面。
 type BackgroundLogReader struct {
 	directory string
+	trustedFD bool
 	maxEvents int
 	maxBytes  int64
+}
+
+// NewBackgroundLogReaderFromDirectory 使用降权前打开的固定目录句柄创建 reader。
+// 句柄生命周期由调用方管理；该入口不接受普通路径，因此不会放宽 symlink 校验。
+func NewBackgroundLogReaderFromDirectory(directory *os.File, maxEvents int, maxBytes int64) (*BackgroundLogReader, error) {
+	if directory == nil || maxEvents <= 0 || maxBytes < 64 {
+		return nil, errors.New("background log reader limits or directory are invalid")
+	}
+	return &BackgroundLogReader{
+		directory: "/proc/self/fd/" + strconv.FormatUint(uint64(directory.Fd()), 10),
+		trustedFD: true,
+		maxEvents: maxEvents,
+		maxBytes:  maxBytes,
+	}, nil
 }
 
 // NewBackgroundLogReader 创建同时限制事件数量和最终 JSON response bytes 的 reader。
@@ -43,7 +60,16 @@ func (r *BackgroundLogReader) Read(id ExecutionID, cursor uint64) (protocol.Exec
 	if r == nil {
 		return protocol.ExecutionLogPage{}, ErrBackgroundLogCorrupt
 	}
-	path, err := BackgroundLogPath(r.directory, id)
+	var path string
+	var err error
+	if r.trustedFD {
+		if !validStoredExecutionID(id) {
+			return protocol.ExecutionLogPage{}, ErrBackgroundLogNotFound
+		}
+		path = filepath.Join(r.directory, string(id)+backgroundLogFileSuffix)
+	} else {
+		path, err = BackgroundLogPath(r.directory, id)
+	}
 	if err != nil {
 		return protocol.ExecutionLogPage{}, ErrBackgroundLogNotFound
 	}

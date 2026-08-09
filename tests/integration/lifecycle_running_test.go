@@ -332,6 +332,9 @@ runtime:
 security:
   runner_master_key_file: %s
   allow_outbound: false
+runner:
+  execution_uid: 65532
+  execution_gid: 65532
 reconcile:
   interval: "250ms"
   runner_ready_timeout: "30s"

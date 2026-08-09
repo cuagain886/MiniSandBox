@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	"minisandbox/internal/runner"
 	"minisandbox/internal/runnerbootstrap"
@@ -27,7 +28,7 @@ func main() {
 
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
 	_ = flags.Parse(os.Args[2:])
-	bootstrap, token, err := runner.LoadBootstrapMaterial(runnerbootstrap.RuntimeDirectory)
+	bootstrap, token, err := runner.WaitLoadBootstrapMaterial(runnerbootstrap.RuntimeDirectory, 5*time.Second)
 	if err != nil {
 		slog.Error("load runner bootstrap", "error", err)
 		os.Exit(1)

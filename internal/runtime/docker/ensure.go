@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"fmt"
 
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
@@ -76,11 +77,6 @@ func (r *Runtime) Ensure(
 	); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
-	if r.bootstrap != nil {
-		if err := r.bootstrap.Stage(paths.Directory, sandbox.ID); err != nil {
-			return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, errors.New("stage runner bootstrap failed"))
-		}
-	}
 	volume, err := ensureWorkspaceVolume(
 		ctx,
 		r.engine,
@@ -104,6 +100,13 @@ func (r *Runtime) Ensure(
 		r.createTimeout,
 	); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
+	}
+	// Docker Desktop/WSL 会在创建容器时才建立 bind source 映射；在此之后发布
+	// 一次性材料，既保证首次启动可见，也缩短 token 在宿主机上的静态暴露窗口。
+	if r.bootstrap != nil {
+		if err := r.bootstrap.Stage(paths.Directory, sandbox.ID); err != nil {
+			return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, fmt.Errorf("stage runner bootstrap failed: %w", err))
+		}
 	}
 	if err := startContainer(ctx, r.engine, container.ContainerID); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
