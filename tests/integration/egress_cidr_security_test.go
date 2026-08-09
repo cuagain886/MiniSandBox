@@ -38,14 +38,18 @@ func TestEgressImmutableCIDRPolicy(t *testing.T) {
 		t.Skip("native Linux Docker is required for host netns inode attestation")
 	}
 	publicAddress := "11.254.253.1"
+	deniedAddress := "12.254.253.1"
 	addHostAddress(t, publicAddress)
+	addHostAddress(t, deniedAddress)
 	publicListener := listenFixture(t, publicAddress)
+	deniedListener := listenFixture(t, deniedAddress)
 	serveConnections(t, publicListener)
+	serveConnections(t, deniedListener)
 
 	image := integrationImage()
 	harness.ensureImage(t, image)
 	harness.ensureImage(t, egressImage)
-	instance := harness.startSandboxdWithConfig(t, outboundConfig(egressImage, ""))
+	instance := harness.startSandboxdWithConfig(t, outboundConfig(egressImage, deniedAddress+"/32"))
 	sandbox := createSandboxWithNetwork(t, instance.baseURL, image, true)
 	harness.trackSandbox(sandbox.ID)
 	waitSandboxState(t, instance.baseURL, sandbox.ID, protocol.SandboxStateRunning)
@@ -54,6 +58,7 @@ func TestEgressImmutableCIDRPolicy(t *testing.T) {
 	client := instance.runnerClient(t, sandbox.ID)
 
 	assertTCPProbeExit(t, client, publicListener.Addr().String(), 0)
+	assertTCPProbeExit(t, client, deniedListener.Addr().String(), 20)
 	network, err := harness.client.NetworkInspect(t.Context(), docker.EgressNetworkName, mobyclient.NetworkInspectOptions{})
 	if err != nil || len(network.Network.IPAM.Config) == 0 || !network.Network.IPAM.Config[0].Gateway.IsValid() {
 		t.Fatalf("inspect managed gateway: %v", err)
@@ -93,13 +98,6 @@ func TestEgressImmutableCIDRPolicy(t *testing.T) {
 	}
 	_, _ = client.Cancel(t.Context(), server.ExecutionID)
 
-	denied := harness.startSandboxdWithConfig(t, outboundConfig(egressImage, publicAddress+"/32"))
-	deniedSandbox := createSandboxWithNetwork(t, denied.baseURL, image, true)
-	harness.trackSandbox(deniedSandbox.ID)
-	waitSandboxState(t, denied.baseURL, deniedSandbox.ID, protocol.SandboxStateRunning)
-	deniedContainerID := harness.runningContainerID(t, deniedSandbox.ID)
-	installExecutionHelper(t, harness.client, deniedContainerID, buildExecutionHelper(t))
-	assertTCPProbeExit(t, denied.runnerClient(t, deniedSandbox.ID), publicListener.Addr().String(), 20)
 }
 
 func outboundConfig(egressImage, deniedCIDR string) func(string) string {
