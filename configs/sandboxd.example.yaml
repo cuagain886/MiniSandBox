@@ -36,6 +36,7 @@ limits:
     pids: 1024
 
 runner:
+  # runnerd 与用户命令最终都使用该固定非 root 身份；它必须不同于宿主机 socket owner。
   execution_uid: 1000
   execution_gid: 1000
   default_cwd: "/workspace"
@@ -56,14 +57,17 @@ runner:
   sse_write_timeout: "15s"
 
 security:
+  # 必须指向非 symlink、权限不宽于 0600、恰好 32 字节的 regular file；不要把密钥写入 YAML。
   runner_master_key_file: "/etc/minisandbox/runner-master-key"
+  # 默认关闭；只有服务端开启且创建请求显式 network.outbound=true 时才创建 egress sidecar。
   allow_outbound: false
 
 egress:
-  # 启用 allow_outbound 前必须替换为已批准、带 SBOM/provenance 的精确 digest。
+  # 启用 allow_outbound 前必须替换为已批准、带 SBOM/provenance 的 repository@sha256 精确引用。
   image: ""
   protocol_version: 1
   ready_timeout: "30s"
+  # 只能追加 deny；代码内置内部/保留 CIDR 以及实际 Docker subnet/gateway 永远不能删除。
   egress_denied_cidrs: []
   anchor_uid: 65532
   anchor_gid: 65532

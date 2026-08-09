@@ -211,7 +211,7 @@ non-root),不是 sandbox 容器镜像——sandbox 使用任意用户镜像,由 
 | 阶段 | 内容 | 计划 |
 |---|---|---|
 | Phase 1 | Docker 生命周期:持久化、异步创建、注入启动、健康探测、幂等删除、重启恢复 | [phase-1 计划](docs/phase-1-docker-lifecycle-development-plan.md)(已完成) |
-| Phase 2 | PID 1 语义、非 root 执行、argv/shell、SSE、超时/取消、进程组、受控出站网络 | [phase-2 计划](docs/phase-2-runner-execution-development-plan.md) |
+| Phase 2 | PID 1 语义、非 root 执行、argv/shell、SSE、超时/取消、进程组、受控出站网络 | [使用与运维指南](docs/phase-2-operations-guide.md) · [phase-2 计划](docs/phase-2-runner-execution-development-plan.md) |
 | Phase 3 | TTL 与续期、幂等创建、周期对账、崩溃恢复、孤儿处理、指标诊断 | [phase-3 计划](docs/phase-3-reliability-development-plan.md) |
 | Phase 4 | 工作区文件 API、PTY、端口代理、Go/TS/Python SDK、镜像预拉取 | [phase-4 计划](docs/phase-4-agent-experience-development-plan.md) |
 
