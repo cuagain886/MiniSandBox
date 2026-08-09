@@ -23,6 +23,7 @@ type fileConfig struct {
 	Limits    *fileLimits    `yaml:"limits"`
 	Runner    *fileRunner    `yaml:"runner"`
 	Security  *fileSecurity  `yaml:"security"`
+	Egress    *fileEgress    `yaml:"egress"`
 	Reconcile *fileReconcile `yaml:"reconcile"`
 }
 
@@ -99,6 +100,17 @@ type fileRunner struct {
 type fileSecurity struct {
 	RunnerMasterKeyFile *string `yaml:"runner_master_key_file"`
 	AllowOutbound       *bool   `yaml:"allow_outbound"`
+}
+
+// fileEgress 对应只由平台运维提供的 egress 分组。
+type fileEgress struct {
+	Image           *string        `yaml:"image"`
+	ProtocolVersion *int           `yaml:"protocol_version"`
+	ReadyTimeout    *string        `yaml:"ready_timeout"`
+	DeniedCIDRs     *[]string      `yaml:"egress_denied_cidrs"`
+	AnchorUID       *uint32        `yaml:"anchor_uid"`
+	AnchorGID       *uint32        `yaml:"anchor_gid"`
+	Limits          *fileResources `yaml:"limits"`
 }
 
 // fileReconcile 对应 reconcile 分组的文件字段。
@@ -276,6 +288,24 @@ func (f fileConfig) apply(base Config) (Config, error) {
 			f.Security.RunnerMasterKeyFile,
 		)
 		override(&cfg.Security.AllowOutbound, f.Security.AllowOutbound)
+	}
+
+	if f.Egress != nil {
+		override(&cfg.Egress.Image, f.Egress.Image)
+		override(&cfg.Egress.ProtocolVersion, f.Egress.ProtocolVersion)
+		if err := overrideDuration(&cfg.Egress.ReadyTimeout, f.Egress.ReadyTimeout, "egress.ready_timeout"); err != nil {
+			return Config{}, err
+		}
+		if f.Egress.DeniedCIDRs != nil {
+			cfg.Egress.DeniedCIDRs = append([]string(nil), (*f.Egress.DeniedCIDRs)...)
+		}
+		override(&cfg.Egress.AnchorUID, f.Egress.AnchorUID)
+		override(&cfg.Egress.AnchorGID, f.Egress.AnchorGID)
+		if f.Egress.Limits != nil {
+			override(&cfg.Egress.Limits.CPUQuotaMillis, f.Egress.Limits.CPUQuotaMillis)
+			override(&cfg.Egress.Limits.MemoryMiB, f.Egress.Limits.MemoryMiB)
+			override(&cfg.Egress.Limits.PIDs, f.Egress.Limits.PIDs)
+		}
 	}
 
 	if f.Reconcile != nil {

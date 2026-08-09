@@ -71,6 +71,19 @@ func TestDefaultSnapshot(t *testing.T) {
 			RunnerMasterKeyFile: "/etc/minisandbox/runner-master-key",
 			AllowOutbound:       false,
 		},
+		Egress: EgressConfig{
+			Image:           "",
+			ProtocolVersion: 1,
+			ReadyTimeout:    30 * time.Second,
+			DeniedCIDRs:     nil,
+			AnchorUID:       65532,
+			AnchorGID:       65532,
+			Limits: domain.ResourceLimits{
+				CPUQuotaMillis: 100,
+				MemoryMiB:      64,
+				PIDs:           16,
+			},
+		},
 		Reconcile: ReconcileConfig{
 			Interval:           2 * time.Second,
 			RunnerReadyTimeout: 30 * time.Second,

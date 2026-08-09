@@ -2,11 +2,14 @@ package config
 
 import (
 	"net"
+	"net/netip"
 	"path"
+	"regexp"
 	"strconv"
 	"time"
 
 	"minisandbox/internal/domain"
+	"minisandbox/internal/egresspolicy"
 )
 
 const (
@@ -24,7 +27,13 @@ const (
 	maxRunnerRetention                  = 7 * 24 * time.Hour
 	maxRunnerRetainedExecutions         = 10_000
 	maxRunnerSSEWriteTimeout            = time.Minute
+	maxEgressReadyTimeout               = 2 * time.Minute
+	maxEgressCPUQuotaMillis       int64 = 1000
+	maxEgressMemoryMiB            int64 = 512
+	maxEgressPIDs                 int64 = 64
 )
+
+var egressImageDigestPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$`)
 
 // FieldError 表示配置中单个字段违反启动前的安全校验规则。
 //
@@ -166,13 +175,8 @@ func (c Config) Validate() error {
 	); err != nil {
 		return err
 	}
-	// egress typed policy 与 sidecar 尚未由 P2-065 及后续任务实现；在此之前
-	// 即使配置显式打开也必须启动失败，避免产生“已允许但未隔离”的假象。
-	if c.Security.AllowOutbound {
-		return &FieldError{
-			Field:   "security.allow_outbound",
-			Message: "must remain false until managed egress is configured",
-		}
+	if err := validateEgress(c.Egress, c.Security.AllowOutbound); err != nil {
+		return err
 	}
 	if err := validateResourceRange(
 		"limits.max_resources.memory_mib",
@@ -229,6 +233,43 @@ func (c Config) Validate() error {
 		}
 	}
 
+	return nil
+}
+
+func validateEgress(egress EgressConfig, enabled bool) error {
+	if enabled && egress.Image == "" {
+		return &FieldError{Field: "egress.image", Message: "must be configured when outbound is enabled"}
+	}
+	if egress.Image != "" && !egressImageDigestPattern.MatchString(egress.Image) {
+		return &FieldError{Field: "egress.image", Message: "must be an OCI sha256 digest reference"}
+	}
+	if egress.ProtocolVersion != egresspolicy.CurrentProtocolVersion {
+		return &FieldError{Field: "egress.protocol_version", Message: "must equal the supported protocol version"}
+	}
+	if egress.ReadyTimeout < time.Second || egress.ReadyTimeout > maxEgressReadyTimeout {
+		return &FieldError{Field: "egress.ready_timeout", Message: "must be within the safe duration bounds"}
+	}
+	if egress.AnchorUID == 0 {
+		return &FieldError{Field: "egress.anchor_uid", Message: "must be a non-root UID"}
+	}
+	if egress.AnchorGID == 0 {
+		return &FieldError{Field: "egress.anchor_gid", Message: "must be a non-root GID"}
+	}
+	for _, cidr := range egress.DeniedCIDRs {
+		prefix, err := netip.ParsePrefix(cidr)
+		if err != nil || prefix.Addr().Is4In6() {
+			return &FieldError{Field: "egress.egress_denied_cidrs", Message: "must contain only valid IPv4 or IPv6 CIDR values"}
+		}
+	}
+	if egress.Limits.CPUQuotaMillis <= 0 || egress.Limits.CPUQuotaMillis > maxEgressCPUQuotaMillis {
+		return &FieldError{Field: "egress.limits.cpu_quota_millis", Message: "must be within the safe sidecar bounds"}
+	}
+	if egress.Limits.MemoryMiB <= 0 || egress.Limits.MemoryMiB > maxEgressMemoryMiB {
+		return &FieldError{Field: "egress.limits.memory_mib", Message: "must be within the safe sidecar bounds"}
+	}
+	if egress.Limits.PIDs <= 0 || egress.Limits.PIDs > maxEgressPIDs {
+		return &FieldError{Field: "egress.limits.pids", Message: "must be within the safe sidecar bounds"}
+	}
 	return nil
 }
 

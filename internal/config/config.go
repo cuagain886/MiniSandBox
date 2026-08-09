@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"minisandbox/internal/domain"
+	"minisandbox/internal/egresspolicy"
 )
 
 // NetworkModeNone 表示 sandbox 完全没有网络访问能力,是 Phase 1 唯一
@@ -32,6 +33,8 @@ type Config struct {
 	Runner RunnerConfig
 	// Security 是内部鉴权材料路径与平台网络能力开关。
 	Security SecurityConfig
+	// Egress 是仅由平台控制的 outbound sidecar artifact 与策略上限。
+	Egress EgressConfig
 	// Reconcile 是期望状态收敛的节奏与超时配置。
 	Reconcile ReconcileConfig
 }
@@ -137,6 +140,26 @@ type SecurityConfig struct {
 	AllowOutbound bool
 }
 
+// EgressConfig 描述 immutable egress sidecar 的可信平台配置。
+//
+// 公共 sandbox 请求只能请求 outbound 布尔意图，不能覆盖本结构任何字段。
+type EgressConfig struct {
+	// Image 是固定内容的 OCI digest reference；启用 outbound 时必须非空。
+	Image string
+	// ProtocolVersion 是 sidecar bootstrap 的精确协议版本。
+	ProtocolVersion int
+	// ReadyTimeout 是 sidecar 安装并回验 nft policy 的最长时间。
+	ReadyTimeout time.Duration
+	// DeniedCIDRs 是运维可选追加项，不能删除代码内置安全基线。
+	DeniedCIDRs []string
+	// AnchorUID 是 sidecar Ready 后永久使用的非 root UID。
+	AnchorUID uint32
+	// AnchorGID 是 sidecar Ready 后永久使用的非 root GID。
+	AnchorGID uint32
+	// Limits 是 sidecar 固定 CPU、内存和 PID 上限。
+	Limits domain.ResourceLimits
+}
+
 // ReconcileConfig 描述期望状态收敛循环的节奏与阶段超时。
 type ReconcileConfig struct {
 	// Interval 是周期性扫描待收敛 sandbox 的间隔。
@@ -211,6 +234,19 @@ func Default() Config {
 		Security: SecurityConfig{
 			RunnerMasterKeyFile: "/etc/minisandbox/runner-master-key",
 			AllowOutbound:       false,
+		},
+		Egress: EgressConfig{
+			Image:           "",
+			ProtocolVersion: egresspolicy.CurrentProtocolVersion,
+			ReadyTimeout:    30 * time.Second,
+			DeniedCIDRs:     nil,
+			AnchorUID:       65532,
+			AnchorGID:       65532,
+			Limits: domain.ResourceLimits{
+				CPUQuotaMillis: 100,
+				MemoryMiB:      64,
+				PIDs:           16,
+			},
 		},
 		Reconcile: ReconcileConfig{
 			Interval:           2 * time.Second,

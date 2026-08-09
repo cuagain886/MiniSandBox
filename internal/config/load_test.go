@@ -122,6 +122,19 @@ runner:
 security:
   runner_master_key_file: "/run/secrets/runner-key"
   allow_outbound: true
+egress:
+  image: "registry.example/minisandbox/egressd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  protocol_version: 7
+  ready_timeout: "12s"
+  egress_denied_cidrs:
+    - "8.8.8.0/24"
+    - "2001:4860::/32"
+  anchor_uid: 2002
+  anchor_gid: 2003
+  limits:
+    cpu_quota_millis: 200
+    memory_mib: 96
+    pids: 24
 reconcile:
   interval: "5s"
   runner_ready_timeout: "20s"
@@ -192,6 +205,19 @@ reconcile:
 		Security: SecurityConfig{
 			RunnerMasterKeyFile: "/run/secrets/runner-key",
 			AllowOutbound:       true,
+		},
+		Egress: EgressConfig{
+			Image:           "registry.example/minisandbox/egressd@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+			ProtocolVersion: 7,
+			ReadyTimeout:    12 * time.Second,
+			DeniedCIDRs:     []string{"8.8.8.0/24", "2001:4860::/32"},
+			AnchorUID:       2002,
+			AnchorGID:       2003,
+			Limits: domain.ResourceLimits{
+				CPUQuotaMillis: 200,
+				MemoryMiB:      96,
+				PIDs:           24,
+			},
 		},
 		Reconcile: ReconcileConfig{
 			Interval:           5 * time.Second,

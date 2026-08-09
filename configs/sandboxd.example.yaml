@@ -58,3 +58,16 @@ runner:
 security:
   runner_master_key_file: "/etc/minisandbox/runner-master-key"
   allow_outbound: false
+
+egress:
+  # 启用 allow_outbound 前必须替换为已批准、带 SBOM/provenance 的精确 digest。
+  image: ""
+  protocol_version: 1
+  ready_timeout: "30s"
+  egress_denied_cidrs: []
+  anchor_uid: 65532
+  anchor_gid: 65532
+  limits:
+    cpu_quota_millis: 100
+    memory_mib: 64
+    pids: 16

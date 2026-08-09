@@ -263,7 +263,7 @@ func TestValidateRunnerRejections(t *testing.T) {
 		{"sse timeout zero", func(c *Config) { c.Runner.SSEWriteTimeout = 0 }, "runner.sse_write_timeout"},
 		{"sse timeout unbounded", func(c *Config) { c.Runner.SSEWriteTimeout = time.Minute + time.Millisecond }, "runner.sse_write_timeout"},
 		{"master key path relative", func(c *Config) { c.Security.RunnerMasterKeyFile = "runner.key" }, "security.runner_master_key_file"},
-		{"outbound enabled before egress gate", func(c *Config) { c.Security.AllowOutbound = true }, "security.allow_outbound"},
+		{"outbound missing sidecar image", func(c *Config) { c.Security.AllowOutbound = true }, "egress.image"},
 	}
 
 	for _, test := range tests {
@@ -276,6 +276,49 @@ func TestValidateRunnerRejections(t *testing.T) {
 			}
 			if got := fieldErr.Field; got != test.field {
 				t.Fatalf("unexpected field: got %s, want %s", got, test.field)
+			}
+		})
+	}
+}
+
+// TestValidateEgressRejections 锁定 sidecar artifact、协议、超时、身份、附加
+// deny CIDR 和资源上限，避免不完整或可漂移配置进入 reconcile。
+func TestValidateEgressRejections(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		field  string
+	}{
+		{"tag-only image", func(c *Config) { c.Egress.Image = "registry.example/egressd:latest" }, "egress.image"},
+		{"uppercase digest", func(c *Config) { c.Egress.Image = "registry.example/egressd@sha256:" + strings.Repeat("A", 64) }, "egress.image"},
+		{"unsupported protocol", func(c *Config) { c.Egress.ProtocolVersion++ }, "egress.protocol_version"},
+		{"ready timeout too short", func(c *Config) { c.Egress.ReadyTimeout = time.Second - time.Nanosecond }, "egress.ready_timeout"},
+		{"ready timeout too long", func(c *Config) { c.Egress.ReadyTimeout = 2*time.Minute + time.Nanosecond }, "egress.ready_timeout"},
+		{"root anchor uid", func(c *Config) { c.Egress.AnchorUID = 0 }, "egress.anchor_uid"},
+		{"root anchor gid", func(c *Config) { c.Egress.AnchorGID = 0 }, "egress.anchor_gid"},
+		{"empty denied CIDR", func(c *Config) { c.Egress.DeniedCIDRs = []string{""} }, "egress.egress_denied_cidrs"},
+		{"invalid denied CIDR", func(c *Config) { c.Egress.DeniedCIDRs = []string{"invalid-cidr-canary"} }, "egress.egress_denied_cidrs"},
+		{"sidecar cpu zero", func(c *Config) { c.Egress.Limits.CPUQuotaMillis = 0 }, "egress.limits.cpu_quota_millis"},
+		{"sidecar cpu too large", func(c *Config) { c.Egress.Limits.CPUQuotaMillis = 1001 }, "egress.limits.cpu_quota_millis"},
+		{"sidecar memory zero", func(c *Config) { c.Egress.Limits.MemoryMiB = 0 }, "egress.limits.memory_mib"},
+		{"sidecar memory too large", func(c *Config) { c.Egress.Limits.MemoryMiB = 513 }, "egress.limits.memory_mib"},
+		{"sidecar pids zero", func(c *Config) { c.Egress.Limits.PIDs = 0 }, "egress.limits.pids"},
+		{"sidecar pids too large", func(c *Config) { c.Egress.Limits.PIDs = 65 }, "egress.limits.pids"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			test.mutate(&cfg)
+			var fieldErr *FieldError
+			if err := cfg.Validate(); !errors.As(err, &fieldErr) {
+				t.Fatalf("expected FieldError, got %v", err)
+			}
+			if fieldErr.Field != test.field {
+				t.Fatalf("unexpected field: got %s, want %s", fieldErr.Field, test.field)
+			}
+			if strings.Contains(fieldErr.Error(), "invalid-cidr-canary") {
+				t.Fatalf("validation error leaks rejected policy input: %v", fieldErr)
 			}
 		})
 	}
@@ -348,6 +391,21 @@ func TestValidateAccepts(t *testing.T) {
 			name: "default ttl equals maximum",
 			mutate: func(c *Config) {
 				c.Limits.DefaultTTL = c.Limits.MaximumTTL
+			},
+		},
+		{
+			name: "outbound with immutable sidecar digest",
+			mutate: func(c *Config) {
+				c.Security.AllowOutbound = true
+				c.Egress.Image = "registry.example/minisandbox/egressd@sha256:" + strings.Repeat("a", 64)
+				c.Egress.DeniedCIDRs = []string{"8.8.8.0/24", "2001:4860::/32"}
+			},
+		},
+		{
+			name: "egress safe upper bounds",
+			mutate: func(c *Config) {
+				c.Egress.ReadyTimeout = 2 * time.Minute
+				c.Egress.Limits = domain.ResourceLimits{CPUQuotaMillis: 1000, MemoryMiB: 512, PIDs: 64}
 			},
 		},
 	}
