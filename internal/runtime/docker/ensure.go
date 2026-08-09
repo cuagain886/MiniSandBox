@@ -21,6 +21,18 @@ func (r *Runtime) Ensure(
 	if err != nil {
 		return runtimeport.ActualSandbox{}, err
 	}
+	var readyEgress *runtimeport.EgressActual
+	if sandbox.Spec.Network.Outbound {
+		request, err := r.egressRequest(sandbox.ID)
+		if err != nil {
+			return runtimeport.ActualSandbox{}, err
+		}
+		egressActual, err := r.EnsureEgress(ctx, request)
+		if err != nil {
+			return runtimeport.ActualSandbox{}, err
+		}
+		readyEgress = &egressActual
+	}
 
 	actual, err := r.Inspect(ctx, sandbox.ID)
 	if err != nil {
@@ -32,6 +44,9 @@ func (r *Runtime) Ensure(
 			return runtimeport.ActualSandbox{}, containerIdentityConflict()
 		}
 		if actual.State == runtimeport.ActualRunning {
+			if err := r.validateMainContainerNetwork(ctx, actual.RuntimeID, sandbox.Spec.Network.Outbound, readyEgress); err != nil {
+				return runtimeport.ActualSandbox{}, err
+			}
 			return actual, nil
 		}
 	}
@@ -71,7 +86,7 @@ func (r *Runtime) Ensure(
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
-	container, err := ensureStoppedContainer(ctx, r.engine, sandbox, names)
+	container, err := ensureStoppedContainerWithEgress(ctx, r.engine, sandbox, names, readyEgress)
 	journal.containerCreated = container.CreatedByThisCall
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
@@ -91,6 +106,11 @@ func (r *Runtime) Ensure(
 	actual, err = r.Inspect(ctx, sandbox.ID)
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
+	}
+	if actual.State == runtimeport.ActualRunning {
+		if err := r.validateMainContainerNetwork(ctx, actual.RuntimeID, sandbox.Spec.Network.Outbound, readyEgress); err != nil {
+			return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
+		}
 	}
 	return actual, nil
 }
@@ -116,7 +136,14 @@ func (r *Runtime) validateEnsureInput(
 	}
 	// buildContainerCreateOptions 同时校验完整 Phase 1 spec、spec hash、
 	// labels 和资源单位，即使后续发现容器已 running 也不能跳过输入校验。
-	if _, err := buildContainerCreateOptions(sandbox, names); err != nil {
+	validationSandbox := sandbox
+	if sandbox.Spec.Network.Outbound {
+		if r.egressConfig == nil {
+			return ResourceNames{}, errors.New("outbound sandbox is disabled by runtime configuration")
+		}
+		validationSandbox.Spec.Network.Outbound = false
+	}
+	if _, err := buildContainerCreateOptions(validationSandbox, names); err != nil {
 		return ResourceNames{}, err
 	}
 	if _, err := ParseImageReference(sandbox.Spec.Image); err != nil {
@@ -126,4 +153,16 @@ func (r *Runtime) validateEnsureInput(
 		return ResourceNames{}, &ArtifactInvalidError{cause: err}
 	}
 	return names, nil
+}
+
+func (r *Runtime) egressRequest(sandboxID string) (runtimeport.EgressRequest, error) {
+	if r.egressConfig == nil {
+		return runtimeport.EgressRequest{}, errors.New("outbound sandbox is disabled by runtime configuration")
+	}
+	return runtimeport.EgressRequest{
+		SandboxID: sandboxID, Image: r.egressConfig.Image,
+		AdditionalDeniedCIDRs: append([]string(nil), r.egressConfig.AdditionalDeniedCIDRs...),
+		AnchorUID:             r.egressConfig.AnchorUID, AnchorGID: r.egressConfig.AnchorGID,
+		Limits: r.egressConfig.Limits, ReadyTimeout: r.egressConfig.ReadyTimeout,
+	}, nil
 }

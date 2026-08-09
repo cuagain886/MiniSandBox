@@ -3,9 +3,11 @@ package docker
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
+	mobycontainer "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/egressanchor"
 	"minisandbox/internal/egressnft"
@@ -66,6 +68,51 @@ func (r *Runtime) EnsureEgress(ctx context.Context, request runtimeport.EgressRe
 		SandboxID: request.SandboxID, ContainerID: verified.id, NetworkID: network.id,
 		State: runtimeport.ActualRunning, Policy: policy, Attestation: attestation,
 	}, nil
+}
+
+// CheckEgressForExecution 是不做修复的 runtime health port；只有 running sidecar、
+// 精确 Docker container:<id> 拓扑、attestation 与 runner netns 三方一致时才开放准入。
+func (r *Runtime) CheckEgressForExecution(ctx context.Context, request runtimeport.EgressRequest, runnerNetNS string) error {
+	if !egressnft.ValidNetworkNamespace(runnerNetNS) {
+		return errors.New("runner network namespace identity is invalid")
+	}
+	actual, err := r.InspectEgress(ctx, request)
+	if err != nil || actual.State != runtimeport.ActualRunning || actual.Attestation.NetworkNamespace != runnerNetNS {
+		return errors.New("egress sidecar is unhealthy")
+	}
+	inspection, err := r.engine.ContainerInspect(ctx, containerName(request.SandboxID), mobyclient.ContainerInspectOptions{})
+	if err != nil {
+		return errors.New("inspect outbound sandbox network mode")
+	}
+	if inspection.Container.HostConfig == nil || inspection.Container.HostConfig.NetworkMode != mobycontainer.NetworkMode("container:"+actual.ContainerID) {
+		return errors.New("outbound sandbox network mode drifted")
+	}
+	return nil
+}
+
+func (r *Runtime) validateMainContainerNetwork(ctx context.Context, containerID string, outbound bool, egress *runtimeport.EgressActual) error {
+	inspection, err := r.engine.ContainerInspect(ctx, containerID, mobyclient.ContainerInspectOptions{})
+	if err != nil || inspection.Container.Config == nil || inspection.Container.HostConfig == nil {
+		return errors.New("inspect sandbox network mode")
+	}
+	config, host := inspection.Container.Config, inspection.Container.HostConfig
+	if outbound {
+		if !validReadyEgress(egress) || config.NetworkDisabled || host.NetworkMode != mobycontainer.NetworkMode("container:"+egress.ContainerID) {
+			return errors.New("outbound sandbox network mode drifted")
+		}
+	} else if !config.NetworkDisabled || host.NetworkMode != mobycontainer.NetworkMode("none") {
+		return errors.New("network-none sandbox mode drifted")
+	}
+	for _, capability := range host.CapAdd {
+		normalized := strings.TrimPrefix(strings.ToUpper(capability), "CAP_")
+		if normalized == "NET_ADMIN" || normalized == "NET_RAW" {
+			return errors.New("sandbox retains forbidden network capability")
+		}
+	}
+	if len(host.PortBindings) != 0 || len(host.Links) != 0 {
+		return errors.New("sandbox has forbidden network exposure")
+	}
+	return nil
 }
 
 // InspectEgress 只读验证 network、sidecar 安全快照、netns 与 attestation，不创建、

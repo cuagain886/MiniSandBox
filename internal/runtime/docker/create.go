@@ -12,7 +12,9 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"minisandbox/internal/domain"
+	"minisandbox/internal/egressnft"
 	"minisandbox/internal/runnerbootstrap"
+	runtimeport "minisandbox/internal/runtime"
 )
 
 const (
@@ -45,6 +47,14 @@ func buildContainerCreateOptions(
 	sandbox domain.Sandbox,
 	names ResourceNames,
 ) (mobyclient.ContainerCreateOptions, error) {
+	return buildContainerCreateOptionsWithEgress(sandbox, names, nil)
+}
+
+func buildContainerCreateOptionsWithEgress(
+	sandbox domain.Sandbox,
+	names ResourceNames,
+	egress *runtimeport.EgressActual,
+) (mobyclient.ContainerCreateOptions, error) {
 	if !validSandboxID(sandbox.ID) ||
 		names.Container != containerName(sandbox.ID) ||
 		names.Workspace != workspaceName(sandbox.ID) ||
@@ -55,7 +65,6 @@ func buildContainerCreateOptions(
 	}
 	if sandbox.Spec.Workspace.MountPath != domain.WorkspaceMountPath ||
 		sandbox.Spec.Workspace.Persistent ||
-		sandbox.Spec.Network.Outbound ||
 		sandbox.Spec.Platform.OS != "linux" ||
 		sandbox.Spec.Platform.Arch != "amd64" {
 		return mobyclient.ContainerCreateOptions{}, errors.New(
@@ -76,6 +85,18 @@ func buildContainerCreateOptions(
 		return mobyclient.ContainerCreateOptions{}, err
 	}
 
+	networkDisabled := true
+	networkMode := mobycontainer.NetworkMode("none")
+	if sandbox.Spec.Network.Outbound {
+		if !validReadyEgress(egress) || egress.SandboxID != sandbox.ID {
+			return mobyclient.ContainerCreateOptions{}, errors.New("outbound sandbox requires Ready egress sidecar")
+		}
+		networkDisabled = false
+		networkMode = mobycontainer.NetworkMode("container:" + egress.ContainerID)
+	} else if egress != nil {
+		return mobyclient.ContainerCreateOptions{}, errors.New("network-none sandbox must not receive egress sidecar")
+	}
+
 	return mobyclient.ContainerCreateOptions{
 		Name: names.Container,
 		Config: &mobycontainer.Config{
@@ -83,11 +104,11 @@ func buildContainerCreateOptions(
 			Image:           sandbox.Spec.Image,
 			WorkingDir:      domain.WorkspaceMountPath,
 			Entrypoint:      append([]string(nil), fixedEntrypoint...),
-			NetworkDisabled: true,
+			NetworkDisabled: networkDisabled,
 			Labels:          labels,
 		},
 		HostConfig: &mobycontainer.HostConfig{
-			NetworkMode:    mobycontainer.NetworkMode("none"),
+			NetworkMode:    networkMode,
 			Privileged:     false,
 			CapDrop:        []string{"ALL"},
 			CapAdd:         []string{"CHOWN", "SETUID", "SETGID", "KILL"},
@@ -114,6 +135,14 @@ func buildContainerCreateOptions(
 	}, nil
 }
 
+func validReadyEgress(actual *runtimeport.EgressActual) bool {
+	return actual != nil && actual.State == runtimeport.ActualRunning && actual.ContainerID != "" && actual.NetworkID != "" &&
+		actual.Policy.Hash != "" && actual.Attestation.PolicyHash == actual.Policy.Hash &&
+		actual.Attestation.ProtocolVersion == actual.Policy.ProtocolVersion &&
+		actual.Attestation.RuleSchemaVersion == actual.Policy.RuleSchemaVersion &&
+		egressnft.ValidNetworkNamespace(actual.Attestation.NetworkNamespace) && egressnft.ValidImageDigest(actual.Attestation.ImageDigest)
+}
+
 // ensureStoppedContainer 幂等创建或复用当前 sandbox 的受管容器。
 //
 // 本函数只建立容器对象，不复制 artifact、启动容器或执行容器内命令。
@@ -123,7 +152,17 @@ func ensureStoppedContainer(
 	sandbox domain.Sandbox,
 	names ResourceNames,
 ) (ContainerEnsureResult, error) {
-	options, err := buildContainerCreateOptions(sandbox, names)
+	return ensureStoppedContainerWithEgress(ctx, engine, sandbox, names, nil)
+}
+
+func ensureStoppedContainerWithEgress(
+	ctx context.Context,
+	engine Engine,
+	sandbox domain.Sandbox,
+	names ResourceNames,
+	egress *runtimeport.EgressActual,
+) (ContainerEnsureResult, error) {
+	options, err := buildContainerCreateOptionsWithEgress(sandbox, names, egress)
 	if err != nil {
 		return ContainerEnsureResult{}, err
 	}

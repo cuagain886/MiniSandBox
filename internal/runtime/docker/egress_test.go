@@ -115,6 +115,87 @@ func TestBuildEgressSidecarSecuritySnapshot(t *testing.T) {
 	}
 }
 
+// TestBuildMainContainerNetworkModes 验证默认/false 保持 network none，true 只能
+// 共享已验证 sidecar netns，且主容器不获得 endpoint、端口或网络 capability。
+func TestBuildMainContainerNetworkModes(t *testing.T) {
+	sandbox := testDockerSandbox()
+	names, err := NamesForSandbox(t.TempDir(), sandbox.ID)
+	if err != nil {
+		t.Fatalf("derive names: %v", err)
+	}
+	withoutNetwork, err := buildContainerCreateOptions(sandbox, names)
+	if err != nil {
+		t.Fatalf("build network-none options: %v", err)
+	}
+	if !withoutNetwork.Config.NetworkDisabled || withoutNetwork.HostConfig.NetworkMode != "none" {
+		t.Fatalf("default network mode drifted: %+v", withoutNetwork.HostConfig)
+	}
+
+	request, policy := sampleEgressRequest(t)
+	sandbox.Spec.Network.Outbound = true
+	ready := &runtimeport.EgressActual{
+		SandboxID: sandbox.ID, ContainerID: "sidecar-id", NetworkID: "network-id",
+		State: runtimeport.ActualRunning, Policy: policy,
+		Attestation: egressanchor.Attestation{
+			ProtocolVersion: policy.ProtocolVersion, RuleSchemaVersion: policy.RuleSchemaVersion,
+			PolicyHash: policy.Hash, NetworkNamespace: "linux-netns:4:4026533000", ImageDigest: request.Image,
+		},
+	}
+	outbound, err := buildContainerCreateOptionsWithEgress(sandbox, names, ready)
+	if err != nil {
+		t.Fatalf("build outbound options: %v", err)
+	}
+	if outbound.Config.NetworkDisabled || outbound.HostConfig.NetworkMode != "container:sidecar-id" || outbound.NetworkingConfig != nil ||
+		len(outbound.HostConfig.PortBindings) != 0 {
+		t.Fatalf("outbound topology drifted: options=%+v", outbound)
+	}
+	for _, capability := range outbound.HostConfig.CapAdd {
+		if capability == "NET_ADMIN" || capability == "NET_RAW" {
+			t.Fatalf("main sandbox gained forbidden capability: %v", outbound.HostConfig.CapAdd)
+		}
+	}
+
+	for _, invalid := range []*runtimeport.EgressActual{nil, {}, {State: runtimeport.ActualRunning}, {State: runtimeport.ActualRunning, ContainerID: "sidecar-id", NetworkID: "network-id"}} {
+		if _, err := buildContainerCreateOptionsWithEgress(sandbox, names, invalid); err == nil {
+			t.Fatalf("invalid Ready evidence accepted: %+v", invalid)
+		}
+	}
+}
+
+// TestRuntimeEgressOptionsFailClosed 验证 outbound 平台配置必须完整、digest 固定且
+// deny CIDR 合法；apply 时复制切片，避免调用方后续修改运行中策略。
+func TestRuntimeEgressOptionsFailClosed(t *testing.T) {
+	request, _ := sampleEgressRequest(t)
+	valid := &EgressPlatformConfig{
+		Image: request.Image, AdditionalDeniedCIDRs: request.AdditionalDeniedCIDRs,
+		AnchorUID: request.AnchorUID, AnchorGID: request.AnchorGID,
+		Limits: request.Limits, ReadyTimeout: request.ReadyTimeout,
+	}
+	base := RuntimeOptions{DataDirectory: t.TempDir(), Artifacts: testArtifactProvider(), CreateTimeout: time.Second, Egress: valid}
+	if err := validateRuntimeOptions(base); err != nil {
+		t.Fatalf("valid egress options rejected: %v", err)
+	}
+	runtime := &Runtime{}
+	runtime.applyOptions(base)
+	valid.AdditionalDeniedCIDRs[0] = "9.9.9.0/24"
+	if runtime.egressConfig.AdditionalDeniedCIDRs[0] != "8.8.8.0/24" {
+		t.Fatal("runtime retained mutable egress deny slice")
+	}
+
+	invalid := *runtime.egressConfig
+	invalid.Image = "egressd:latest"
+	base.Egress = &invalid
+	if err := validateRuntimeOptions(base); err == nil {
+		t.Fatal("tag-only egress artifact accepted")
+	}
+	invalid = *runtime.egressConfig
+	invalid.AdditionalDeniedCIDRs = []string{"invalid-cidr"}
+	base.Egress = &invalid
+	if err := validateRuntimeOptions(base); err == nil {
+		t.Fatal("invalid egress deny CIDR accepted")
+	}
+}
+
 // TestEnsureEgressSidecarIdempotent 验证精确匹配的 created sidecar 被复用，外部同名
 // 容器或安全配置漂移不会触发覆盖创建。
 func TestEnsureEgressSidecarIdempotent(t *testing.T) {
@@ -280,6 +361,46 @@ func TestRuntimeEnsureEgressEndToEnd(t *testing.T) {
 	}
 	if createCalls != 1 || attachCalls != 1 || startCalls != 1 {
 		t.Fatalf("Ready sidecar was mutated: create=%d attach=%d start=%d", createCalls, attachCalls, startCalls)
+	}
+}
+
+// TestRuntimeCheckEgressForExecution 验证每次新 execution 前会只读比较 sidecar、
+// attestation、Docker container mode 与 runner netns，任一身份漂移即关闭准入。
+func TestRuntimeCheckEgressForExecution(t *testing.T) {
+	request, policy := sampleEgressRequest(t)
+	running := sampleEgressSidecar(t, request, policy, mobycontainer.StateRunning)
+	identity := "linux-netns:4:4026533000"
+	attestation := egressanchor.Attestation{
+		ProtocolVersion: policy.ProtocolVersion, RuleSchemaVersion: policy.RuleSchemaVersion,
+		PolicyHash: policy.Hash, NetworkNamespace: identity, ImageDigest: request.Image,
+		CreatedAt: time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC),
+	}
+	archive := attestationArchive(t, attestation, 0o400, false)
+	mainMode := mobycontainer.NetworkMode("container:" + running.ID)
+	engine := &fakeEngine{
+		networkInspectFunc: func(context.Context, string, mobyclient.NetworkInspectOptions) (mobyclient.NetworkInspectResult, error) {
+			return mobyclient.NetworkInspectResult{Network: sampleEgressNetwork()}, nil
+		},
+		containerInspectFunc: func(_ context.Context, name string, _ mobyclient.ContainerInspectOptions) (mobyclient.ContainerInspectResult, error) {
+			if name == egressSidecarName(request.SandboxID) || name == running.ID {
+				return mobyclient.ContainerInspectResult{Container: running}, nil
+			}
+			return mobyclient.ContainerInspectResult{Container: mobycontainer.InspectResponse{HostConfig: &mobycontainer.HostConfig{NetworkMode: mainMode}}}, nil
+		},
+		copyFromContainerFunc: func(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error) {
+			return mobyclient.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(archive))}, nil
+		},
+	}
+	runtime := &Runtime{engine: engine, netNSResolver: fakeNetNSResolver{identity: identity}, createTimeout: time.Second}
+	if err := runtime.CheckEgressForExecution(context.Background(), request, identity); err != nil {
+		t.Fatalf("healthy egress rejected: %v", err)
+	}
+	if err := runtime.CheckEgressForExecution(context.Background(), request, "linux-netns:4:999"); err == nil {
+		t.Fatal("runner netns drift accepted")
+	}
+	mainMode = "none"
+	if err := runtime.CheckEgressForExecution(context.Background(), request, identity); err == nil {
+		t.Fatal("main Docker network mode drift accepted")
 	}
 }
 

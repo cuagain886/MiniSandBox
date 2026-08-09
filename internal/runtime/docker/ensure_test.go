@@ -43,6 +43,7 @@ func TestRuntimeEnsureCreatesInFixedOrder(t *testing.T) {
 		"container-inspect",
 		"container-start",
 		"container-inspect",
+		"container-inspect",
 	}
 	if !reflect.DeepEqual(harness.events, want) {
 		t.Fatalf("events:\n got %v\nwant %v", harness.events, want)
@@ -55,7 +56,7 @@ func TestRuntimeEnsureCreatesInFixedOrder(t *testing.T) {
 	); err != nil {
 		t.Fatalf("repeat ensure: %v", err)
 	}
-	want = append(want, "container-inspect")
+	want = append(want, "container-inspect", "container-inspect")
 	if !reflect.DeepEqual(harness.events, want) {
 		t.Fatalf("repeat events:\n got %v\nwant %v", harness.events, want)
 	}
@@ -73,7 +74,7 @@ func TestRuntimeEnsureReusesRunningContainer(t *testing.T) {
 	if actual.State != runtimeport.ActualRunning {
 		t.Fatalf("actual: %#v", actual)
 	}
-	if !reflect.DeepEqual(harness.events, []string{"container-inspect"}) {
+	if !reflect.DeepEqual(harness.events, []string{"container-inspect", "container-inspect"}) {
 		t.Fatalf("events: %v", harness.events)
 	}
 }
@@ -98,6 +99,7 @@ func TestRuntimeEnsureReinjectsStoppedContainer(t *testing.T) {
 		"copy-artifacts",
 		"container-inspect",
 		"container-start",
+		"container-inspect",
 		"container-inspect",
 	}
 	if !reflect.DeepEqual(harness.events, want) {
@@ -265,8 +267,10 @@ func (h *ensureHarness) inspectContainer(
 			ID:   "container-id",
 			Name: "/" + containerName(testSandboxID),
 			Config: &mobycontainer.Config{
-				Labels: labels,
+				Labels:          labels,
+				NetworkDisabled: true,
 			},
+			HostConfig: &mobycontainer.HostConfig{NetworkMode: mobycontainer.NetworkMode("none"), CapDrop: []string{"ALL"}},
 			State: &mobycontainer.State{
 				Status:  state,
 				Running: state == mobycontainer.StateRunning,

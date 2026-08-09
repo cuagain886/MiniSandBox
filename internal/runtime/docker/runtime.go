@@ -12,6 +12,9 @@ import (
 	"time"
 
 	mobyclient "github.com/moby/moby/client"
+	"minisandbox/internal/domain"
+	"minisandbox/internal/egressnft"
+	"minisandbox/internal/egresspolicy"
 	runtimeport "minisandbox/internal/runtime"
 )
 
@@ -133,6 +136,24 @@ type Runtime struct {
 	dataDirectory string
 	artifacts     ArtifactProvider
 	createTimeout time.Duration
+	egressConfig  *EgressPlatformConfig
+}
+
+// EgressPlatformConfig 是只由 sandboxd 配置装配的 outbound sidecar 固定参数。
+// 公共 sandbox 请求只能表达 outbound 布尔意图，不能覆盖本结构任何字段。
+type EgressPlatformConfig struct {
+	// Image 是已批准的精确 sidecar artifact digest。
+	Image string
+	// AdditionalDeniedCIDRs 是运维只增不减的额外拒绝网段。
+	AdditionalDeniedCIDRs []string
+	// AnchorUID 是 Ready anchor 的固定非 root UID。
+	AnchorUID uint32
+	// AnchorGID 是 Ready anchor 的固定非 root GID。
+	AnchorGID uint32
+	// Limits 是 sidecar 的固定资源上限。
+	Limits domain.ResourceLimits
+	// ReadyTimeout 是等待 attestation 的最长时间。
+	ReadyTimeout time.Duration
 }
 
 // RuntimeOptions 保存 Docker Ensure 编排所需的宿主机受管依赖。
@@ -143,6 +164,8 @@ type RuntimeOptions struct {
 	Artifacts ArtifactProvider
 	// CreateTimeout 限制镜像拉取和 artifact copy 的单步最长时间。
 	CreateTimeout time.Duration
+	// Egress 非 nil 时允许 runtime 为 outbound=true 创建受管 sidecar；nil 时 fail closed。
+	Egress *EgressPlatformConfig
 }
 
 // New 创建 Docker client 并立即探测 daemon。
@@ -199,6 +222,24 @@ func validateRuntimeOptions(options RuntimeOptions) error {
 	if options.CreateTimeout <= 0 {
 		return errors.New("runtime create timeout must be positive")
 	}
+	if options.Egress != nil {
+		request := runtimeport.EgressRequest{
+			SandboxID: "00000000-0000-4000-8000-000000000000", Image: options.Egress.Image,
+			AdditionalDeniedCIDRs: options.Egress.AdditionalDeniedCIDRs,
+			AnchorUID:             options.Egress.AnchorUID, AnchorGID: options.Egress.AnchorGID,
+			Limits: options.Egress.Limits, ReadyTimeout: options.Egress.ReadyTimeout,
+		}
+		if !egressnft.ValidImageDigest(request.Image) || request.AnchorUID == 0 || request.AnchorGID == 0 ||
+			request.ReadyTimeout <= 0 || request.ReadyTimeout > 2*time.Minute {
+			return errors.New("runtime egress options are invalid")
+		}
+		if _, err := convertResourceLimits(request.Limits); err != nil {
+			return errors.New("runtime egress resource limits are invalid")
+		}
+		if _, err := egresspolicy.Build(request.AdditionalDeniedCIDRs, nil); err != nil {
+			return errors.New("runtime egress deny policy is invalid")
+		}
+	}
 	return nil
 }
 
@@ -207,6 +248,12 @@ func (r *Runtime) applyOptions(options RuntimeOptions) {
 	r.dataDirectory = filepath.Clean(options.DataDirectory)
 	r.artifacts = options.Artifacts
 	r.createTimeout = options.CreateTimeout
+	r.egressConfig = nil
+	if options.Egress != nil {
+		copy := *options.Egress
+		copy.AdditionalDeniedCIDRs = append([]string(nil), options.Egress.AdditionalDeniedCIDRs...)
+		r.egressConfig = &copy
+	}
 }
 
 // Close 释放 Docker client 资源。

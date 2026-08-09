@@ -66,12 +66,26 @@ type ExecutionClient interface {
 	Logs(context.Context, string, uint64) (ExecutionLogPage, error)
 }
 
+// ExecutionAdmissionGate 是 outbound sandbox 在创建新 execution 前必须通过的
+// 只读 runtime/runner 网络健康门禁；查询和取消已有 execution 不触发该门禁。
+type ExecutionAdmissionGate interface {
+	// Check 验证 sidecar、Docker network mode、attestation 与 runner netns 身份一致。
+	Check(context.Context, domain.Sandbox, ExecutionClient) error
+}
+
+// ExecutionNetworkIdentityClient 是 admission gate 从已绑定 runner client 取得当前
+// netns 身份的可选能力，不能接受外部 URL 或其他 sandbox ID。
+type ExecutionNetworkIdentityClient interface {
+	// NetworkNamespace 返回严格验证后的 linux-netns:<device>:<inode>。
+	NetworkNamespace(context.Context) (string, error)
+}
+
 // Status 在确认 sandbox 仍可执行后查询其绑定 runner，execution ID 不能选择其他 client。
 func (s *ExecutionService) Status(ctx context.Context, sandboxID, executionID string) (ExecutionStatus, error) {
 	if executionID == "" {
 		return ExecutionStatus{}, domain.ErrExecutionNotFound
 	}
-	client, err := s.runningClient(ctx, sandboxID)
+	client, _, err := s.runningClient(ctx, sandboxID)
 	if err != nil {
 		return ExecutionStatus{}, err
 	}
@@ -90,7 +104,7 @@ func (s *ExecutionService) Cancel(ctx context.Context, sandboxID, executionID st
 	if executionID == "" {
 		return "", domain.ErrExecutionNotFound
 	}
-	client, err := s.runningClient(ctx, sandboxID)
+	client, _, err := s.runningClient(ctx, sandboxID)
 	if err != nil {
 		return "", err
 	}
@@ -112,7 +126,7 @@ func (s *ExecutionService) Logs(ctx context.Context, sandboxID, executionID stri
 	if limit == 0 {
 		limit = s.maxLogPageEvents
 	}
-	client, err := s.runningClient(ctx, sandboxID)
+	client, _, err := s.runningClient(ctx, sandboxID)
 	if err != nil {
 		return ExecutionLogPage{}, err
 	}
@@ -169,11 +183,25 @@ type ExecutionService struct {
 	store            store.Store
 	factory          ExecutionClientFactory
 	maxLogPageEvents int
+	admissionGate    ExecutionAdmissionGate
 }
 
 // NewExecutionService 使用 Store 与 runner client factory 创建 execution 应用服务。
 // 可选 maxLogPageEvents 只能提供一次且必须为正；省略时使用 256。
 func NewExecutionService(s store.Store, factory ExecutionClientFactory, maxLogPageEvents ...int) (*ExecutionService, error) {
+	return newExecutionService(s, factory, nil, maxLogPageEvents...)
+}
+
+// NewExecutionServiceWithAdmissionGate 创建启用 outbound execution 健康门禁的服务。
+// gate 只影响 network.outbound=true 的新 Execute，network none 保持原行为。
+func NewExecutionServiceWithAdmissionGate(s store.Store, factory ExecutionClientFactory, gate ExecutionAdmissionGate, maxLogPageEvents ...int) (*ExecutionService, error) {
+	if gate == nil {
+		return nil, errors.New("execution admission gate is not configured")
+	}
+	return newExecutionService(s, factory, gate, maxLogPageEvents...)
+}
+
+func newExecutionService(s store.Store, factory ExecutionClientFactory, gate ExecutionAdmissionGate, maxLogPageEvents ...int) (*ExecutionService, error) {
 	if s == nil || factory == nil || len(maxLogPageEvents) > 1 {
 		return nil, errors.New("execution service is not configured")
 	}
@@ -184,7 +212,7 @@ func NewExecutionService(s store.Store, factory ExecutionClientFactory, maxLogPa
 	if limit <= 0 {
 		return nil, errors.New("execution log page limit is invalid")
 	}
-	return &ExecutionService{store: s, factory: factory, maxLogPageEvents: limit}, nil
+	return &ExecutionService{store: s, factory: factory, maxLogPageEvents: limit, admissionGate: gate}, nil
 }
 
 // Execute 只校验基础领域不变量和 sandbox admission，再原样转交命令规格。
@@ -192,9 +220,14 @@ func (s *ExecutionService) Execute(ctx context.Context, command Execute) (Execut
 	if s == nil || !command.Spec.Valid() {
 		return ExecutionResult{}, domain.ErrInvalidExecutionRequest
 	}
-	client, err := s.runningClient(ctx, command.SandboxID)
+	client, sandbox, err := s.runningClient(ctx, command.SandboxID)
 	if err != nil {
 		return ExecutionResult{}, err
+	}
+	if sandbox.Spec.Network.Outbound {
+		if s.admissionGate == nil || s.admissionGate.Check(ctx, sandbox, client) != nil {
+			return ExecutionResult{}, domain.ErrRunnerUnhealthy
+		}
 	}
 	if command.Background {
 		descriptor, err := client.ExecuteBackground(ctx, cloneExecutionSpec(command.Spec))
@@ -216,20 +249,20 @@ func (s *ExecutionService) Execute(ctx context.Context, command Execute) (Execut
 	return ExecutionResult{Stream: stream}, nil
 }
 
-func (s *ExecutionService) runningClient(ctx context.Context, sandboxID string) (ExecutionClient, error) {
+func (s *ExecutionService) runningClient(ctx context.Context, sandboxID string) (ExecutionClient, domain.Sandbox, error) {
 	sandbox, err := s.store.Get(ctx, sandboxID)
 	if err != nil {
-		return nil, err
+		return nil, domain.Sandbox{}, err
 	}
 	// 删除意图优先于仍滞后的 Running observed state，避免删除窗口继续接收命令。
 	if sandbox.DesiredState != domain.DesiredRunning || sandbox.ObservedState != domain.StateRunning {
-		return nil, domain.ErrSandboxNotRunning
+		return nil, domain.Sandbox{}, domain.ErrSandboxNotRunning
 	}
 	client, err := s.factory.Client(sandboxID)
 	if err != nil || client == nil {
-		return nil, domain.ErrRunnerUnhealthy
+		return nil, domain.Sandbox{}, domain.ErrRunnerUnhealthy
 	}
-	return client, nil
+	return client, sandbox, nil
 }
 
 func mapRunnerClientError(err error) error {

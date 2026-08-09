@@ -50,4 +50,6 @@ type EgressRuntime interface {
 	EnsureEgress(context.Context, EgressRequest) (EgressActual, error)
 	// InspectEgress 只读验证当前 sandbox sidecar、策略和 attestation。
 	InspectEgress(context.Context, EgressRequest) (EgressActual, error)
+	// CheckEgressForExecution 在每次新 execution 前比较 sidecar health 与 runner netns。
+	CheckEgressForExecution(context.Context, EgressRequest, string) error
 }

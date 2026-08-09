@@ -93,6 +93,46 @@ func TestExecutionServiceForwardsForegroundAndBackgroundWithoutMutation(t *testi
 	}
 }
 
+// TestExecutionServiceGatesOnlyNewOutboundExecutions 验证 outbound 新 execution
+// 必须通过健康门禁，而 network none 与已有 execution 的状态查询不增加网络副作用。
+func TestExecutionServiceGatesOnlyNewOutboundExecutions(t *testing.T) {
+	storeFake := testutil.NewFakeStore()
+	sandbox := runningSandbox()
+	sandbox.Spec.Network.Outbound = true
+	storeFake.SetGetResult(sandbox, nil)
+	client := &executionClientFake{stream: &executionStreamFake{}, status: ExecutionStatus{Descriptor: ExecutionDescriptor{ID: "exec_test", State: protocol.ExecutionStateRunning}}}
+	factory := &executionFactoryFake{client: client}
+	gate := &executionAdmissionGateFake{}
+	service, err := NewExecutionServiceWithAdmissionGate(storeFake, factory, gate)
+	if err != nil {
+		t.Fatalf("new gated service: %v", err)
+	}
+	if _, err := service.Execute(context.Background(), validExecutionCommand(false)); err != nil {
+		t.Fatalf("healthy outbound execution rejected: %v", err)
+	}
+	if gate.calls != 1 || gate.sandboxIDs[0] != sandbox.ID || gate.clients[0] != client {
+		t.Fatalf("gate selection mismatch: %+v", gate)
+	}
+	if _, err := service.Status(context.Background(), sandbox.ID, "exec_test"); err != nil || gate.calls != 1 {
+		t.Fatalf("status unexpectedly used admission gate: err=%v calls=%d", err, gate.calls)
+	}
+	gate.err = errors.New("egress stopped")
+	if _, err := service.Execute(context.Background(), validExecutionCommand(false)); !errors.Is(err, domain.ErrRunnerUnhealthy) {
+		t.Fatalf("unhealthy egress admitted: %v", err)
+	}
+	ungated, _ := NewExecutionService(storeFake, factory)
+	if _, err := ungated.Execute(context.Background(), validExecutionCommand(false)); !errors.Is(err, domain.ErrRunnerUnhealthy) {
+		t.Fatalf("outbound execution without gate admitted: %v", err)
+	}
+
+	sandbox.Spec.Network.Outbound = false
+	storeFake.SetGetResult(sandbox, nil)
+	before := gate.calls
+	if _, err := service.Execute(context.Background(), validExecutionCommand(false)); err != nil || gate.calls != before {
+		t.Fatalf("network-none execution used egress gate: err=%v calls=%d", err, gate.calls)
+	}
+}
+
 func TestExecutionServiceStatusUsesSandboxBoundClient(t *testing.T) {
 	storeFake := testutil.NewFakeStore()
 	storeFake.SetGetResult(runningSandbox(), nil)
@@ -193,6 +233,20 @@ type executionFactoryFake struct {
 	client ExecutionClient
 	err    error
 	ids    []string
+}
+
+type executionAdmissionGateFake struct {
+	err        error
+	calls      int
+	sandboxIDs []string
+	clients    []ExecutionClient
+}
+
+func (gate *executionAdmissionGateFake) Check(_ context.Context, sandbox domain.Sandbox, client ExecutionClient) error {
+	gate.calls++
+	gate.sandboxIDs = append(gate.sandboxIDs, sandbox.ID)
+	gate.clients = append(gate.clients, client)
+	return gate.err
 }
 
 func (f *executionFactoryFake) Client(id string) (ExecutionClient, error) {
