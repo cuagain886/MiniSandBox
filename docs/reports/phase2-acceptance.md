@@ -84,7 +84,9 @@ go run github.com/zricethezav/gitleaks/v8@v8.27.1 git \
   --redact --no-banner --no-color --log-level warn .
 ```
 
-构建和扫描临时文件已删除；OCI 镜像及内置 attestation 保留，便于复核精确 digest。
+构建和扫描临时文件已删除；OCI 镜像及其 BuildKit provenance/SBOM attestations 保留，
+便于复核精确 digest。这里的构建 attestation 不等于仅驻留运行中 egressd 内存的
+readiness attestation。
 
 ## 5. 原生 Linux/Docker integration 与 security suite
 
