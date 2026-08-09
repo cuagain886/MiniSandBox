@@ -126,9 +126,11 @@ attestation 不含完整 CIDR、凭据、container ID、host path 或错误文�
 
 ## 7. 永久降权
 
-Ready 之前按不可逆顺序执行：关闭 bootstrap stdin、清空 supplementary groups、
-清除 ambient/permitted/effective capabilities、setgid/setuid 到固定非 root
-identity、设置不可转储状态并读取 `/proc/self/status` 回验。任一步失败立即退出。
+Ready 之前按不可逆顺序执行：关闭 bootstrap stdin、拒绝主 GID 之外的任何
+supplementary group、清除 ambient/permitted/effective capabilities、回验固定
+非 root identity、设置 `no_new_privs` 并读取 `/proc/self/status`。Docker/runc
+重复注入的主 GID 不扩大组权限，可以保留；出现任意其他 GID 或非零 capability
+都立即退出。不得为了清空这个等价重复项而增加 `CAP_SETGID`。
 
 Ready 后 anchor 不再拥有安装、修改或删除 nft 规则的能力，不接受新配置，也不
 fork/exec `nft`。主 sandbox 共享 netns 但不共享 sidecar filesystem、PID namespace
