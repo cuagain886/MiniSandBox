@@ -13,6 +13,7 @@ import (
 // ExecutionLauncher 把已校验请求组合成受 Manager 管理的真实用户进程，并统一驱动输出、超时、取消与 wait 收敛。
 // 它不解析 HTTP，也不向调用方暴露 PID、PGID 或底层启动错误。
 type ExecutionLauncher struct {
+	serverContext      context.Context
 	manager            *Manager
 	bootstrap          runnerbootstrap.Config
 	commandBuilder     *CommandBuilder
@@ -22,8 +23,8 @@ type ExecutionLauncher struct {
 }
 
 // NewExecutionLauncher 从可信 bootstrap 创建生产 launcher；image environment 会在每次执行前经过 denylist 清洗。
-func NewExecutionLauncher(manager *Manager, bootstrap runnerbootstrap.Config) (*ExecutionLauncher, error) {
-	if manager == nil {
+func NewExecutionLauncher(serverContext context.Context, manager *Manager, bootstrap runnerbootstrap.Config) (*ExecutionLauncher, error) {
+	if serverContext == nil || manager == nil {
 		return nil, errors.New("execution launcher manager is required")
 	}
 	environmentBuilder, err := NewEnvironmentBuilder(bootstrap.Limits)
@@ -35,6 +36,7 @@ func NewExecutionLauncher(manager *Manager, bootstrap runnerbootstrap.Config) (*
 		return nil, errors.New("execution launcher bootstrap is invalid")
 	}
 	return &ExecutionLauncher{
+		serverContext:      serverContext,
 		manager:            manager,
 		bootstrap:          bootstrap,
 		commandBuilder:     NewCommandBuilder(),
@@ -47,6 +49,23 @@ func NewExecutionLauncher(manager *Manager, bootstrap runnerbootstrap.Config) (*
 // StartForeground 在返回前完成进程启动、事件源注册和取消入口绑定；请求 context 仅用于启动前中止检查。
 // 启动成功后的前台生命周期由 ForegroundEventStream 映射，避免 request context 直接杀死进程而绕过终态裁决。
 func (l *ExecutionLauncher) StartForeground(ctx context.Context, request ExecutionLaunchRequest) (*ExecutionHandle, error) {
+	return l.start(ctx, request, false)
+}
+
+// StartBackground 启动不继承 HTTP request context 的后台 execution，并返回可供 status、logs 与 cancel 使用的描述符。
+func (l *ExecutionLauncher) StartBackground(ctx context.Context, request ExecutionLaunchRequest) (ExecutionDescriptor, error) {
+	handle, err := l.start(ctx, request, true)
+	if err != nil {
+		return ExecutionDescriptor{}, err
+	}
+	descriptor, err := l.manager.Descriptor(handle.ExecutionID)
+	if err != nil {
+		return ExecutionDescriptor{}, err
+	}
+	return descriptor, nil
+}
+
+func (l *ExecutionLauncher) start(ctx context.Context, request ExecutionLaunchRequest, background bool) (*ExecutionHandle, error) {
 	if l == nil || l.manager == nil || l.commandBuilder == nil || l.environmentBuilder == nil || l.clock == nil {
 		return nil, errors.New("execution launcher is not configured")
 	}
@@ -163,7 +182,26 @@ func (l *ExecutionLauncher) StartForeground(ctx context.Context, request Executi
 		_ = terminator.Terminate()
 		return nil, err
 	}
-	go l.supervise(execution, store, started, readers, startedAt, reaped, finalized, arbiter, timeout)
+	var completionWait func(context.Context) error
+	if background {
+		writer, writerErr := NewBackgroundLogWriter(l.bootstrap.Paths.ExecutionDataDirectory, id, store, arbiter)
+		if writerErr != nil {
+			go l.supervise(execution, store, started, readers, startedAt, reaped, finalized, arbiter, timeout, nil)
+			_, _ = arbiter.Submit(context.Background(), internalFailureCandidate(0))
+			_ = terminator.Terminate()
+			_ = arbiter.Wait(context.Background())
+			return nil, writerErr
+		}
+		if _, coordinatorErr := StartBackgroundCoordinator(l.serverContext, l.manager, id); coordinatorErr != nil {
+			go l.supervise(execution, store, started, readers, startedAt, reaped, finalized, arbiter, timeout, writer.Wait)
+			_, _ = arbiter.Submit(context.Background(), internalFailureCandidate(0))
+			_ = terminator.Terminate()
+			_ = arbiter.Wait(context.Background())
+			return nil, coordinatorErr
+		}
+		completionWait = writer.Wait
+	}
+	go l.supervise(execution, store, started, readers, startedAt, reaped, finalized, arbiter, timeout, completionWait)
 	return &ExecutionHandle{ExecutionID: id, Events: store}, nil
 }
 
@@ -177,6 +215,7 @@ func (l *ExecutionLauncher) supervise(
 	finalized chan<- struct{},
 	arbiter *TerminalArbiter,
 	timeout *ExecutionTimeout,
+	completionWait func(context.Context) error,
 ) {
 	outputDone := make(chan error, 1)
 	go func() {
@@ -201,6 +240,9 @@ func (l *ExecutionLauncher) supervise(
 	_, _ = arbiter.Submit(context.Background(), outcome.WaitCandidate)
 	close(finalized)
 	_ = arbiter.Wait(context.Background())
+	if completionWait != nil {
+		_ = completionWait(context.Background())
+	}
 	_ = l.manager.Complete(execution.Descriptor().ID)
 }
 

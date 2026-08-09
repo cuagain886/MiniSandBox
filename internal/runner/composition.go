@@ -62,7 +62,7 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	if err != nil {
 		return err
 	}
-	launcher, err := NewExecutionLauncher(manager, bootstrap)
+	launcher, err := NewExecutionLauncher(ctx, manager, bootstrap)
 	if err != nil {
 		return err
 	}
@@ -75,6 +75,8 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 		Validator:          validator,
 		ForegroundLauncher: launcher,
 		ForegroundStream:   stream.Serve,
+		ServerContext:      ctx,
+		BackgroundLauncher: launcher,
 	})
 	if err != nil {
 		return err

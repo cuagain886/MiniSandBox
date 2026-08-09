@@ -53,6 +53,47 @@ func TestExecutionLauncherReleasesSlotAfterStartFailure(t *testing.T) {
 	_ = waitLauncherTerminal(t, handle.Events)
 }
 
+// TestExecutionLauncherBackgroundIgnoresRequestCancellation 验证后台执行只绑定 server lifetime，并在普通请求取消后仍写出完整日志。
+func TestExecutionLauncherBackgroundIgnoresRequestCancellation(t *testing.T) {
+	launcher := newExecutionLauncherFixture(t)
+	requestContext, cancelRequest := context.WithCancel(context.Background())
+	descriptor, err := launcher.StartBackground(requestContext, ExecutionLaunchRequest{
+		Validated: ValidatedRequest{Argv: []string{"/bin/sh", "-c", "sleep 0.05; printf background-ok"}, Timeout: time.Second, Background: true},
+	})
+	if err != nil {
+		t.Fatalf("start background: %v", err)
+	}
+	cancelRequest()
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		snapshot, snapshotErr := launcher.manager.StatusSnapshot(descriptor.ID)
+		if snapshotErr != nil {
+			t.Fatalf("background status: %v", snapshotErr)
+		}
+		if snapshot.Descriptor.State == ExecutionExited && snapshot.TerminalEvent != nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background did not exit after request cancellation: %+v", snapshot)
+		}
+		time.Sleep(time.Millisecond)
+	}
+	reader, err := NewBackgroundLogReader(launcher.bootstrap.Paths.ExecutionDataDirectory, 32, 1024*1024)
+	if err != nil {
+		t.Fatalf("new background reader: %v", err)
+	}
+	for {
+		page, readErr := reader.Read(descriptor.ID, 0)
+		if readErr == nil && page.Complete && len(page.Events) >= 3 && page.Events[len(page.Events)-1].Type == protocol.EventExited {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("background log incomplete: page=%+v err=%v", page, readErr)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}
+
 func newExecutionLauncherFixture(t *testing.T) *ExecutionLauncher {
 	t.Helper()
 	manager, err := NewManager(1)
@@ -65,9 +106,9 @@ func newExecutionLauncherFixture(t *testing.T) *ExecutionLauncher {
 		MaxRequestBytes: 64 * 1024, MaxOutputBytes: 1024 * 1024,
 		MaxEnvVars: 256, MaxEnvKeyBytes: 256, MaxEnvValueBytes: 4096, MaxEnvTotalBytes: 64 * 1024,
 	}
-	launcher, err := NewExecutionLauncher(manager, runnerbootstrap.Config{
+	launcher, err := NewExecutionLauncher(context.Background(), manager, runnerbootstrap.Config{
 		Limits: limits,
-		Paths:  runnerbootstrap.Paths{WorkspaceDirectory: t.TempDir()},
+		Paths:  runnerbootstrap.Paths{WorkspaceDirectory: t.TempDir(), ExecutionDataDirectory: t.TempDir()},
 	})
 	if err != nil {
 		t.Fatalf("new launcher: %v", err)
