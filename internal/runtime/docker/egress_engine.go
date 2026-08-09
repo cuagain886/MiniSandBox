@@ -17,12 +17,10 @@ type EgressEngine interface {
 	ContainerInspect(context.Context, string, mobyclient.ContainerInspectOptions) (mobyclient.ContainerInspectResult, error)
 	// ContainerCreate 创建尚未启动的 namespace anchor。
 	ContainerCreate(context.Context, mobyclient.ContainerCreateOptions) (mobyclient.ContainerCreateResult, error)
-	// ContainerAttach 在 start 前建立唯一 bootstrap stdin。
+	// ContainerAttach 建立可重连的 bootstrap/inspect stdin/stdout 控制通道。
 	ContainerAttach(context.Context, string, mobyclient.ContainerAttachOptions) (mobyclient.ContainerAttachResult, error)
 	// ContainerStart 启动已 attach 的 sidecar。
 	ContainerStart(context.Context, string, mobyclient.ContainerStartOptions) (mobyclient.ContainerStartResult, error)
-	// CopyFromContainer 只读取得 readiness attestation，不在容器内 exec。
-	CopyFromContainer(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error)
 	// ContainerStop 有界停止已验证身份的 namespace anchor。
 	ContainerStop(context.Context, string, mobyclient.ContainerStopOptions) (mobyclient.ContainerStopResult, error)
 	// ContainerRemove 删除已验证身份且不再被主容器引用的 namespace anchor。

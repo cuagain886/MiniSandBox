@@ -10,6 +10,7 @@ import (
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/egressanchor"
+	"minisandbox/internal/egresscontrol"
 	"minisandbox/internal/egressnft"
 	"minisandbox/internal/egresspolicy"
 	runtimeport "minisandbox/internal/runtime"
@@ -22,6 +23,8 @@ func (r *Runtime) EnsureEgress(ctx context.Context, request runtimeport.EgressRe
 	if err != nil {
 		return runtimeport.EgressActual{}, err
 	}
+	unlock := r.lockEgressAttach(request.SandboxID)
+	defer unlock()
 	if _, err := ensureImage(ctx, r.engine, request.Image, r.createTimeout); err != nil {
 		return runtimeport.EgressActual{}, err
 	}
@@ -40,14 +43,14 @@ func (r *Runtime) EnsureEgress(ctx context.Context, request runtimeport.EgressRe
 	if sidecar.state == runtimeport.ActualStopped {
 		return runtimeport.EgressActual{}, errors.New("egress sidecar is stopped")
 	}
+	var attestation egressanchor.Attestation
 	if sidecar.state == runtimeport.ActualCreated {
-		// 崩溃恢复允许继续尚未启动且配置精确匹配的 sidecar；OpenStdin/StdinOnce
-		// 保证仍只会有一个 attach 写端，任何 running/exited 漂移均走只读检查。
-		if err := writeEgressBootstrap(ctx, engine, r.netNSResolver, sidecar, request, policy); err != nil {
-			return runtimeport.EgressActual{}, err
-		}
+		// 崩溃恢复只继续尚未启动且配置精确匹配的 sidecar。启动后由 bootstrap
+		// 响应证明降权完成；running sidecar 只能接受只读 inspect。
+		attestation, err = bootstrapEgressSidecar(ctx, engine, r.netNSResolver, sidecar, request, policy)
+	} else {
+		attestation, err = inspectEgressAttestation(ctx, engine, sidecar.id, request.ReadyTimeout)
 	}
-	attestation, err := waitEgressAttestation(ctx, engine, sidecar.id, request.ReadyTimeout)
 	if err != nil {
 		return runtimeport.EgressActual{}, err
 	}
@@ -129,6 +132,8 @@ func (r *Runtime) InspectEgress(ctx context.Context, request runtimeport.EgressR
 	if err != nil {
 		return runtimeport.EgressActual{}, err
 	}
+	unlock := r.lockEgressAttach(request.SandboxID)
+	defer unlock()
 	networkInspection, err := engine.NetworkInspect(ctx, EgressNetworkName, mobyclient.NetworkInspectOptions{})
 	if err != nil {
 		if cerrdefs.IsNotFound(err) {
@@ -162,15 +167,23 @@ func (r *Runtime) InspectEgress(ctx context.Context, request runtimeport.EgressR
 	if sidecar.state != runtimeport.ActualRunning {
 		return actual, nil
 	}
-	attestation, err := copyEgressAttestation(ctx, engine, sidecar.id)
+	attestation, err := inspectEgressAttestation(ctx, engine, sidecar.id, request.ReadyTimeout)
 	if err != nil {
-		return runtimeport.EgressActual{}, errors.New("read egress attestation")
+		return runtimeport.EgressActual{}, errors.New("query egress attestation")
 	}
 	if err := r.validateEgressAttestation(attestation, sidecar, request, policy); err != nil {
 		return runtimeport.EgressActual{}, err
 	}
 	actual.Attestation = attestation
 	return actual, nil
+}
+
+func newEgressControlRequest(kind egresscontrol.RequestType, bootstrap *egressnft.Bootstrap) (egresscontrol.Request, error) {
+	requestID, nonce, err := egresscontrol.NewCorrelation()
+	if err != nil {
+		return egresscontrol.Request{}, err
+	}
+	return egresscontrol.Request{Type: kind, RequestID: requestID, Nonce: nonce, Bootstrap: bootstrap}, nil
 }
 
 func (r *Runtime) validateEgressRequest(request runtimeport.EgressRequest) (EgressEngine, error) {

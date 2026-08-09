@@ -51,6 +51,31 @@ func TestEgressControlSessionExchange(t *testing.T) {
 	}
 }
 
+// TestEgressControlSessionRejectsReplay 验证格式合法但属于其他 nonce 的历史响应
+// 不能被当前 attach 请求接受。
+func TestEgressControlSessionRejectsReplay(t *testing.T) {
+	request := egresscontrol.Request{
+		Type: egresscontrol.RequestInspect, RequestID: "00112233445566778899aabbccddeeff",
+		Nonce: "00112233445566778899aabbccddeeff00112233445566778899aabbccddeeff",
+	}
+	response, err := egresscontrol.EncodeResponse(egresscontrol.Response{
+		RequestID: request.RequestID, Nonce: strings.Repeat("f", 64), Attestation: attachTestAttestation(t),
+	})
+	if err != nil {
+		t.Fatalf("encode replay response: %v", err)
+	}
+	connection := &recordingConn{}
+	session := &egressControlSession{
+		attached: mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.HijackedResponse{
+			Conn: connection, Reader: bufio.NewReader(bytes.NewReader(dockerStdoutFrame(1, response))),
+		}},
+	}
+	session.stdout = &dockerStdoutReader{reader: session.attached.Reader}
+	if _, err := session.exchange(request); err == nil {
+		t.Fatal("replayed response accepted")
+	}
+}
+
 // TestDockerStdoutReaderHandlesFragmentedFrames 验证一个控制响应可以跨多个 Docker
 // stdout frame，同时 stderr、保留位和超限 frame 都会被拒绝。
 func TestDockerStdoutReaderHandlesFragmentedFrames(t *testing.T) {

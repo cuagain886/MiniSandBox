@@ -9,6 +9,7 @@ import (
 	"syscall"
 
 	"minisandbox/internal/egressanchor"
+	"minisandbox/internal/egresscontrol"
 	"minisandbox/internal/egressnft"
 )
 
@@ -17,17 +18,11 @@ func main() {
 		fmt.Fprintln(os.Stderr, "usage: egressd bootstrap")
 		os.Exit(2)
 	}
-	bootstrap, err := egressnft.ReadBootstrap(os.Stdin)
-	if err == nil {
-		err = egressnft.Install(context.Background(), egressnft.OSExecutor{}, bootstrap.Policy)
-	}
-	if err == nil {
-		ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-		defer stop()
-		err = egressanchor.Activate(ctx, bootstrap, egressanchor.Options{
-			Platform: egressanchor.LinuxPlatform{}, BootstrapInput: os.Stdin,
-		})
-	}
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+	err := egresscontrol.Serve(ctx, os.Stdin, os.Stdout, egresscontrol.ServerOptions{
+		Executor: egressnft.OSExecutor{}, Platform: egressanchor.LinuxPlatform{},
+	})
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "egress bootstrap failed")
 		os.Exit(1)

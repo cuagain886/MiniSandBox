@@ -1,10 +1,9 @@
 package docker
 
 import (
-	"archive/tar"
+	"bufio"
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"net"
 	"net/netip"
@@ -20,7 +19,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
 	"minisandbox/internal/egressanchor"
-	"minisandbox/internal/egressnft"
+	"minisandbox/internal/egresscontrol"
 	"minisandbox/internal/egresspolicy"
 	runtimeport "minisandbox/internal/runtime"
 )
@@ -90,7 +89,7 @@ func TestValidateEgressNetworkDrift(t *testing.T) {
 }
 
 // TestBuildEgressSidecarSecuritySnapshot 锁定 sidecar 的镜像、身份、stdin、网络、
-// capabilities、只读 rootfs、tmpfs、restart policy、资源和零暴露面。
+// capabilities、只读 rootfs、关闭日志、可重连 stdin、restart policy、资源和零暴露面。
 func TestBuildEgressSidecarSecuritySnapshot(t *testing.T) {
 	request, policy := sampleEgressRequest(t)
 	options, err := buildEgressSidecarOptions(request, policy)
@@ -99,20 +98,47 @@ func TestBuildEgressSidecarSecuritySnapshot(t *testing.T) {
 	}
 	if options.Name != egressSidecarName(request.SandboxID) || options.Config.Image != request.Image ||
 		options.Config.User != "0:0" || strings.Join(options.Config.Entrypoint, " ") != egressEntrypoint+" bootstrap" ||
-		!options.Config.OpenStdin || !options.Config.StdinOnce || len(options.Config.Env) != 0 || len(options.Config.Cmd) != 0 {
+		!options.Config.AttachStdin || !options.Config.AttachStdout || options.Config.AttachStderr ||
+		!options.Config.OpenStdin || options.Config.StdinOnce || options.Config.Tty || len(options.Config.Env) != 0 || len(options.Config.Cmd) != 0 {
 		t.Fatalf("unsafe sidecar config: %+v", options.Config)
 	}
 	host := options.HostConfig
 	if host.NetworkMode != mobycontainer.NetworkMode(EgressNetworkName) || host.Privileged ||
 		!reflect.DeepEqual(host.CapDrop, []string{"ALL"}) || !reflect.DeepEqual(host.CapAdd, []string{"NET_ADMIN", "SETUID", "SETGID"}) ||
 		!host.ReadonlyRootfs || host.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled ||
-		host.Tmpfs[egressTmpfsPath] != egressTmpfsOptions(request.AnchorUID, request.AnchorGID) ||
-		!strings.Contains(host.Tmpfs[egressTmpfsPath], "uid=65532,gid=65532") || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
+		host.LogConfig.Type != "none" || len(host.Tmpfs) != 0 || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
 		len(host.PortBindings) != 0 || len(host.Devices) != 0 || len(host.DeviceRequests) != 0 {
 		t.Fatalf("unsafe sidecar host config: %+v", host)
 	}
 	if len(options.NetworkingConfig.EndpointsConfig) != 1 || options.NetworkingConfig.EndpointsConfig[EgressNetworkName] == nil {
 		t.Fatalf("sidecar is not attached only to managed network: %+v", options.NetworkingConfig)
+	}
+}
+
+// TestValidateEgressControlChannelDrift 验证一次性 stdin、缺失 stdout、持久日志或
+// 任意 tmpfs 回退都不能被当成可重连内存 attestation sidecar 复用。
+func TestValidateEgressControlChannelDrift(t *testing.T) {
+	request, policy := sampleEgressRequest(t)
+	tests := []struct {
+		name   string
+		mutate func(*mobycontainer.InspectResponse)
+	}{
+		{name: "stdin once", mutate: func(container *mobycontainer.InspectResponse) { container.Config.StdinOnce = true }},
+		{name: "stdout detached", mutate: func(container *mobycontainer.InspectResponse) { container.Config.AttachStdout = false }},
+		{name: "stderr attached", mutate: func(container *mobycontainer.InspectResponse) { container.Config.AttachStderr = true }},
+		{name: "persistent log driver", mutate: func(container *mobycontainer.InspectResponse) { container.HostConfig.LogConfig.Type = "json-file" }},
+		{name: "attestation tmpfs", mutate: func(container *mobycontainer.InspectResponse) {
+			container.HostConfig.Tmpfs = map[string]string{"/run/minisandbox-egress": "rw,size=64k"}
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			container := sampleEgressSidecar(t, request, policy, mobycontainer.StateRunning)
+			test.mutate(&container)
+			if _, err := validateEgressSidecar(container, request, policy); err == nil {
+				t.Fatal("drifted attach control channel accepted")
+			}
+		})
 	}
 }
 
@@ -222,19 +248,24 @@ func TestEnsureEgressSidecarIdempotent(t *testing.T) {
 	}
 }
 
-// TestWriteEgressBootstrapOnce 验证 attach 发生在 start 前，写入恰好一帧后关闭写端，
-// 且帧中的 netns/policy/artifact/anchor 身份均来自可信 runtime 输入。
-func TestWriteEgressBootstrapOnce(t *testing.T) {
+// TestBootstrapEgressSidecar 验证 attach 发生在 start 前，bootstrap 响应完成后仅关闭
+// 当前连接而不关闭容器 stdin，且所有安全身份来自可信 runtime 输入。
+func TestBootstrapEgressSidecar(t *testing.T) {
 	request, policy := sampleEgressRequest(t)
-	connection := &recordingConn{}
+	attestation := egressanchor.Attestation{
+		ProtocolVersion: policy.ProtocolVersion, RuleSchemaVersion: policy.RuleSchemaVersion,
+		PolicyHash: policy.Hash, NetworkNamespace: "linux-netns:4:4026533000", ImageDigest: request.Image,
+		CreatedAt: time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC),
+	}
+	connection, output := newResponsiveControlConn(attestation)
 	order := make([]string, 0, 3)
 	engine := &fakeEngine{
 		containerAttachFunc: func(_ context.Context, id string, options mobyclient.ContainerAttachOptions) (mobyclient.ContainerAttachResult, error) {
 			order = append(order, "attach")
-			if id != "sidecar-id" || !options.Stream || !options.Stdin || options.Stdout || options.Stderr {
+			if id != "sidecar-id" || !options.Stream || !options.Stdin || !options.Stdout || options.Stderr || options.Logs {
 				t.Fatalf("unsafe attach options: %+v", options)
 			}
-			return mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.HijackedResponse{Conn: connection}}, nil
+			return mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.HijackedResponse{Conn: connection, Reader: output}}, nil
 		},
 		containerStartFunc: func(context.Context, string, mobyclient.ContainerStartOptions) (mobyclient.ContainerStartResult, error) {
 			order = append(order, "start")
@@ -246,54 +277,40 @@ func TestWriteEgressBootstrapOnce(t *testing.T) {
 		},
 	}
 	resolver := fakeNetNSResolver{identity: "linux-netns:4:4026533000"}
-	if err := writeEgressBootstrap(context.Background(), engine, resolver, egressSidecar{id: "sidecar-id"}, request, policy); err != nil {
-		t.Fatalf("write bootstrap: %v", err)
+	got, err := bootstrapEgressSidecar(context.Background(), engine, resolver, egressSidecar{id: "sidecar-id"}, request, policy)
+	if err != nil || got != attestation {
+		t.Fatalf("bootstrap sidecar: got=%+v err=%v", got, err)
 	}
-	if strings.Join(order, " ") != "attach start inspect" || !connection.writeClosed || !connection.closed {
+	if strings.Join(order, " ") != "attach start inspect" || connection.writeClosed || !connection.closed {
 		t.Fatalf("bootstrap order/close mismatch: order=%v conn=%+v", order, connection)
 	}
-	decoded, err := egressnft.ReadBootstrap(bytes.NewReader(connection.data.Bytes()))
-	if err != nil {
-		t.Fatalf("decode recorded bootstrap: %v", err)
-	}
-	if decoded.Policy.Hash != policy.Hash || decoded.NetworkNamespace != resolver.identity || decoded.ImageDigest != request.Image {
-		t.Fatalf("bootstrap identity mismatch: %+v", decoded)
+	if connection.request.Type != egresscontrol.RequestBootstrap || connection.request.Bootstrap == nil ||
+		connection.request.Bootstrap.Policy.Hash != policy.Hash || connection.request.Bootstrap.NetworkNamespace != resolver.identity ||
+		connection.request.Bootstrap.ImageDigest != request.Image {
+		t.Fatalf("bootstrap identity mismatch: %+v", connection.request)
 	}
 }
 
-// TestCopyEgressAttestation 验证 adapter 只读解析单 regular-file tar，拒绝可写、超限、
-// 篡改或多条目 archive。
-func TestCopyEgressAttestation(t *testing.T) {
+// TestInspectEgressAttestation 验证恢复与 execution 准入使用新的随机关联字段发起
+// 只读 inspect，且请求中不包含 bootstrap 或策略更新数据。
+func TestInspectEgressAttestation(t *testing.T) {
 	request, policy := sampleEgressRequest(t)
 	attestation := egressanchor.Attestation{
 		ProtocolVersion: policy.ProtocolVersion, RuleSchemaVersion: policy.RuleSchemaVersion,
 		PolicyHash: policy.Hash, NetworkNamespace: "linux-netns:4:4026533000", ImageDigest: request.Image,
 		CreatedAt: time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC),
 	}
-	archive := attestationArchive(t, attestation, 0o400, false)
-	engine := &fakeEngine{copyFromContainerFunc: func(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error) {
-		return mobyclient.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(archive))}, nil
+	connection, output := newResponsiveControlConn(attestation)
+	engine := &fakeEngine{containerAttachFunc: func(context.Context, string, mobyclient.ContainerAttachOptions) (mobyclient.ContainerAttachResult, error) {
+		return mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.HijackedResponse{Conn: connection, Reader: output}}, nil
 	}}
-	got, err := copyEgressAttestation(context.Background(), engine, "sidecar-id")
-	if err != nil || got.PolicyHash != policy.Hash {
-		t.Fatalf("copy attestation: got=%+v err=%v", got, err)
+	got, err := inspectEgressAttestation(context.Background(), engine, "sidecar-id", time.Second)
+	if err != nil || got != attestation {
+		t.Fatalf("inspect attestation: got=%+v err=%v", got, err)
 	}
-
-	for _, test := range []struct {
-		name    string
-		archive []byte
-	}{
-		{name: "writable", archive: attestationArchive(t, attestation, 0o600, false)},
-		{name: "extra entry", archive: attestationArchive(t, attestation, 0o400, true)},
-	} {
-		t.Run(test.name, func(t *testing.T) {
-			engine.copyFromContainerFunc = func(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error) {
-				return mobyclient.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(test.archive))}, nil
-			}
-			if _, err := copyEgressAttestation(context.Background(), engine, "sidecar-id"); err == nil {
-				t.Fatal("invalid attestation archive accepted")
-			}
-		})
+	if connection.request.Type != egresscontrol.RequestInspect || connection.request.Bootstrap != nil ||
+		connection.request.RequestID == "" || connection.request.Nonce == "" {
+		t.Fatalf("invalid inspect request: %+v", connection.request)
 	}
 }
 
@@ -307,8 +324,7 @@ func TestRuntimeEnsureEgressEndToEnd(t *testing.T) {
 		PolicyHash: policy.Hash, NetworkNamespace: "linux-netns:4:4026533000", ImageDigest: request.Image,
 		CreatedAt: time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC),
 	}
-	archive := attestationArchive(t, attestation, 0o400, false)
-	connection := &recordingConn{}
+	connections := make([]*responsiveControlConn, 0, 2)
 	inspectCalls, createCalls, attachCalls, startCalls := 0, 0, 0, 0
 	engine := &fakeEngine{
 		imageInspectFunc: func(context.Context, string, ...mobyclient.ImageInspectOption) (mobyclient.ImageInspectResult, error) {
@@ -334,14 +350,13 @@ func TestRuntimeEnsureEgressEndToEnd(t *testing.T) {
 		},
 		containerAttachFunc: func(context.Context, string, mobyclient.ContainerAttachOptions) (mobyclient.ContainerAttachResult, error) {
 			attachCalls++
-			return mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.HijackedResponse{Conn: connection}}, nil
+			connection, output := newResponsiveControlConn(attestation)
+			connections = append(connections, connection)
+			return mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.HijackedResponse{Conn: connection, Reader: output}}, nil
 		},
 		containerStartFunc: func(context.Context, string, mobyclient.ContainerStartOptions) (mobyclient.ContainerStartResult, error) {
 			startCalls++
 			return mobyclient.ContainerStartResult{}, nil
-		},
-		copyFromContainerFunc: func(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error) {
-			return mobyclient.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(archive))}, nil
 		},
 	}
 	runtime := &Runtime{engine: engine, netNSResolver: fakeNetNSResolver{identity: attestation.NetworkNamespace}, createTimeout: time.Second}
@@ -352,15 +367,16 @@ func TestRuntimeEnsureEgressEndToEnd(t *testing.T) {
 	if actual.State != runtimeport.ActualRunning || actual.ContainerID != running.ID || actual.NetworkID != "network-id" || actual.Policy.Hash != policy.Hash {
 		t.Fatalf("unexpected egress actual: %+v", actual)
 	}
-	if createCalls != 1 || attachCalls != 1 || startCalls != 1 || !connection.writeClosed {
-		t.Fatalf("unexpected bootstrap calls: create=%d attach=%d start=%d conn=%+v", createCalls, attachCalls, startCalls, connection)
+	if createCalls != 1 || attachCalls != 1 || startCalls != 1 || connections[0].writeClosed ||
+		connections[0].request.Type != egresscontrol.RequestBootstrap {
+		t.Fatalf("unexpected bootstrap calls: create=%d attach=%d start=%d conn=%+v", createCalls, attachCalls, startCalls, connections[0])
 	}
 
 	actual, err = runtime.EnsureEgress(context.Background(), request)
 	if err != nil || actual.State != runtimeport.ActualRunning {
 		t.Fatalf("reuse egress: actual=%+v err=%v", actual, err)
 	}
-	if createCalls != 1 || attachCalls != 1 || startCalls != 1 {
+	if createCalls != 1 || attachCalls != 2 || startCalls != 1 || connections[1].request.Type != egresscontrol.RequestInspect {
 		t.Fatalf("Ready sidecar was mutated: create=%d attach=%d start=%d", createCalls, attachCalls, startCalls)
 	}
 }
@@ -376,7 +392,6 @@ func TestRuntimeCheckEgressForExecution(t *testing.T) {
 		PolicyHash: policy.Hash, NetworkNamespace: identity, ImageDigest: request.Image,
 		CreatedAt: time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC),
 	}
-	archive := attestationArchive(t, attestation, 0o400, false)
 	mainMode := mobycontainer.NetworkMode("container:" + running.ID)
 	engine := &fakeEngine{
 		networkInspectFunc: func(context.Context, string, mobyclient.NetworkInspectOptions) (mobyclient.NetworkInspectResult, error) {
@@ -388,8 +403,9 @@ func TestRuntimeCheckEgressForExecution(t *testing.T) {
 			}
 			return mobyclient.ContainerInspectResult{Container: mobycontainer.InspectResponse{HostConfig: &mobycontainer.HostConfig{NetworkMode: mainMode}}}, nil
 		},
-		copyFromContainerFunc: func(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error) {
-			return mobyclient.CopyFromContainerResult{Content: io.NopCloser(bytes.NewReader(archive))}, nil
+		containerAttachFunc: func(context.Context, string, mobyclient.ContainerAttachOptions) (mobyclient.ContainerAttachResult, error) {
+			connection, output := newResponsiveControlConn(attestation)
+			return mobyclient.ContainerAttachResult{HijackedResponse: mobyclient.HijackedResponse{Conn: connection, Reader: output}}, nil
 		},
 	}
 	runtime := &Runtime{engine: engine, netNSResolver: fakeNetNSResolver{identity: identity}, createTimeout: time.Second}
@@ -446,32 +462,43 @@ func sampleEgressSidecar(t *testing.T, request runtimeport.EgressRequest, policy
 	}
 }
 
-func attestationArchive(t *testing.T, attestation egressanchor.Attestation, mode int64, extra bool) []byte {
-	t.Helper()
-	content, err := json.Marshal(attestation)
+type responsiveControlConn struct {
+	recordingConn
+	attestation egressanchor.Attestation
+	response    *io.PipeWriter
+	request     egresscontrol.Request
+}
+
+func newResponsiveControlConn(attestation egressanchor.Attestation) (*responsiveControlConn, *bufio.Reader) {
+	reader, writer := io.Pipe()
+	return &responsiveControlConn{attestation: attestation, response: writer}, bufio.NewReader(reader)
+}
+
+func (connection *responsiveControlConn) Write(data []byte) (int, error) {
+	written, err := connection.recordingConn.Write(data)
 	if err != nil {
-		t.Fatalf("marshal attestation: %v", err)
+		return written, err
 	}
-	var buffer bytes.Buffer
-	writer := tar.NewWriter(&buffer)
-	if err := writer.WriteHeader(&tar.Header{Name: "attestation.json", Mode: mode, Size: int64(len(content)), Typeflag: tar.TypeReg}); err != nil {
-		t.Fatalf("write tar header: %v", err)
+	request, err := egresscontrol.ReadRequest(bytes.NewReader(connection.data.Bytes()))
+	if err != nil {
+		return 0, err
 	}
-	if _, err := writer.Write(content); err != nil {
-		t.Fatalf("write tar content: %v", err)
+	connection.request = request
+	response, err := egresscontrol.EncodeResponse(egresscontrol.Response{
+		RequestID: request.RequestID, Nonce: request.Nonce, Attestation: connection.attestation,
+	})
+	if err != nil {
+		return 0, err
 	}
-	if extra {
-		if err := writer.WriteHeader(&tar.Header{Name: "extra", Mode: 0o400, Size: 1, Typeflag: tar.TypeReg}); err != nil {
-			t.Fatalf("write extra header: %v", err)
-		}
-		if _, err := writer.Write([]byte("x")); err != nil {
-			t.Fatalf("write extra content: %v", err)
-		}
-	}
-	if err := writer.Close(); err != nil {
-		t.Fatalf("close tar: %v", err)
-	}
-	return buffer.Bytes()
+	go func() {
+		_, _ = connection.response.Write(dockerStdoutFrame(1, response))
+	}()
+	return written, nil
+}
+
+func (connection *responsiveControlConn) Close() error {
+	_ = connection.response.Close()
+	return connection.recordingConn.Close()
 }
 
 type fakeNetNSResolver struct {

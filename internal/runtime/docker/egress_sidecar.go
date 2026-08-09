@@ -1,7 +1,6 @@
 package docker
 
 import (
-	"archive/tar"
 	"context"
 	"errors"
 	"fmt"
@@ -16,6 +15,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"minisandbox/internal/egressanchor"
+	"minisandbox/internal/egresscontrol"
 	"minisandbox/internal/egressnft"
 	"minisandbox/internal/egresspolicy"
 	runtimeport "minisandbox/internal/runtime"
@@ -24,12 +24,7 @@ import (
 const (
 	egressSidecarNamePrefix = "minisandbox-egress-"
 	egressEntrypoint        = "/usr/local/bin/egressd"
-	egressTmpfsPath         = "/run/minisandbox-egress"
 )
-
-func egressTmpfsOptions(uid, gid uint32) string {
-	return fmt.Sprintf("rw,noexec,nosuid,nodev,size=64k,mode=0700,uid=%d,gid=%d", uid, gid)
-}
 
 type egressSidecar struct {
 	id    string
@@ -60,7 +55,8 @@ func buildEgressSidecarOptions(request runtimeport.EgressRequest, policy egressp
 		Name: egressSidecarName(request.SandboxID),
 		Config: &mobycontainer.Config{
 			User: "0:0", Image: request.Image,
-			Entrypoint: []string{egressEntrypoint, "bootstrap"}, OpenStdin: true, StdinOnce: true,
+			Entrypoint:  []string{egressEntrypoint, "bootstrap"},
+			AttachStdin: true, AttachStdout: true, OpenStdin: true, StdinOnce: false,
 			NetworkDisabled: false, Labels: sidecarLabels(request, policy),
 		},
 		HostConfig: &mobycontainer.HostConfig{
@@ -68,9 +64,7 @@ func buildEgressSidecarOptions(request runtimeport.EgressRequest, policy egressp
 			CapDrop: []string{"ALL"}, CapAdd: []string{"NET_ADMIN", "SETUID", "SETGID"},
 			SecurityOpt: []string{noNewPrivilegesSecurity}, ReadonlyRootfs: true,
 			RestartPolicy: mobycontainer.RestartPolicy{Name: mobycontainer.RestartPolicyDisabled},
-			Resources:     resources, Tmpfs: map[string]string{
-				egressTmpfsPath: egressTmpfsOptions(request.AnchorUID, request.AnchorGID),
-			},
+			LogConfig:     mobycontainer.LogConfig{Type: "none"}, Resources: resources,
 		},
 		NetworkingConfig: &mobynetwork.NetworkingConfig{EndpointsConfig: map[string]*mobynetwork.EndpointSettings{
 			EgressNetworkName: {},
@@ -118,11 +112,11 @@ func validateEgressSidecar(container mobycontainer.InspectResponse, request runt
 	config, host := container.Config, container.HostConfig
 	if config.Image != request.Image || config.User != expected.Config.User || !reflect.DeepEqual(config.Entrypoint, expected.Config.Entrypoint) ||
 		len(config.Cmd) != 0 || len(config.Env) != 0 || len(config.ExposedPorts) != 0 || len(config.Volumes) != 0 ||
-		!config.OpenStdin || !config.StdinOnce || config.NetworkDisabled ||
+		!config.AttachStdin || !config.AttachStdout || config.AttachStderr || !config.OpenStdin || config.StdinOnce || config.Tty || config.NetworkDisabled ||
 		!managedLabelsMatch(config.Labels, expected.Config.Labels) || host.NetworkMode != expected.HostConfig.NetworkMode ||
 		host.Privileged || !reflect.DeepEqual(host.CapDrop, expected.HostConfig.CapDrop) || !reflect.DeepEqual(host.CapAdd, expected.HostConfig.CapAdd) ||
 		!reflect.DeepEqual(host.SecurityOpt, expected.HostConfig.SecurityOpt) || !host.ReadonlyRootfs ||
-		host.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled || !reflect.DeepEqual(host.Tmpfs, expected.HostConfig.Tmpfs) ||
+		host.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled || !reflect.DeepEqual(host.LogConfig, expected.HostConfig.LogConfig) || len(host.Tmpfs) != 0 ||
 		!reflect.DeepEqual(host.Resources, expected.HostConfig.Resources) || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
 		len(host.PortBindings) != 0 || len(host.Devices) != 0 || len(host.DeviceRequests) != 0 || len(host.VolumesFrom) != 0 {
 		return egressSidecar{}, containerIdentityConflict()
@@ -153,40 +147,32 @@ func managedLabelsMatch(actual, expected map[string]string) bool {
 	return true
 }
 
-func writeEgressBootstrap(ctx context.Context, engine EgressEngine, resolver NetNSResolver, sidecar egressSidecar, request runtimeport.EgressRequest, policy egresspolicy.Policy) error {
-	attached, err := engine.ContainerAttach(ctx, sidecar.id, mobyclient.ContainerAttachOptions{Stream: true, Stdin: true})
+func bootstrapEgressSidecar(ctx context.Context, engine EgressEngine, resolver NetNSResolver, sidecar egressSidecar, request runtimeport.EgressRequest, policy egresspolicy.Policy) (egressanchor.Attestation, error) {
+	session, err := openEgressControlSession(ctx, engine, sidecar.id, request.ReadyTimeout)
 	if err != nil {
-		return errors.New("attach egress bootstrap input")
+		return egressanchor.Attestation{}, err
 	}
-	defer attached.Close()
+	defer session.close()
 	if _, err := engine.ContainerStart(ctx, sidecar.id, mobyclient.ContainerStartOptions{}); err != nil && !cerrdefs.IsNotModified(err) {
-		return errors.New("start egress sidecar")
+		return egressanchor.Attestation{}, errors.New("start egress sidecar")
 	}
 	inspection, err := engine.ContainerInspect(ctx, sidecar.id, mobyclient.ContainerInspectOptions{})
 	if err != nil || inspection.Container.State == nil || inspection.Container.State.Status != mobycontainer.StateRunning {
-		return errors.New("inspect started egress sidecar")
+		return egressanchor.Attestation{}, errors.New("inspect started egress sidecar")
 	}
 	identity, err := resolver.Identity(inspection.Container.State.Pid)
 	if err != nil {
-		return errors.New("resolve egress network namespace")
+		return egressanchor.Attestation{}, errors.New("resolve egress network namespace")
 	}
-	framed, err := egressnft.EncodeBootstrap(egressnft.Bootstrap{
+	bootstrap := egressnft.Bootstrap{
 		Policy: policy, NetworkNamespace: identity, ImageDigest: request.Image,
 		AnchorUID: request.AnchorUID, AnchorGID: request.AnchorGID,
-	})
+	}
+	controlRequest, err := newEgressControlRequest(egresscontrol.RequestBootstrap, &bootstrap)
 	if err != nil {
-		return err
+		return egressanchor.Attestation{}, err
 	}
-	if attached.Conn == nil {
-		return errors.New("egress bootstrap connection is missing")
-	}
-	if err := writeFull(attached.Conn, framed); err != nil {
-		return errors.New("write egress bootstrap frame")
-	}
-	if err := attached.CloseWrite(); err != nil {
-		return errors.New("close egress bootstrap input")
-	}
-	return nil
+	return session.exchange(controlRequest)
 }
 
 func writeFull(writer io.Writer, data []byte) error {
@@ -203,46 +189,17 @@ func writeFull(writer io.Writer, data []byte) error {
 	return nil
 }
 
-func waitEgressAttestation(ctx context.Context, engine EgressEngine, containerID string, timeout time.Duration) (egressanchor.Attestation, error) {
-	readyContext, cancel := context.WithTimeout(ctx, timeout)
-	defer cancel()
-	ticker := time.NewTicker(25 * time.Millisecond)
-	defer ticker.Stop()
-	for {
-		attestation, err := copyEgressAttestation(readyContext, engine, containerID)
-		if err == nil {
-			return attestation, nil
-		}
-		if !cerrdefs.IsNotFound(err) {
-			return egressanchor.Attestation{}, errors.New("read egress attestation")
-		}
-		select {
-		case <-readyContext.Done():
-			return egressanchor.Attestation{}, errors.New("egress readiness timeout")
-		case <-ticker.C:
-		}
-	}
-}
-
-func copyEgressAttestation(ctx context.Context, engine EgressEngine, containerID string) (egressanchor.Attestation, error) {
-	result, err := engine.CopyFromContainer(ctx, containerID, mobyclient.CopyFromContainerOptions{SourcePath: egressanchor.DefaultAttestationPath})
+func inspectEgressAttestation(ctx context.Context, engine EgressEngine, containerID string, timeout time.Duration) (egressanchor.Attestation, error) {
+	session, err := openEgressControlSession(ctx, engine, containerID, timeout)
 	if err != nil {
 		return egressanchor.Attestation{}, err
 	}
-	defer result.Content.Close()
-	archive := tar.NewReader(io.LimitReader(result.Content, egressanchor.MaxAttestationBytes+4096))
-	header, err := archive.Next()
-	if err != nil || header.Typeflag != tar.TypeReg || header.Size <= 0 || header.Size > egressanchor.MaxAttestationBytes || header.Mode&0o222 != 0 {
-		return egressanchor.Attestation{}, errors.New("egress attestation archive is invalid")
+	defer session.close()
+	request, err := newEgressControlRequest(egresscontrol.RequestInspect, nil)
+	if err != nil {
+		return egressanchor.Attestation{}, err
 	}
-	content, err := io.ReadAll(io.LimitReader(archive, egressanchor.MaxAttestationBytes+1))
-	if err != nil || int64(len(content)) != header.Size {
-		return egressanchor.Attestation{}, errors.New("egress attestation archive is truncated")
-	}
-	if _, err := archive.Next(); !errors.Is(err, io.EOF) {
-		return egressanchor.Attestation{}, errors.New("egress attestation archive has extra entries")
-	}
-	return egressanchor.ParseAttestation(content)
+	return session.exchange(request)
 }
 
 func intString(value int) string { return fmt.Sprintf("%d", value) }
