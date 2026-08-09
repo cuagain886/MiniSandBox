@@ -248,7 +248,8 @@ func waitSandboxState(
 	return protocol.Sandbox{}
 }
 
-// runningContainerID 验证目标 sandbox 恰有一个 running container。
+// runningContainerID 验证目标 sandbox 恰有一个 running 主容器。outbound sandbox
+// 还会带同一 sandbox ID 的 egress sidecar，因此用主容器专属 spec-hash label 排除它。
 func (h *dockerHarness) runningContainerID(
 	t *testing.T,
 	sandboxID string,
@@ -260,10 +261,9 @@ func (h *dockerHarness) runningContainerID(
 		ctx,
 		mobyclient.ContainerListOptions{
 			All: true,
-			Filters: make(mobyclient.Filters).Add(
-				"label",
-				dockerruntime.LabelSandboxID+"="+sandboxID,
-			),
+			Filters: make(mobyclient.Filters).
+				Add("label", dockerruntime.LabelSandboxID+"="+sandboxID).
+				Add("label", dockerruntime.LabelSpecHash),
 		},
 	)
 	if err != nil {
