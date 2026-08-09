@@ -17,6 +17,7 @@ RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
 FROM ${DEBIAN_BASE} AS nft-runtime
 ARG DEBIAN_SNAPSHOT="20260803T000000Z"
 ARG NFTABLES_VERSION="1.0.6-2+deb12u2"
+COPY --from=go-build /etc/ssl/certs/ca-certificates.crt /etc/ssl/certs/ca-certificates.crt
 RUN printf 'deb [check-valid-until=no] https://snapshot.debian.org/archive/debian/%s bookworm main\n' "$DEBIAN_SNAPSHOT" > /etc/apt/sources.list \
     && rm -f /etc/apt/sources.list.d/* \
     && apt-get -o Acquire::Check-Valid-Until=false update \
