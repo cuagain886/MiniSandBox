@@ -7,6 +7,7 @@ package egresspolicy
 
 import (
 	"crypto/sha256"
+	"crypto/subtle"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,6 +28,39 @@ var baselineCIDRs = []string{
 	"192.168.0.0/16", "198.18.0.0/15", "198.51.100.0/24", "203.0.113.0/24",
 	"224.0.0.0/4", "240.0.0.0/4",
 	"::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8", "2001:db8::/32",
+}
+
+// Verify 验证外部传入的策略确实是当前版本生成的规范化不可变策略。
+// 比较 hash 时使用固定时间比较，且错误不回显 CIDR 或 hash 原值。
+func Verify(policy Policy) error {
+	if policy.ProtocolVersion != CurrentProtocolVersion || policy.RuleSchemaVersion != CurrentRuleSchemaVersion {
+		return errors.New("egress policy version is unsupported")
+	}
+	values := append(append([]netip.Prefix(nil), policy.IPv4...), policy.IPv6...)
+	ipv4, ipv6 := splitAndCollapse(values)
+	if !prefixesEqual(ipv4, policy.IPv4) || !prefixesEqual(ipv6, policy.IPv6) {
+		return errors.New("egress policy is not canonical")
+	}
+	expected, err := policyHash(ipv4, ipv6)
+	if err != nil {
+		return errors.New("egress policy hash failed")
+	}
+	if len(policy.Hash) != len(expected) || subtle.ConstantTimeCompare([]byte(policy.Hash), []byte(expected)) != 1 {
+		return errors.New("egress policy hash does not match")
+	}
+	return nil
+}
+
+func prefixesEqual(left, right []netip.Prefix) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }
 
 // ManagedNetwork 是 Docker inspect 提供的实际 subnet 与 gateway。
