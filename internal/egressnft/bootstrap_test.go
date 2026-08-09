@@ -1,31 +1,12 @@
 package egressnft
 
 import (
-	"bytes"
-	"encoding/binary"
 	"encoding/json"
 	"strings"
 	"testing"
 
 	"minisandbox/internal/egresspolicy"
 )
-
-// TestReadBootstrap 验证唯一合法输入是完整、有界、版本匹配且 hash 正确的一帧。
-func TestReadBootstrap(t *testing.T) {
-	policy := testPolicy(t)
-	bootstrap := egressnftBootstrap(policy)
-	encoded, err := EncodeBootstrap(bootstrap)
-	if err != nil {
-		t.Fatalf("encode bootstrap: %v", err)
-	}
-	got, err := ReadBootstrap(bytes.NewReader(encoded))
-	if err != nil {
-		t.Fatalf("read bootstrap: %v", err)
-	}
-	if got.Policy.Hash != policy.Hash || len(got.Policy.IPv4) != len(policy.IPv4) || len(got.Policy.IPv6) != len(policy.IPv6) {
-		t.Fatalf("decoded policy mismatch: %+v", got)
-	}
-}
 
 // TestBootstrapPayloadRoundTrip 验证可重连控制协议能够嵌入不带二次长度前缀的
 // bootstrap JSON，同时继续复用封闭 schema 与策略校验。
@@ -54,9 +35,9 @@ func egressnftBootstrap(policy egresspolicy.Policy) Bootstrap {
 	}
 }
 
-// TestReadBootstrapRejections 锁定 framing、大小、EOF、JSON schema、版本和策略身份
-// 的 fail-closed 行为。
-func TestReadBootstrapRejections(t *testing.T) {
+// TestParseBootstrapRejections 锁定大小、JSON schema、版本和策略身份的 fail-closed
+// 行为；控制流 framing 的拒绝测试位于 egresscontrol。
+func TestParseBootstrapRejections(t *testing.T) {
 	policy := testPolicy(t)
 	validPayload := policyPayload(t, policy)
 	tests := []struct {
@@ -64,15 +45,12 @@ func TestReadBootstrapRejections(t *testing.T) {
 		data []byte
 	}{
 		{name: "empty input", data: nil},
-		{name: "empty frame", data: lengthOnly(0)},
-		{name: "oversized frame", data: lengthOnly(MaxBootstrapBytes + 1)},
-		{name: "early EOF", data: append(lengthOnly(10), []byte("{}")...)},
-		{name: "trailing byte replay", data: append(frame(validPayload), 0)},
-		{name: "trailing JSON value", data: frame(append(validPayload, []byte(" {}")...))},
-		{name: "unknown field", data: frame([]byte(strings.TrimSuffix(string(validPayload), "}") + `,"extra":true}`))},
-		{name: "duplicate field", data: frame([]byte(strings.TrimSuffix(string(validPayload), "}") + `,"protocol_version":1}`))},
-		{name: "malformed JSON", data: frame([]byte("{"))},
-		{name: "missing deny sets", data: frame([]byte(`{"protocol_version":1,"rule_schema_version":1,"policy_hash":"` + policy.Hash + `"}`))},
+		{name: "oversized payload", data: []byte(strings.Repeat("x", MaxBootstrapBytes+1))},
+		{name: "trailing JSON value", data: append(validPayload, []byte(" {}")...)},
+		{name: "unknown field", data: []byte(strings.TrimSuffix(string(validPayload), "}") + `,"extra":true}`)},
+		{name: "duplicate field", data: []byte(strings.TrimSuffix(string(validPayload), "}") + `,"protocol_version":1}`)},
+		{name: "malformed JSON", data: []byte("{")},
+		{name: "missing deny sets", data: []byte(`{"protocol_version":1,"rule_schema_version":1,"policy_hash":"` + policy.Hash + `"}`)},
 	}
 
 	mutations := []struct {
@@ -97,12 +75,12 @@ func TestReadBootstrapRejections(t *testing.T) {
 		tests = append(tests, struct {
 			name string
 			data []byte
-		}{name: mutation.name, data: frame(payload)})
+		}{name: mutation.name, data: payload})
 	}
 
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			if _, err := ReadBootstrap(bytes.NewReader(test.data)); err == nil {
+			if _, err := ParseBootstrap(test.data); err == nil {
 				t.Fatal("expected bootstrap rejection")
 			}
 		})
@@ -143,17 +121,4 @@ func policyPayload(t *testing.T, policy egresspolicy.Policy) []byte {
 		t.Fatalf("marshal policy: %v", err)
 	}
 	return payload
-}
-
-func frame(payload []byte) []byte {
-	result := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(result, uint32(len(payload)))
-	copy(result[4:], payload)
-	return result
-}
-
-func lengthOnly(length uint32) []byte {
-	result := make([]byte, 4)
-	binary.BigEndian.PutUint32(result, length)
-	return result
 }

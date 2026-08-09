@@ -1,13 +1,11 @@
-// Package egressnft 实现 egress sidecar 的有界 bootstrap framing、静态 nftables
-// 规则编译、原子安装与只读回验。
+// Package egressnft 实现 egress sidecar 的有界 bootstrap payload、静态 nftables
+// 规则编译、原子安装与只读回验；流式 framing 由 egresscontrol 负责。
 //
 // 本包只接受控制面生成的规范化 Policy，不接收 sandbox 请求或任意 nft 文本；它不
 // 创建 Docker 资源、不处理 DNS/FQDN，也不提供运行时策略更新接口。
 package egressnft
 
 import (
-	"bufio"
-	"encoding/binary"
 	"encoding/json"
 	"errors"
 	"io"
@@ -16,19 +14,6 @@ import (
 
 	"minisandbox/internal/egresspolicy"
 )
-
-// EncodeBootstrap 把可信配置编码为唯一一帧有界 bootstrap 数据；该兼容入口要求
-// 调用方完整写入一次性输入并关闭写端。可重连控制通道应使用 MarshalBootstrap。
-func EncodeBootstrap(bootstrap Bootstrap) ([]byte, error) {
-	payload, err := MarshalBootstrap(bootstrap)
-	if err != nil {
-		return nil, err
-	}
-	framed := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(framed, uint32(len(payload)))
-	copy(framed[4:], payload)
-	return framed, nil
-}
 
 // MarshalBootstrap 把可信 bootstrap 编码为字段封闭的有界 JSON payload，供上层
 // attach 控制协议嵌入；返回值不包含长度前缀。
@@ -90,27 +75,6 @@ type Bootstrap struct {
 	AnchorUID uint32
 	// AnchorGID 是 Ready 后必须保持的非 root 有效 GID。
 	AnchorGID uint32
-}
-
-// ReadBootstrap 严格读取一帧 uint32 big-endian 长度、JSON payload 和 EOF。
-// 空帧、超限、未知字段、尾随 JSON/字节及非规范策略全部 fail closed。
-func ReadBootstrap(reader io.Reader) (Bootstrap, error) {
-	buffered := bufio.NewReader(reader)
-	var length uint32
-	if err := binary.Read(buffered, binary.BigEndian, &length); err != nil {
-		return Bootstrap{}, errors.New("read egress bootstrap length")
-	}
-	if length == 0 || length > MaxBootstrapBytes {
-		return Bootstrap{}, errors.New("egress bootstrap size is invalid")
-	}
-	payload := make([]byte, length)
-	if _, err := io.ReadFull(buffered, payload); err != nil {
-		return Bootstrap{}, errors.New("read egress bootstrap payload")
-	}
-	if _, err := buffered.ReadByte(); !errors.Is(err, io.EOF) {
-		return Bootstrap{}, errors.New("egress bootstrap has trailing data")
-	}
-	return ParseBootstrap(payload)
 }
 
 // ParseBootstrap 严格解析一个不含长度前缀的 bootstrap JSON payload；未知字段、
