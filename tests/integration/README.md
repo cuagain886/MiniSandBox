@@ -12,6 +12,11 @@ MINISANDBOX_INTEGRATION=1 \
 go test -tags=integration ./tests/integration/...
 ```
 
+P2 outbound/coding-agent 验收还要求设置两个不可变镜像引用：
+`MINISANDBOX_TEST_EGRESS_IMAGE=<egress-image>@sha256:<digest>` 与
+`MINISANDBOX_TEST_AGENT_IMAGE=<go-and-git-image>@sha256:<digest>`。测试只访问宿主机上的
+本地 Git HTTP 夹具，并强制 `GOPROXY=off`，不会把真实公网当作成功条件。
+
 非默认 Docker socket 可通过 `MINISANDBOX_TEST_DOCKER_HOST` 指定。Harness
 为每个测试生成独立 data directory 和随机
 `io.minisandbox.integration-test-id` label，cleanup 只枚举当前 test ID，
