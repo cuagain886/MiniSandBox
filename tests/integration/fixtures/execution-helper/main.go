@@ -32,6 +32,8 @@ func main() {
 		return
 	case "streams":
 		writeStreams(os.Args[2:])
+	case "exit":
+		exitWithCode(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -106,4 +108,15 @@ func writeStreams(arguments []string) {
 	if _, err := os.Stderr.Write(stderr); err != nil {
 		os.Exit(exitProbeFailure)
 	}
+}
+
+func exitWithCode(arguments []string) {
+	if len(arguments) != 1 {
+		os.Exit(exitProbeFailure)
+	}
+	code, err := strconv.Atoi(arguments[0])
+	if err != nil || code < 0 || code > 255 {
+		os.Exit(exitProbeFailure)
+	}
+	os.Exit(code)
 }
