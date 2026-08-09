@@ -27,6 +27,25 @@ func TestReadBootstrap(t *testing.T) {
 	}
 }
 
+// TestBootstrapPayloadRoundTrip 验证可重连控制协议能够嵌入不带二次长度前缀的
+// bootstrap JSON，同时继续复用封闭 schema 与策略校验。
+func TestBootstrapPayloadRoundTrip(t *testing.T) {
+	policy := testPolicy(t)
+	want := egressnftBootstrap(policy)
+	payload, err := MarshalBootstrap(want)
+	if err != nil {
+		t.Fatalf("marshal bootstrap payload: %v", err)
+	}
+	got, err := ParseBootstrap(payload)
+	if err != nil {
+		t.Fatalf("parse bootstrap payload: %v", err)
+	}
+	if got.Policy.Hash != want.Policy.Hash || got.NetworkNamespace != want.NetworkNamespace ||
+		got.ImageDigest != want.ImageDigest || got.AnchorUID != want.AnchorUID || got.AnchorGID != want.AnchorGID {
+		t.Fatalf("bootstrap payload mismatch: got=%+v want=%+v", got, want)
+	}
+}
+
 func egressnftBootstrap(policy egresspolicy.Policy) Bootstrap {
 	return Bootstrap{
 		Policy: policy, NetworkNamespace: "linux-netns:4:4026533000",

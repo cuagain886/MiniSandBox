@@ -17,9 +17,22 @@ import (
 	"minisandbox/internal/egresspolicy"
 )
 
-// EncodeBootstrap 把可信配置编码为唯一一帧有界 bootstrap 数据；调用方必须把它
-// 完整写入 Docker attach stdin 并立即关闭写端。
+// EncodeBootstrap 把可信配置编码为唯一一帧有界 bootstrap 数据；该兼容入口要求
+// 调用方完整写入一次性输入并关闭写端。可重连控制通道应使用 MarshalBootstrap。
 func EncodeBootstrap(bootstrap Bootstrap) ([]byte, error) {
+	payload, err := MarshalBootstrap(bootstrap)
+	if err != nil {
+		return nil, err
+	}
+	framed := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(framed, uint32(len(payload)))
+	copy(framed[4:], payload)
+	return framed, nil
+}
+
+// MarshalBootstrap 把可信 bootstrap 编码为字段封闭的有界 JSON payload，供上层
+// attach 控制协议嵌入；返回值不包含长度前缀。
+func MarshalBootstrap(bootstrap Bootstrap) ([]byte, error) {
 	if err := egresspolicy.Verify(bootstrap.Policy); err != nil ||
 		!ValidNetworkNamespace(bootstrap.NetworkNamespace) || !ValidImageDigest(bootstrap.ImageDigest) ||
 		bootstrap.AnchorUID == 0 || bootstrap.AnchorGID == 0 {
@@ -35,10 +48,7 @@ func EncodeBootstrap(bootstrap Bootstrap) ([]byte, error) {
 	if err != nil || len(payload) == 0 || len(payload) > MaxBootstrapBytes {
 		return nil, errors.New("encode egress bootstrap")
 	}
-	framed := make([]byte, 4+len(payload))
-	binary.BigEndian.PutUint32(framed, uint32(len(payload)))
-	copy(framed[4:], payload)
-	return framed, nil
+	return payload, nil
 }
 
 func prefixStrings(prefixes []netip.Prefix) []string {
@@ -99,6 +109,15 @@ func ReadBootstrap(reader io.Reader) (Bootstrap, error) {
 	}
 	if _, err := buffered.ReadByte(); !errors.Is(err, io.EOF) {
 		return Bootstrap{}, errors.New("egress bootstrap has trailing data")
+	}
+	return ParseBootstrap(payload)
+}
+
+// ParseBootstrap 严格解析一个不含长度前缀的 bootstrap JSON payload；未知字段、
+// 重复字段、非规范 CIDR、身份漂移及额外 JSON 值全部 fail closed。
+func ParseBootstrap(payload []byte) (Bootstrap, error) {
+	if len(payload) == 0 || len(payload) > MaxBootstrapBytes {
+		return Bootstrap{}, errors.New("egress bootstrap size is invalid")
 	}
 	if err := rejectDuplicateJSONFields(payload); err != nil {
 		return Bootstrap{}, err
