@@ -15,5 +15,8 @@ make egress-image EGRESS_IMAGE=registry.example/minisandbox/egressd:build
 `artifact-contract.json` 一同进入 release manifest；生产配置只接受最终
 `name@sha256:<64 lowercase hex>`，不得使用这里的临时 tag。
 
-运行时必须使用只读 rootfs，并仅在 `/run/minisandbox-egress` 挂载有界 tmpfs；
-固定 entrypoint 不允许覆盖。镜像本身不声明 healthcheck、端口、volume 或额外命令。
+运行时必须使用只读 rootfs，不挂载 tmpfs、bind mount 或 volume。`sandboxd` 通过
+`OpenStdin=true`、`StdinOnce=false` 的 Docker attach stdin/stdout 完成唯一 bootstrap
+和后续只读 inspect；attestation 只保存在 `egressd` 内存中，sidecar 固定使用
+`log-driver=none`。固定 entrypoint 不允许覆盖，镜像本身不声明 healthcheck、端口、
+volume 或额外命令。

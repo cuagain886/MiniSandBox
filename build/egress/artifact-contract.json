@@ -10,6 +10,9 @@
   "rule_schema_version": 1,
   "entrypoint": ["/usr/local/bin/egressd", "bootstrap"],
   "user": "65532:65532",
-  "attestation_path": "/run/minisandbox-egress/attestation.json",
+  "control_transport": "docker-attach-stdio",
+  "attestation_storage": "process-memory",
+  "stdin_once": false,
+  "log_driver": "none",
   "release_outputs": ["image_digest", "binary_digest", "spdx_sbom_digest", "provenance_digest", "source_revision"]
 }

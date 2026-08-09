@@ -9,6 +9,7 @@ COPY go.mod go.sum ./
 RUN go mod download
 COPY cmd/egressd ./cmd/egressd
 COPY internal/egressanchor ./internal/egressanchor
+COPY internal/egresscontrol ./internal/egresscontrol
 COPY internal/egressnft ./internal/egressnft
 COPY internal/egresspolicy ./internal/egresspolicy
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 \
