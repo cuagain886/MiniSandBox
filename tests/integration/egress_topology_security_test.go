@@ -89,9 +89,13 @@ func TestEgressSidecarTopologyAndLeastPrivilege(t *testing.T) {
 	if sidecar.HostConfig.Privileged || !sidecar.HostConfig.ReadonlyRootfs || sidecar.HostConfig.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled ||
 		sidecar.HostConfig.LogConfig.Type != "none" || len(sidecar.HostConfig.Tmpfs) != 0 ||
 		!sidecar.Config.AttachStdin || !sidecar.Config.AttachStdout || sidecar.Config.AttachStderr || !sidecar.Config.OpenStdin || sidecar.Config.StdinOnce || sidecar.Config.Tty ||
-		len(sidecar.Config.Env) != 0 || len(sidecar.Config.Cmd) != 0 || len(sidecar.Config.ExposedPorts) != 0 || len(sidecar.HostConfig.PortBindings) != 0 ||
+		sidecar.Config.WorkingDir != "/" || len(sidecar.Config.Env) != 1 || sidecar.Config.Env[0] != "PATH=/usr/sbin:/usr/bin:/sbin:/bin" ||
+		len(sidecar.Config.Cmd) != 0 || len(sidecar.Config.ExposedPorts) != 0 || len(sidecar.HostConfig.PortBindings) != 0 ||
 		len(sidecar.HostConfig.Binds) != 0 || len(sidecar.HostConfig.Mounts) != 0 || len(sidecar.HostConfig.Devices) != 0 || len(sidecar.HostConfig.VolumesFrom) != 0 {
 		t.Fatal("sidecar least-privilege profile drifted")
+	}
+	if sidecar.HostConfig.Memory <= 0 || sidecar.HostConfig.MemorySwap != sidecar.HostConfig.Memory {
+		t.Fatal("sidecar memory+swap boundary drifted")
 	}
 	assertCapabilitySet(t, "sidecar CapDrop", sidecar.HostConfig.CapDrop, []string{"ALL"})
 	assertCapabilitySet(t, "sidecar CapAdd", sidecar.HostConfig.CapAdd, []string{"NET_ADMIN", "SETUID", "SETGID"})

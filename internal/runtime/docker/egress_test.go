@@ -98,8 +98,9 @@ func TestBuildEgressSidecarSecuritySnapshot(t *testing.T) {
 	}
 	if options.Name != egressSidecarName(request.SandboxID) || options.Config.Image != request.Image ||
 		options.Config.User != "0:0" || strings.Join(options.Config.Entrypoint, " ") != egressEntrypoint+" bootstrap" ||
+		options.Config.WorkingDir != egressWorkingDirectory || !reflect.DeepEqual(options.Config.Env, []string{egressPathEnvironment}) ||
 		!options.Config.AttachStdin || !options.Config.AttachStdout || options.Config.AttachStderr ||
-		!options.Config.OpenStdin || options.Config.StdinOnce || options.Config.Tty || len(options.Config.Env) != 0 || len(options.Config.Cmd) != 0 {
+		!options.Config.OpenStdin || options.Config.StdinOnce || options.Config.Tty || len(options.Config.Cmd) != 0 {
 		t.Fatalf("unsafe sidecar config: %+v", options.Config)
 	}
 	host := options.HostConfig
@@ -109,6 +110,9 @@ func TestBuildEgressSidecarSecuritySnapshot(t *testing.T) {
 		host.LogConfig.Type != "none" || len(host.Tmpfs) != 0 || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
 		len(host.PortBindings) != 0 || len(host.Devices) != 0 || len(host.DeviceRequests) != 0 {
 		t.Fatalf("unsafe sidecar host config: %+v", host)
+	}
+	if host.Memory <= 0 || host.MemorySwap != host.Memory {
+		t.Fatalf("sidecar must disable extra swap: memory=%d memory_swap=%d", host.Memory, host.MemorySwap)
 	}
 	if len(options.NetworkingConfig.EndpointsConfig) != 1 || options.NetworkingConfig.EndpointsConfig[EgressNetworkName] == nil {
 		t.Fatalf("sidecar is not attached only to managed network: %+v", options.NetworkingConfig)
@@ -139,6 +143,24 @@ func TestValidateEgressControlChannelDrift(t *testing.T) {
 				t.Fatal("drifted attach control channel accepted")
 			}
 		})
+	}
+}
+
+// TestValidateEgressDaemonNormalization 验证 Docker 对 capability 的 CAP_ 前缀、
+// 顺序和空日志配置的等价规范化可复用，但实际资源边界漂移仍然 fail closed。
+func TestValidateEgressDaemonNormalization(t *testing.T) {
+	request, policy := sampleEgressRequest(t)
+	container := sampleEgressSidecar(t, request, policy, mobycontainer.StateRunning)
+	container.HostConfig.CapDrop = []string{"CAP_ALL"}
+	container.HostConfig.CapAdd = []string{"CAP_SETUID", "CAP_NET_ADMIN", "CAP_SETGID"}
+	container.HostConfig.LogConfig.Config = nil
+	if _, err := validateEgressSidecar(container, request, policy); err != nil {
+		t.Fatalf("safe Docker normalization rejected: %v", err)
+	}
+
+	container.HostConfig.MemorySwap++
+	if _, err := validateEgressSidecar(container, request, policy); err == nil {
+		t.Fatal("memory+swap drift accepted")
 	}
 }
 

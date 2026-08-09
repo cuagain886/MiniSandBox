@@ -24,6 +24,8 @@ import (
 const (
 	egressSidecarNamePrefix = "minisandbox-egress-"
 	egressEntrypoint        = "/usr/local/bin/egressd"
+	egressWorkingDirectory  = "/"
+	egressPathEnvironment   = "PATH=/usr/sbin:/usr/bin:/sbin:/bin"
 )
 
 type egressSidecar struct {
@@ -51,11 +53,16 @@ func buildEgressSidecarOptions(request runtimeport.EgressRequest, policy egressp
 	if err != nil {
 		return mobyclient.ContainerCreateOptions{}, err
 	}
+	// Docker 把 MemorySwap=0 解释为“由守护进程选择默认值”，通常会得到内存上限的
+	// 两倍。显式令总 memory+swap 上限等于 memory，才能跨守护进程稳定地禁用额外 swap。
+	resources.MemorySwap = resources.Memory
 	return mobyclient.ContainerCreateOptions{
 		Name: egressSidecarName(request.SandboxID),
 		Config: &mobycontainer.Config{
 			User: "0:0", Image: request.Image,
 			Entrypoint:  []string{egressEntrypoint, "bootstrap"},
+			Env:         []string{egressPathEnvironment},
+			WorkingDir:  egressWorkingDirectory,
 			AttachStdin: true, AttachStdout: true, OpenStdin: true, StdinOnce: false,
 			NetworkDisabled: false, Labels: sidecarLabels(request, policy),
 		},
@@ -64,7 +71,7 @@ func buildEgressSidecarOptions(request runtimeport.EgressRequest, policy egressp
 			CapDrop: []string{"ALL"}, CapAdd: []string{"NET_ADMIN", "SETUID", "SETGID"},
 			SecurityOpt: []string{noNewPrivilegesSecurity}, ReadonlyRootfs: true,
 			RestartPolicy: mobycontainer.RestartPolicy{Name: mobycontainer.RestartPolicyDisabled},
-			LogConfig:     mobycontainer.LogConfig{Type: "none"}, Resources: resources,
+			LogConfig:     mobycontainer.LogConfig{Type: "none", Config: map[string]string{}}, Resources: resources,
 		},
 		NetworkingConfig: &mobynetwork.NetworkingConfig{EndpointsConfig: map[string]*mobynetwork.EndpointSettings{
 			EgressNetworkName: {},
@@ -110,14 +117,16 @@ func validateEgressSidecar(container mobycontainer.InspectResponse, request runt
 		return egressSidecar{}, err
 	}
 	config, host := container.Config, container.HostConfig
-	if config.Image != request.Image || config.User != expected.Config.User || !reflect.DeepEqual(config.Entrypoint, expected.Config.Entrypoint) ||
-		len(config.Cmd) != 0 || len(config.Env) != 0 || len(config.ExposedPorts) != 0 || len(config.Volumes) != 0 ||
+	if config.Image != request.Image || config.User != expected.Config.User || config.WorkingDir != expected.Config.WorkingDir ||
+		!reflect.DeepEqual(config.Entrypoint, expected.Config.Entrypoint) || !reflect.DeepEqual(config.Env, expected.Config.Env) ||
+		len(config.Cmd) != 0 || len(config.ExposedPorts) != 0 || len(config.Volumes) != 0 ||
 		!config.AttachStdin || !config.AttachStdout || config.AttachStderr || !config.OpenStdin || config.StdinOnce || config.Tty || config.NetworkDisabled ||
 		!managedLabelsMatch(config.Labels, expected.Config.Labels) || host.NetworkMode != expected.HostConfig.NetworkMode ||
-		host.Privileged || !reflect.DeepEqual(host.CapDrop, expected.HostConfig.CapDrop) || !reflect.DeepEqual(host.CapAdd, expected.HostConfig.CapAdd) ||
+		host.Privileged || !sameCapabilitySet(host.CapDrop, expected.HostConfig.CapDrop) || !sameCapabilitySet(host.CapAdd, expected.HostConfig.CapAdd) ||
 		!reflect.DeepEqual(host.SecurityOpt, expected.HostConfig.SecurityOpt) || !host.ReadonlyRootfs ||
-		host.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled || !reflect.DeepEqual(host.LogConfig, expected.HostConfig.LogConfig) || len(host.Tmpfs) != 0 ||
-		!reflect.DeepEqual(host.Resources, expected.HostConfig.Resources) || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
+		host.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled || host.RestartPolicy.MaximumRetryCount != 0 ||
+		host.LogConfig.Type != "none" || len(host.LogConfig.Config) != 0 || len(host.Tmpfs) != 0 ||
+		!sameEgressResources(host.Resources, expected.HostConfig.Resources) || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
 		len(host.PortBindings) != 0 || len(host.Devices) != 0 || len(host.DeviceRequests) != 0 || len(host.VolumesFrom) != 0 {
 		return egressSidecar{}, containerIdentityConflict()
 	}
@@ -136,6 +145,47 @@ func validateEgressSidecar(container mobycontainer.InspectResponse, request runt
 		return egressSidecar{}, containerIdentityConflict()
 	}
 	return egressSidecar{id: container.ID, state: state, pid: container.State.Pid}, nil
+}
+
+// sameCapabilitySet 接受 Docker inspect 对 capability 添加 CAP_ 前缀或调整顺序的
+// 等价表示，但拒绝缺失、额外和重复 capability，避免表示规范化放宽权限边界。
+func sameCapabilitySet(actual, expected []string) bool {
+	if len(actual) != len(expected) {
+		return false
+	}
+	wanted := make(map[string]struct{}, len(expected))
+	for _, capability := range expected {
+		normalized := strings.TrimPrefix(strings.ToUpper(capability), "CAP_")
+		if normalized == "" {
+			return false
+		}
+		wanted[normalized] = struct{}{}
+	}
+	if len(wanted) != len(expected) {
+		return false
+	}
+	seen := make(map[string]struct{}, len(actual))
+	for _, capability := range actual {
+		normalized := strings.TrimPrefix(strings.ToUpper(capability), "CAP_")
+		if _, ok := wanted[normalized]; !ok {
+			return false
+		}
+		if _, duplicate := seen[normalized]; duplicate {
+			return false
+		}
+		seen[normalized] = struct{}{}
+	}
+	return len(seen) == len(wanted)
+}
+
+// sameEgressResources 只比较 MiniSandbox 主动控制的稳定字段。Docker inspect 会为
+// Resources 的其他零值字段填充 nil/空切片等等价表示，不能用结构体全等判断漂移。
+func sameEgressResources(actual, expected mobycontainer.Resources) bool {
+	if actual.NanoCPUs != expected.NanoCPUs || actual.Memory != expected.Memory || actual.MemorySwap != expected.MemorySwap ||
+		actual.PidsLimit == nil || expected.PidsLimit == nil {
+		return false
+	}
+	return *actual.PidsLimit == *expected.PidsLimit
 }
 
 func managedLabelsMatch(actual, expected map[string]string) bool {
