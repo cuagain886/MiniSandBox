@@ -19,7 +19,10 @@ type artifactContract struct {
 	RuleSchemaVersion     int      `json:"rule_schema_version"`
 	Entrypoint            []string `json:"entrypoint"`
 	User                  string   `json:"user"`
-	AttestationPath       string   `json:"attestation_path"`
+	ControlTransport      string   `json:"control_transport"`
+	AttestationStorage    string   `json:"attestation_storage"`
+	StdinOnce             bool     `json:"stdin_once"`
+	LogDriver             string   `json:"log_driver"`
 	ReleaseOutputs        []string `json:"release_outputs"`
 }
 
@@ -45,7 +48,8 @@ func TestEgressArtifactContract(t *testing.T) {
 	}
 	if contract.NFTablesVersion != "1.0.6-2+deb12u2" || contract.User != "65532:65532" ||
 		strings.Join(contract.Entrypoint, " ") != "/usr/local/bin/egressd bootstrap" ||
-		contract.AttestationPath != "/run/minisandbox-egress/attestation.json" || len(contract.ReleaseOutputs) != 5 {
+		contract.ControlTransport != "docker-attach-stdio" || contract.AttestationStorage != "process-memory" ||
+		contract.StdinOnce || contract.LogDriver != "none" || len(contract.ReleaseOutputs) != 5 {
 		t.Fatalf("artifact contract drifted: %+v", contract)
 	}
 }
