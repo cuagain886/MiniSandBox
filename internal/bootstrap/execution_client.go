@@ -2,6 +2,8 @@ package bootstrap
 
 import (
 	"context"
+	"errors"
+	"net/http"
 	"time"
 
 	"minisandbox/internal/application"
@@ -29,13 +31,14 @@ type applicationExecutionClient struct {
 }
 
 func (c applicationExecutionClient) ExecuteForeground(ctx context.Context, spec domain.ExecutionSpec) (application.ExecutionEventStream, error) {
-	return c.client.ExecuteForeground(ctx, mapRunnerExecuteRequest(spec))
+	stream, err := c.client.ExecuteForeground(ctx, mapRunnerExecuteRequest(spec))
+	return stream, mapRunnerStatusError(err)
 }
 
 func (c applicationExecutionClient) ExecuteBackground(ctx context.Context, spec domain.ExecutionSpec) (application.ExecutionDescriptor, error) {
 	descriptor, err := c.client.ExecuteBackground(ctx, mapRunnerExecuteRequest(spec))
 	if err != nil {
-		return application.ExecutionDescriptor{}, err
+		return application.ExecutionDescriptor{}, mapRunnerStatusError(err)
 	}
 	return application.ExecutionDescriptor{ID: descriptor.ExecutionID, State: descriptor.State}, nil
 }
@@ -43,7 +46,7 @@ func (c applicationExecutionClient) ExecuteBackground(ctx context.Context, spec 
 func (c applicationExecutionClient) Status(ctx context.Context, executionID string) (application.ExecutionStatus, error) {
 	status, err := c.client.Status(ctx, executionID)
 	if err != nil {
-		return application.ExecutionStatus{}, err
+		return application.ExecutionStatus{}, mapRunnerStatusError(err)
 	}
 	return application.ExecutionStatus{
 		Descriptor:    application.ExecutionDescriptor{ID: status.ExecutionID, State: status.State},
@@ -54,7 +57,7 @@ func (c applicationExecutionClient) Status(ctx context.Context, executionID stri
 func (c applicationExecutionClient) Cancel(ctx context.Context, executionID string) (application.CancelDisposition, error) {
 	disposition, err := c.client.Cancel(ctx, executionID)
 	if err != nil {
-		return "", err
+		return "", mapRunnerStatusError(err)
 	}
 	return application.CancelDisposition(disposition), nil
 }
@@ -62,9 +65,29 @@ func (c applicationExecutionClient) Cancel(ctx context.Context, executionID stri
 func (c applicationExecutionClient) Logs(ctx context.Context, executionID string, cursor uint64) (application.ExecutionLogPage, error) {
 	page, err := c.client.Logs(ctx, executionID, cursor)
 	if err != nil {
-		return application.ExecutionLogPage{}, err
+		return application.ExecutionLogPage{}, mapRunnerStatusError(err)
 	}
 	return application.ExecutionLogPage{Events: page.Events, NextCursor: page.NextCursor, Complete: page.Complete}, nil
+}
+
+func mapRunnerStatusError(err error) error {
+	if err == nil {
+		return nil
+	}
+	var status *runnerclient.StatusError
+	if !errors.As(err, &status) {
+		return err
+	}
+	switch status.StatusCode {
+	case http.StatusBadRequest, http.StatusUnprocessableEntity:
+		return domain.ErrInvalidExecutionRequest
+	case http.StatusNotFound:
+		return domain.ErrExecutionNotFound
+	case http.StatusTooManyRequests:
+		return domain.ErrExecutionLimitReached
+	default:
+		return domain.ErrRunnerUnhealthy
+	}
 }
 
 func (c applicationExecutionClient) NetworkNamespace(ctx context.Context) (string, error) {

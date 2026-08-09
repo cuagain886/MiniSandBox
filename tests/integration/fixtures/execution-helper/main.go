@@ -49,6 +49,8 @@ func main() {
 		writeOutputLimit(os.Args[2:])
 	case "log-pages":
 		writeLogPages(os.Args[2:])
+	case "count-active-groups":
+		countActiveGroups(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -264,5 +266,42 @@ func writeLogPages(arguments []string) {
 			os.Exit(exitProbeFailure)
 		}
 		time.Sleep(20 * time.Millisecond)
+	}
+}
+
+func countActiveGroups(arguments []string) {
+	if len(arguments) != 1 {
+		os.Exit(exitProbeFailure)
+	}
+	entries, err := os.ReadDir("/proc")
+	if err != nil {
+		os.Exit(exitProbeFailure)
+	}
+	count := 0
+	for _, entry := range entries {
+		pid, err := strconv.Atoi(entry.Name())
+		if err != nil || pid <= 1 {
+			continue
+		}
+		command, err := os.ReadFile("/proc/" + entry.Name() + "/cmdline")
+		if err != nil || !bytes.Contains(command, []byte("process-tree\x00")) {
+			continue
+		}
+		stat, err := os.ReadFile("/proc/" + entry.Name() + "/stat")
+		if err != nil {
+			continue
+		}
+		closeParen := bytes.LastIndexByte(stat, ')')
+		if closeParen < 0 {
+			continue
+		}
+		fields := strings.Fields(string(stat[closeParen+1:]))
+		if len(fields) < 3 || fields[2] != entry.Name() {
+			continue
+		}
+		count++
+	}
+	if err := os.WriteFile(arguments[0], []byte(strconv.Itoa(count)), 0o600); err != nil {
+		os.Exit(exitProbeFailure)
 	}
 }
