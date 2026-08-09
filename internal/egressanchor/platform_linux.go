@@ -9,6 +9,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"syscall"
 
 	"golang.org/x/sys/unix"
 )
@@ -27,7 +28,8 @@ func (LinuxPlatform) NetworkNamespace() (string, error) {
 
 // DropPrivileges 清空 bootstrap root 的附加组、切换固定非 root 身份、清空三组
 // capability 并设置 no_new_privs；SETGID/SETUID 只服务于这次不可逆身份切换，
-// 任一步失败都阻止 Ready。
+// 标准库 syscall 凭据封装会同步 Go runtime 的全部 OS thread，避免只降权当前
+// thread 后由其他 thread 保留 root 身份；任一步失败都阻止 Ready。
 func (LinuxPlatform) DropPrivileges(uid, gid uint32) error {
 	if uid == 0 || gid == 0 {
 		return errors.New("anchor identity must be non-root")
@@ -37,17 +39,17 @@ func (LinuxPlatform) DropPrivileges(uid, gid uint32) error {
 		return err
 	}
 	if len(groups) != 0 {
-		if err := unix.Setgroups(nil); err != nil {
+		if err := syscall.Setgroups(nil); err != nil {
 			return err
 		}
 	}
 	if os.Getegid() != int(gid) {
-		if err := unix.Setresgid(int(gid), int(gid), int(gid)); err != nil {
+		if err := syscall.Setresgid(int(gid), int(gid), int(gid)); err != nil {
 			return err
 		}
 	}
 	if os.Geteuid() != int(uid) {
-		if err := unix.Setresuid(int(uid), int(uid), int(uid)); err != nil {
+		if err := syscall.Setresuid(int(uid), int(uid), int(uid)); err != nil {
 			return err
 		}
 	}
