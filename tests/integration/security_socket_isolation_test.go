@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"minisandbox/internal/runnerbootstrap"
-	"minisandbox/internal/runnerclient"
 	"minisandbox/pkg/protocol"
 )
 
@@ -61,7 +60,7 @@ func TestRuntimeSocketsAreIsolatedPerSandbox(t *testing.T) {
 		t.Fatal("sandboxes share the same runner socket inode")
 	}
 
-	assertRunnerHealthy(t, secondSocket)
+	assertRunnerHealthy(t, instance, second.ID)
 	submitSandboxDelete(t, instance.baseURL, first.ID)
 	waitSandboxState(
 		t,
@@ -73,7 +72,7 @@ func TestRuntimeSocketsAreIsolatedPerSandbox(t *testing.T) {
 		t.Fatal("deleting first sandbox did not remove only its runtime directory")
 	}
 	assertRuntimeSocketPermissions(t, secondSocket)
-	assertRunnerHealthy(t, secondSocket)
+	assertRunnerHealthy(t, instance, second.ID)
 }
 
 // assertRuntimeSocketPermissions 验证父目录 0700、socket 0600 并返回文件身份。
@@ -105,11 +104,11 @@ func assertRuntimeSocketPermissions(t *testing.T, socketPath string) os.FileInfo
 }
 
 // assertRunnerHealthy 通过目标 sandbox 的独立 Unix Socket 验证 runner 仍可达。
-func assertRunnerHealthy(t *testing.T, socketPath string) {
+func assertRunnerHealthy(t *testing.T, instance *sandboxdInstance, sandboxID string) {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-	if _, err := runnerclient.New(socketPath, "").Health(ctx, runnerbootstrap.CurrentProtocolVersion); err != nil {
+	if _, err := instance.runnerClient(t, sandboxID).Health(ctx, runnerbootstrap.CurrentProtocolVersion); err != nil {
 		t.Fatal("runner socket health failed")
 	}
 }

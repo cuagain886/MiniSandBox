@@ -5,6 +5,7 @@ package integration
 import (
 	"bytes"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"net"
@@ -18,6 +19,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	controlapi "minisandbox/internal/api"
 	"minisandbox/internal/bootstrap"
+	"minisandbox/internal/runnerauth"
 	"minisandbox/internal/runnerbootstrap"
 	"minisandbox/internal/runnerclient"
 	dockerruntime "minisandbox/internal/runtime/docker"
@@ -34,6 +36,8 @@ type sandboxdInstance struct {
 	baseURL string
 	cancel  context.CancelFunc
 	done    chan error
+	key     runnerauth.MasterKey
+	runRoot string
 }
 
 // TestCreateSandboxEventuallyRunning 验证 POST、GET、Docker 与 runner health 完整链路。
@@ -56,13 +60,7 @@ func TestCreateSandboxEventuallyRunning(t *testing.T) {
 	if containerID == "" {
 		t.Fatal("running sandbox has empty Docker container ID")
 	}
-	socketPath := filepath.Join(
-		harness.dataDirectory,
-		"run",
-		sandbox.ID,
-		"runner.sock",
-	)
-	client := runnerclient.New(socketPath, "")
+	client := instance.runnerClient(t, sandbox.ID)
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := client.Health(ctx, runnerbootstrap.CurrentProtocolVersion); err != nil {
@@ -79,7 +77,15 @@ func (h *dockerHarness) startSandboxd(t *testing.T) *sandboxdInstance {
 	if dockerHost == "" {
 		dockerHost = "unix:///var/run/docker.sock"
 	}
-	content := integrationConfig(h.dataDirectory, address, dockerHost)
+	keyPath := filepath.Join(h.dataDirectory, "runner-master-key")
+	var key runnerauth.MasterKey
+	if _, err := rand.Read(key[:]); err != nil {
+		t.Fatalf("generate runner master key")
+	}
+	if err := os.WriteFile(keyPath, key[:], 0o400); err != nil {
+		t.Fatalf("write runner master key: %v", err)
+	}
+	content := integrationConfig(h.dataDirectory, address, dockerHost, keyPath)
 	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
 		t.Fatalf("write sandboxd integration config: %v", err)
 	}
@@ -89,6 +95,8 @@ func (h *dockerHarness) startSandboxd(t *testing.T) *sandboxdInstance {
 		baseURL: "http://" + address,
 		cancel:  cancel,
 		done:    make(chan error, 1),
+		key:     key,
+		runRoot: filepath.Join(h.dataDirectory, "run"),
 	}
 	go func() {
 		instance.done <- bootstrap.Run(ctx, bootstrap.Options{
@@ -106,9 +114,25 @@ func (h *dockerHarness) startSandboxd(t *testing.T) *sandboxdInstance {
 	return instance
 }
 
+// runnerClient 返回按 sandbox ID 派生 token 且不暴露路径选择能力的测试 client。
+func (s *sandboxdInstance) runnerClient(t *testing.T, sandboxID string) *runnerclient.Client {
+	t.Helper()
+	factory, err := runnerclient.NewFactory(s.runRoot, &s.key, runnerbootstrap.CurrentProtocolVersion, time.Second)
+	if err != nil {
+		t.Fatalf("create runner client factory: %v", err)
+	}
+	t.Cleanup(factory.Close)
+	client, err := factory.Client(sandboxID)
+	if err != nil {
+		t.Fatalf("create sandbox runner client: %v", err)
+	}
+	return client
+}
+
 // stop 取消 sandboxd 并等待全部依赖逆序关闭。
 func (s *sandboxdInstance) stop(t *testing.T) {
 	t.Helper()
+	defer s.key.Clear()
 	s.cancel()
 	select {
 	case err := <-s.done:
@@ -284,7 +308,7 @@ func integrationImage() string {
 }
 
 // integrationConfig 生成只绑定 loopback、网络为 none 的测试配置。
-func integrationConfig(dataDirectory, address, dockerHost string) string {
+func integrationConfig(dataDirectory, address, dockerHost, keyPath string) string {
 	runRoot := filepath.Join(dataDirectory, "run")
 	workspaceRoot := filepath.Join(dataDirectory, "workspaces")
 	databasePath := filepath.Join(dataDirectory, "sandboxd.db")
@@ -305,6 +329,9 @@ runtime:
   platform:
     os: "linux"
     arch: "amd64"
+security:
+  runner_master_key_file: %s
+  allow_outbound: false
 reconcile:
   interval: "250ms"
   runner_ready_timeout: "30s"
@@ -327,5 +354,6 @@ limits:
 		strconv.Quote(dockerHost),
 		strconv.Quote(runRoot),
 		strconv.Quote(workspaceRoot),
+		strconv.Quote(keyPath),
 	)
 }
