@@ -1,6 +1,6 @@
 # Phase 3：可靠性细粒度开发计划与设计方案
 
-> - 状态：待审查
+> - 状态：七项设计门禁已确认，待执行 P3-000
 > - 前置阶段：[Phase 2：Init 与 Runner 执行细粒度开发计划](./phase-2-runner-execution-development-plan.md)
 > - 上位设计：[全 Go Agent Sandbox Runtime 设计](./all-go-agent-sandbox-runtime-design.md)
 > - 阶段定义：本文的“第三阶段”对应上位设计中的 **Phase 3：可靠性**
@@ -28,7 +28,7 @@
 开始 P3-001 前必须满足：
 
 - Phase 1 的 P1-000～P1-079 全部完成；
-- Phase 2 的 P2-000～P2-091 全部完成；
+- Phase 2 的 P2-000～P2-097 全部完成；
 - 存在通过状态的 `docs/reports/phase1-acceptance.md` 和 `docs/reports/phase2-acceptance.md`；
 - create → execute → cancel/timeout → delete 的真实 Linux Docker 闭环通过；
 - Store schema、Docker labels、runner protocol 和 Phase 2 配置已经冻结；
@@ -55,7 +55,7 @@ Phase 3 结束时，系统必须能够：
 可靠性闭环必须覆盖：
 
 - create、image pull、container create、start、runner ready 和 observed update；
-- delete、runner shutdown、container/volume/runtime directory 清理和 terminal update；
+- delete、runner shutdown、主容器/egress sidecar/volume/runtime directory 清理和 terminal update；
 - TTL create、renew、expire、旧 timer 和 restart schedule rebuild；
 - 同一 sandbox 的 create/delete/renew/recovery 竞争；
 - Docker 暂时不可用、runner 暂时不健康和 SQLite CAS conflict；
@@ -98,7 +98,7 @@ Phase 3 结束时，系统必须能够：
 - Kubernetes、CRD、Operator、gVisor、Kata 和 microVM；
 - 自动删除标签损坏、schema 未知或所有权不确定的 Docker 资源；
 - admin 强制接管、删除或修改 orphan 的写接口；
-- FQDN/CIDR/端口级 egress policy；
+- 用户自定义 FQDN/CIDR/端口级 egress policy、动态更新、代理和 MITM；
 - startup process 和 root compatibility profile。
 
 Phase 3 的目标是“单机进程可重启、操作可重试、资源最终收敛”，不是“分布式控制面”。
@@ -109,12 +109,12 @@ Phase 3 的目标是“单机进程可重启、操作可重试、资源最终收
 
 - SQLite sandbox record、revision CAS 和基础 migration；
 - desired/observed lifecycle 状态与稳定 reason；
-- 幂等 Docker Ensure/Inspect/Delete/ListManaged；
+- 幂等 Docker Ensure/Inspect/Delete/ListManaged，按 sandbox ID 聚合主容器和可选 egress sidecar；
 - 确定性 container、volume、runtime directory、socket 和 labels；
 - 按 sandbox ID 合并的 wake queue、单 worker 和 keyed lock；
 - 一次启动恢复、readiness 和 create failure compensation；
 - non-root runner、execution SSE、process-group cancel/timeout 和后台任务；
-- 受管 outbound bridge；
+- 每 sandbox egress sidecar、不可覆盖的内部 CIDR nft deny 和 fail-closed readiness；
 - 真实 Linux Docker integration/security harness。
 
 ### 3.2 Phase 3 需要新增
@@ -125,7 +125,7 @@ Phase 3 的目标是“单机进程可重启、操作可重试、资源最终收
 - 持久化指数退避、retry classification 和用户意图抢占；
 - 多 worker 与 create/delete/image-pull 并发限制；
 - 原子 maxSandboxes admission；
-- TTL heap、旧 revision timer、周期过期兜底和 label projection；
+- TTL heap、旧 expiry timer、周期过期兜底和 lease projection；
 - 更完整的启动恢复与 create/delete crash-point 收敛；
 - container、volume 和 runtime directory 资源盘点；
 - 完整 orphan 导入、明确过期 orphan 清理和歧义资源隔离清单；
@@ -141,88 +141,101 @@ P3-000 必须重新执行前两阶段的核心 smoke，并读取两个验收报�
 
 ### G2：TTL 与续期契约
 
-建议冻结以下语义：
+冻结以下语义：
 
-- create 可选 `ttl_seconds`，缺失时使用服务端 `default_ttl`；
+- 沿用现有 `limits.default_ttl=30m` 和 `limits.maximum_ttl=24h`，只新增 `limits.minimum_ttl=1m`，不再增加重复的 `lifecycle` 配置段；
+- create 可选 `ttl_seconds`，缺失时使用服务端 `limits.default_ttl`；
 - 每个 sandbox 都有非空 `expires_at`；
 - wire 使用 RFC3339 UTC，Go SDK 使用 `time.Time` 和 `time.Duration`；
 - `POST /v1/sandboxes/{id}/renew` 只接受绝对 `expires_at`；
-- renew 只能延长，不能缩短；
-- 新到期时间必须晚于当前值且不超过 `now + max_ttl`；
+- renew 只能延长；等于当前值是 `200` 幂等 no-op，早于当前值返回 `409 LEASE_CONFLICT`；
+- 新到期时间必须位于 `now + minimum_ttl` 与 `now + maximum_ttl` 的闭区间内；
+- `now >= expires_at` 后即视为已过期，即使 scanner 尚未提交终止意图也不能续期；
 - desired 已是 Terminated 时不能续期，也不能复活；
+- 显式 delete 的优先级高于 renew、timer 和 Running recovery；
 - 到期通过 CAS 提交 `DesiredTerminated`，然后复用正常 delete reconcile；
 - renew 与 expire 竞争时，CAS 首个成功者胜出。
 
-Docker container labels 创建后不能原地修改。续期不能以“更新 label”伪装成功；Phase 3 使用受管 runtime directory 中原子替换的 `lease.json` 作为可变恢复投影，创建时 `expires-at` label 只作为 manifest 缺失时的最后兜底。
+Store 是唯一租约权威。`lease.json` 是受管 runtime directory 中的可变恢复投影，固定字段为 `schema_version`、`sandbox_id`、`spec_hash`、`expires_at` 和 `projected_store_revision`；文件最大 1 KiB、拒绝未知字段、no-follow regular file、owner-only `0600`，并通过同目录 temp、file fsync、rename、directory fsync 原子替换。内存 heap/timer 只负责唤醒，timer 身份为 `(sandbox_id, expected_expires_at)`，不绑定会因无关状态更新而变化的整个 sandbox revision。
 
-执行 P3-001 前必须确认该公共语义。
+Docker container label 仍是创建时不可变快照。Phase 3 新建资源使用 label schema v2，reader 同时识别 v1/v2；v1 语义不可原地改写。v1 orphan 缺少可信 `lease.json` 时不能推断当前租约，只能进入 anomaly，不能用旧 label 自动删除。
+
+P3-001 及后续实现必须遵守上述已冻结公共语义；如需改变，先重新打开本门禁审查。
 
 ### G3：Idempotency-Key 契约
 
-建议冻结：
+冻结：
 
 - key 长度 1～128，只允许 `[A-Za-z0-9._:-]`；
-- 当前单租户版本使用固定 scope，Store schema 仍保留 `scope_id`；
-- request hash 基于规范化的客户端语义，不包含服务端计算出的绝对 `expires_at`；
+- 当前单租户版本固定使用 `scope_id=local:v1`，Store schema 保留 `scope_id` 供未来认证主体隔离；
+- request hash 基于 presence-aware canonical model：会受服务端默认值影响的字段必须编码“缺失”哨兵，不把当前默认值写入 canonical bytes；hash 使用带协议域分离前缀的 SHA-256，不包含服务端计算出的绝对 `expires_at`；
 - 相同 scope/key/hash 在 retention 内精确重放首次 `202`、Location 和安全响应体；
 - 相同 scope/key 不同 hash 返回 409；
 - 无 key 时保持每次创建新 sandbox；
 - idempotency record 与 sandbox record 同事务提交；
-- 记录过期前，即使 sandbox 已 Terminated，重试仍指向原 sandbox。
+- 只有已接受并提交的 `202` 创建结果进入 idempotency table；重放使用新的 request ID，但 status、Location 和 body 保持首次值；
+- raw key、request body 和 request hash 不进入响应、指标或日志，日志最多记录 key 是否存在；
+- record 在 sandbox 非 Terminated 时不得 GC；sandbox Terminated 后再保留至少 24 小时，只有“已终态且终态宽限已过”两个条件同时满足才允许删除。
 
-执行 P3-003 前必须确认。
+P3-003 及后续实现必须遵守上述已冻结语义；如需改变，先重新打开本门禁审查。
 
 ### G4：SQLite migration 与兼容性
 
 Phase 3 会增加 sandbox 列和新表，属于持久化兼容风险。开始 migration 前必须：
 
 - 以 Phase 2 最终 schema 为输入，而不是假设当前 scaffold；
-- 使用新的单调 schema version；
-- migration 在单事务内完成；
-- 旧记录使用明确的 default TTL/retry 值回填；
+- 依次使用 v2 sandbox 字段、v3 idempotency table、v4 anomaly table，版本单调且每版职责唯一；
+- migration 前用 SQLite `VACUUM INTO` 创建一致性备份，备份失败则拒绝启动和升级；
+- migration 使用 `BEGIN IMMEDIATE` 在单事务内完成，并在提交前后校验 schema/version/关键索引；
+- 旧 `DesiredRunning` 记录按 `migration_time + limits.default_ttl` 回填，旧 `DesiredTerminated` 按 `migration_time` 回填，已 observed Terminated 的记录使用 `last_transition_at`；retry/health 清零，origin 为 `api`；
 - migration 前后均可读取旧 sandbox；
 - migration 失败保持旧数据可重试，不半升级；
-- 记录备份和回滚操作说明。
+- 不提供 down migration。Phase 3 产生运行时副作用之前允许停止服务、恢复备份并退回 Phase 2；产生 Phase 3 runtime/Store 变更后只能 forward-fix 或受控 drain，不能直接用旧二进制打开新库。
 
 本文不授权跳过兼容性验证或删除旧数据库。
 
 ### G5：Retry 与 Running 恢复策略
 
-建议：
+冻结：
 
-- retryable create/runtime/runner 错误使用持久化 capped exponential backoff + full jitter；
-- delete、expire 和 `CLEANUP_PENDING` 无限重试到配置上限间隔，不放弃资源；
+- retryable create/runtime/runner 错误使用持久化 capped exponential backoff + full jitter，默认 `retry_min=1s`、`retry_max=1m`；
+- delete、expire 和 `CLEANUP_PENDING` 只对身份完整可信的受管资源无限重试到配置上限间隔，不放弃资源；未知或 drift 资源只记 anomaly；
 - non-retryable spec/image/security 错误保持 Failed，等待 delete；
 - CAS conflict 立即重读，不增加 retry attempt；
 - create/delete/renew 等新用户意图绕过旧 backoff；
-- Running 容器缺失或停止时重新 Ensure；
-- runner 连续健康失败达到阈值后，才删除并重建精确匹配的受管容器；
+- Docker 全局失联时降低 readiness，不对每个 sandbox 各自制造重建风暴；
+- `outbound=false` 的 Running 主容器缺失或停止时复用 Ensure/Start，并保留已验证的 workspace volume；
+- Running 自动恢复新增独立 `ReplaceCompute`/`RecreateRuntime` runtime 操作：只替换主容器、可选 egress sidecar、socket/bootstrap/execution 临时状态，必须保留已验证的 workspace volume 和 `lease.json`；当前完整 `Runtime.Delete` 会删除 workspace，只能用于显式 delete/expire/cleanup，严禁被自动恢复调用；
+- runner 连续 3 次健康失败后先关闭新 execution admission、有界 shutdown，再调用 `ReplaceCompute`；
+- `outbound=true` 的主容器/sidecar/attestation 任一缺失、停止或不健康时，先关闭新 admission 并有界取消当前受管 execution，再按 main → sidecar 移除 compute，随后 sidecar → main 完整重建；绝不单独 Start stopped sidecar；
 - spec drift 永不自动覆盖或删除。
 
-自动重建 Running 容器会影响可用性，执行对应任务前必须确认。
+自动重建 Running compute 会中断当前 execution，因此实现必须显式关闭 admission、有界取消，并以 workspace/lease 保留测试作为验收门。
 
 ### G6：Orphan 策略
 
-建议按安全性分三类：
+在“一个 Docker daemon 只由一个 sandboxd 实例管理”的 Phase 3 不变量下，默认启用 trusted orphan import，并按安全性分三类：
 
-1. 完整、schema 可识别、名称/labels/spec hash/安全 profile 可验证的 orphan container：重建 resolved spec 并导入 Store。
-2. 上述 orphan 已明确过期：先导入为 `DesiredTerminated`，再通过普通 reconcile 删除。
-3. 标签不完整、schema 未知、hash 不符或仅存在 volume/runtime directory：写入持久化 anomaly 清单并告警，不自动导入、停止或删除。
+1. 完整、schema 可识别、名称/labels/spec hash/安全 profile/lease 可验证，且与 outbound spec 一致的未过期 orphan resource bundle：重建 resolved spec，导入为 `origin=recovered_orphan` 和保守的 observed Creating；outbound bundle 必须同时包含共享同一 netns 的主容器和 sidecar。
+2. 上述完整可信 orphan 已明确过期：先导入为 `DesiredTerminated`，再通过普通 reconcile 删除。
+3. 标签不完整、schema 未知、hash/netns 不符、v1 且缺少可信 lease manifest，或仅存在主容器、sidecar、volume/runtime directory：写入持久化 anomaly 清单并告警，不自动导入、停止或删除。
 
-Phase 3 不提供 admin 写接口。任何更激进的 orphan 删除策略都必须另行确认。
+anomaly 只有在一次完整且成功的 inventory 明确确认资源已经不存在后才能 resolved；盘点部分失败不能误消除异常。服务级 `minisandbox-egress` 网络不属于 per-sandbox orphan bundle。Phase 3 不提供 admin 写接口；任何更激进的 orphan 删除策略都必须另行确认。
 
 ### G7：Metrics 与 Admin 访问
 
-建议指标使用 Prometheus exposition，label 只能使用固定低 cardinality enum，禁止 sandbox ID、execution ID、image、error message 或 idempotency key。
+指标使用官方 `github.com/prometheus/client_golang` 和 Prometheus exposition；采用注入的 `prometheus.NewRegistry`，不使用全局/default registry，不默认注册 Go/process collectors。metric 使用 `minisandbox_` 前缀，label 只能使用固定低 cardinality enum，禁止 sandbox ID、execution ID、image、error message 或 idempotency key。
 
-是否引入 `prometheus/client_golang` 必须在 P3-006 的 ADR 中确认；未确认前不修改 `go.mod`。
+SQLite 当前单连接上限为 1，Store-backed gauge 由带 timeout 的周期采样生成原子 snapshot，scrape handler 不直接占用数据库连接。Phase 3 只统计控制面能够准确观察的 execution request、前台 terminal observation 和 runner probe；在没有持久化 runner event/ledger 前，不宣称提供跨 runner、含后台任务的权威 execution 总数。P3-006 负责把已确认选择写成 ADR，P3-082 才引入依赖和修改 `go.mod`。
 
 `/metrics` 和 `/v1/admin/**`：
 
-- 默认关闭；
+- `admin.enabled=false` 时不读取 token file、不注册路由，对外自然返回 404；
 - 复用现有 server listener，不新增公网端口；
-- 必须配置独立 admin token file；
-- server 非 loopback 且未显式允许时拒绝启动；
+- 启用后 `token_file` 必填，缺失、无效或读取失败都阻止启动；默认配置中的 `token_file` 为空；
+- token file 必须是绝对路径的 owner-owned、regular、non-symlink 文件，权限不宽于 `0600`；内容是至少 256 bit 的 base64url token；只接受一个 Bearer header，比较摘要时使用 constant-time，且 token 不进入日志、错误或 config dump；
+- token 启动时只读一次，轮换通过重启完成；
+- 当前全局 server listener 已强制 loopback，不增加 `allow_non_loopback`。未来远程 admin 必须单独设计 listener/mTLS 和威胁模型，不能由一个布尔开关放宽；
 - diagnostics 不返回原始 Docker logs、命令、env、token 或宿主机绝对路径。
 
 ### G8：Crash 与时间测试环境
@@ -292,6 +305,7 @@ Content-Type: application/json
 |---|---:|---:|---|
 | `INVALID_TTL` | 400 | false | create TTL 不在允许范围 |
 | `INVALID_EXPIRATION` | 400 | false | renew 时间格式或范围非法 |
+| `LEASE_CONFLICT` | 409 | false | renew 试图缩短租约或并发者已经写入更晚值 |
 | `SANDBOX_EXPIRING` | 409 | false | 删除/到期已提交，不能续期 |
 | `IDEMPOTENCY_CONFLICT` | 409 | false | 同 key 对应不同请求 |
 | `SANDBOX_LIMIT_REACHED` | 429 | true | active sandbox 达到上限 |
@@ -338,7 +352,6 @@ status_code
 location
 response_json
 created_at
-expires_at
 PRIMARY KEY(scope_id, idempotency_key)
 ```
 
@@ -363,6 +376,10 @@ resolved_at
 - renew、expire、observed/retry 更新均使用 revision CAS；
 - anomaly fingerprint 只由安全标识和 hash 组成；
 - 不增加无限增长的 reconcile history 表。
+
+Schema 从 Phase 2 v1 依次迁移为 v2（sandbox lease/retry/origin）、v3（idempotency）和 v4（anomaly）。打开旧库时，先在同目录受限备份位置使用 `VACUUM INTO` 生成一致性备份；备份失败则保持 not ready 并拒绝升级。每一版通过 `BEGIN IMMEDIATE`、schema/index 校验和单次 version commit 完成，失败后旧库仍可重试。
+
+v1 backfill 使用一次注入的 `migration_time`：`DesiredRunning` 的 `expires_at=migration_time+limits.default_ttl`，`DesiredTerminated` 的 `expires_at=migration_time`，已 observed Terminated 的记录使用原 `last_transition_at`；retry/health 清零且 `origin=api`。不提供 down migration；只有尚未产生 Phase 3 runtime/Store 副作用时，才允许停机恢复备份并回到 Phase 2，之后必须 forward-fix 或受控 drain。
 
 ### 5.4 周期 Reconcile
 
@@ -410,8 +427,10 @@ next_reconcile_at = now + delay
 - 成功收敛时 attempt 清零、next 置空；
 - non-retryable error 不设 next；
 - delete、expire、cleanup pending 永远可重试，间隔最多 retry_max；
+- must-converge cleanup 仅能作用于名称、labels、schema、spec hash 和资源关系均可信的受管资源；未知或 drift 资源进入 anomaly，不因“必须清理”而放宽身份校验；
 - CAS conflict、context shutdown 和 worker 未取得 semaphore 不计业务 attempt；
 - 新 delete/renew/create recovery 意图可把 next 提前到 now；
+- Docker 全局不可用时 readiness 降级，scanner/worker 共享 dependency health gate，避免为所有 sandbox 同时增加 attempt 或触发重建风暴；
 - 日志记录 attempt、delay_ms 和 error code，不记录底层 error 文本。
 
 ### 5.6 并发与 Admission
@@ -450,6 +469,8 @@ Docker expires-at label      # 创建时快照，最后兜底
 内存 min-heap/timer          # 唤醒优化
 ```
 
+Phase 3 创建的 Docker 资源使用 label schema v2；reader 同时识别 v1/v2，但不改写 v1 label。v1 orphan 只有在 `lease.json` 身份、spec hash 和租约都可验证时才能导入，否则进入 anomaly。Store 存在时，任何 label 或 manifest 都不能反向覆盖 Store。
+
 创建时：
 
 1. 校验 `ttl_seconds`。
@@ -460,22 +481,25 @@ Docker expires-at label      # 创建时快照，最后兜底
 续期时：
 
 1. 读取最新 record。
-2. 验证 desired 仍为 Running。
-3. 验证新值只延长且不超过 `now + max_ttl`。
-4. CAS 更新 expires、revision，并把 reconcile 时间提前到 now。
-5. upsert 新 heap entry。
-6. reconciler 原子更新固定 `lease.json`；不尝试修改不可变 container labels。
+2. 验证 desired 仍为 Running 且 `now < expires_at`；已到期但尚未被 scanner 处理的租约同样拒绝续期。
+3. 新值等于当前值时返回当前 sandbox，作为不修改 revision、heap 或 manifest 的 `200` 幂等 no-op。
+4. 新值早于当前值返回 `409 LEASE_CONFLICT`；更晚值还必须位于 `now + minimum_ttl` 与 `now + maximum_ttl` 的闭区间内。
+5. CAS 更新 expires、revision，并把 reconcile 时间提前到 now。
+6. upsert 新 heap entry。
+7. reconciler 原子更新固定 `lease.json`；不尝试修改不可变 container labels。
 
-timer 触发时携带 `(sandboxID, expectedRevision, expectedExpiresAt)`：
+timer 触发时携带 `(sandboxID, expectedExpiresAt)`：
 
 - 重读 Store；
-- revision 或 expires 不同则该 timer 失效，并为当前值重建 entry；
+- expires 不同则该 timer 失效，并为当前值重建 entry；无关 observed/retry revision 变化不会误使当前租约 timer 失效；
 - 尚未到期则重建；
 - 已到期则 CAS desired 为 Terminated；
 - CAS 冲突重新读取，不直接删除 Docker；
 - 成功后 Wake，复用正常 delete。
 
 周期 scanner 同时查询已过期记录，保证 heap/timer 全部丢失仍能回收。
+
+`lease.json` 固定小于等于 1 KiB，只包含 `schema_version`、`sandbox_id`、`spec_hash`、`expires_at` 和 `projected_store_revision`。reader 拒绝未知字段、symlink、非 regular file、owner 不符或 mode 宽于 `0600`；writer 使用同目录 temp、file fsync、rename 和 directory fsync，崩溃后只能观察到旧完整文件或新完整文件。
 
 ### 5.8 Idempotency
 
@@ -489,6 +513,8 @@ resource/workspace options
 ttl_seconds
 其他真实支持的创建字段
 ```
+
+canonical model 必须保留字段 presence。会受服务端默认变化影响的缺失字段编码显式 absent sentinel，不能先填入当前默认值再参与 hash；因此同一原始客户端请求在服务端默认调整后仍然命中原 idempotency record。canonical bytes 使用固定字段顺序和 contract version，SHA-256 输入带 `minisandbox:create:v1` 域分离前缀。
 
 不包含：
 
@@ -514,6 +540,8 @@ COMMIT
 
 响应写失败不回滚已提交事务。客户端使用同一 key 重试时得到首次存储的 `202`、Location 和 body。
 
+只有已接受并提交的 `202` 写入 idempotency table。重放请求生成新的 request ID，但不能改写保存的 status、Location、body 或记录时间。GC 必须 join sandbox 状态：sandbox 非 Terminated 时永不删除；Terminated 后至少等待 24 小时，只有终态宽限已过才可复用原 key。
+
 ### 5.9 启动恢复
 
 启动顺序：
@@ -522,10 +550,10 @@ COMMIT
 not ready
   → open/migrate Store
   → validate artifacts/config/secrets
-  → Docker ping + ensure managed network
-  → inventory containers/volumes/runtime directories
+  → Docker ping + Ensure/validate managed minisandbox-egress network + image configuration
+  → inventory main/egress containers、volumes、runtime directories
   → reconcile Store records with actual resources
-  → import trusted orphan containers
+  → import trusted orphan resource bundles
   → record ambiguous anomalies
   → rebuild TTL heap
   → enqueue due candidates
@@ -538,23 +566,24 @@ Recovery 只能提交持久化结果或 Wake；不在 inventory loop 内执行�
 
 ### 5.10 Store 与 Docker 对账
 
-| Store | Actual resource | 行为 |
+| Store | Actual resource aggregate | 行为 |
 |---|---|---|
-| desired Running | 完整且 hash 匹配 | 恢复 runtime metadata，Wake 后 Ensure/probe |
-| desired Running | 缺失/部分存在 | 标记 recovering，Wake 重建或补齐 |
+| desired Running | 与 outbound spec 一致、主容器/可选 sidecar 完整且 hash 匹配 | 恢复 runtime metadata，Wake 后 Ensure/probe |
+| desired Running | none 模式主容器缺失/stopped | 保留已验证 workspace/lease，幂等 Ensure/Start compute |
+| desired Running | outbound 主容器或 sidecar 缺失/stopped/unhealthy | 标记 recovering，先停止接收并取消当前受管 execution，再以 `ReplaceCompute` 按 main → sidecar 移除、sidecar → main 重建；保留 workspace/lease，不得调用完整 Delete 或单独 Start sidecar |
 | desired Terminated | 任意受管资源存在 | Wake 删除 |
 | Terminated | 资源不存在 | 不变 |
 | Terminated | 资源仍存在 | Wake 删除，不复活 |
 | 任意 | hash/profile drift | Failed/SPEC_DRIFT，不覆盖实际资源 |
-| 无 Store | 完整可信 container | 重建 spec，导入后正常 reconcile |
+| 无 Store | 与 outbound spec 一致的完整可信主容器/可选 sidecar bundle | 重建 spec，导入后正常 reconcile |
 | 无 Store | 完整可信且已过期 | 导入 DesiredTerminated 后删除 |
-| 无 Store | 不完整/未知/仅 volume/dir | anomaly 隔离清单，只告警 |
+| 无 Store | 不完整/未知/仅主容器/仅 sidecar/仅 volume/dir | anomaly 隔离清单，只告警 |
 
 恢复 runtime ID 或导入记录都使用事务和唯一约束，重复启动结果一致。
 
 ### 5.11 Orphan 与 Anomaly
 
-可信 orphan container 必须同时满足：
+可信 orphan resource bundle 必须同时满足：
 
 - 精确 managed label；
 - 已知 schema/protocol version；
@@ -564,18 +593,22 @@ Recovery 只能提交持久化结果或 Wake；不在 inventory loop 内执行�
 - 重算 spec hash 与 label 一致；
 - security profile 没有 privileged、host namespace、Docker socket、任意 bind 或额外 port；
 - workspace volume 和 runtime directory 的身份一致。
+- `network.outbound=false` 时没有 egress sidecar；`true` 时恰好一个主容器和一个 sidecar，resource role、runner/egress protocol、policy hash、netns identity、实际共享 namespace 与 `RestartPolicy=no` 全部一致。
+- label schema v1 的 orphan 必须有可信 `lease.json`；缺失时无法证明当前 expiry，只能进入 anomaly。
 
-任一条件不满足即写 anomaly。anomaly 记录允许被后续 observation 更新或标记 resolved，但不包含原始 inspect JSON。
+任一条件不满足即写 anomaly。anomaly 记录允许被后续 observation 更新；只有一次覆盖全部资源类型且没有 partial error 的完整 inventory 明确确认资源已不存在时才能标记 resolved。记录不包含原始 inspect JSON，服务级 `minisandbox-egress` 网络不进入 per-sandbox orphan 分类。
 
 ### 5.12 Running Drift 恢复
 
-周期检查 Running record：
+周期检查 Running record 及其主容器/可选 egress sidecar 聚合资源：
 
-- container 不存在：进入 `RECOVERING_RUNTIME` 并重新 Ensure；
-- container stopped：幂等 Start，再 probe；
+- `outbound=false` 的主容器不存在或 stopped：进入 `RECOVERING_RUNTIME` 并按既有 Ensure/Start 语义恢复；
+- 所有自动恢复都必须保留身份已验证的 workspace volume 和 `lease.json`；新增 `ReplaceCompute`/`RecreateRuntime` runtime 端口只清理主容器、可选 sidecar、runner socket/bootstrap/execution 临时状态，当前会删除 volume/runtime directory 的完整 `Runtime.Delete` 只用于显式 delete/expire/cleanup；
+- `outbound=true` 的主容器或 sidecar 不存在、stopped、attestation/protocol/policy/netns unhealthy：先关闭新 admission 并有界取消当前受管 execution，精确验证后由 `ReplaceCompute` 按 main → sidecar 移除现有 compute，再通过 sidecar → main 正常 bootstrap 完整重建；
+- 禁止单独 Start stopped sidecar，因为原进程内的 bootstrap 状态和 attestation 已丢失，且新 namespace 不能热替换到现有主容器；
 - labels/spec/security profile drift：`SPEC_DRIFT`，不自动修正；
 - runner 单次 probe 失败：保持 Running，增加连续失败计数并记录 degraded；
-- 达到阈值：精确验证资源身份后删除容器并重新 Ensure；
+- 连续 3 次失败达到阈值：关闭新 admission、有界 shutdown 后执行 `ReplaceCompute`；
 - probe 成功：失败计数清零。
 
 删除/续期意图在 keyed lock 和最新 record 检查后优先于 recovery，不能被旧 health result 覆盖。
@@ -600,22 +633,25 @@ error_code
 指标至少包括：
 
 ```text
-sandbox_create_total{result}
-sandbox_create_duration_seconds
-sandbox_state_count{state}
-sandbox_reconcile_total{result}
-sandbox_reconcile_duration_seconds
-sandbox_retry_scheduled_total{operation,error_code}
-sandbox_cleanup_pending
-sandbox_expired_total
-sandbox_orphan_total{classification}
-execution_total{result}
-execution_duration_seconds
-execution_output_bytes{stream}
-runtime_docker_errors_total{operation}
+minisandbox_sandbox_create_requests_total{result}
+minisandbox_sandbox_create_duration_seconds
+minisandbox_sandbox_state_count{state}
+minisandbox_reconcile_total{operation,result}
+minisandbox_reconcile_duration_seconds{operation}
+minisandbox_retry_scheduled_total{operation,error_code}
+minisandbox_cleanup_pending
+minisandbox_lease_expired_total
+minisandbox_orphan_observations_total{classification}
+minisandbox_runtime_docker_operations_total{operation,result}
+minisandbox_execution_requests_total{mode,result}
+minisandbox_execution_foreground_terminal_observed_total{result}
+minisandbox_runner_probe_total{result}
+minisandbox_metrics_snapshot_age_seconds
 ```
 
-禁止把 ID、image、URL、message、key 或用户 metadata 放入 metric labels。
+使用 `github.com/prometheus/client_golang`、自建 `prometheus.NewRegistry` 和依赖注入的 collector；不使用全局/default registry，也不默认注册 Go/process collectors。禁止把 ID、image、URL、message、key 或用户 metadata 放入 metric labels。
+
+Store-backed gauge 由后台周期采样器使用短 timeout 生成不可变原子 snapshot；`/metrics` scrape 不直接查询单连接 SQLite。execution 指标名称刻意区分“控制面收到请求”和“前台代理观察到 terminal”；在 runner 没有持久化 event/ledger 前，不把后台 execution 或 runner 重启前事件伪装为单调、权威的全局总数。
 
 只读 diagnostics：
 
@@ -675,14 +711,9 @@ observed Terminated CAS
 建议增加：
 
 ```yaml
-lifecycle:
-  default_ttl: "1h"
-  min_ttl: "1m"
-  max_ttl: "24h"
-
 idempotency:
   max_key_bytes: 128
-  retention: "24h"
+  terminal_retention: "24h"
   gc_interval: "10m"
 
 reconcile:
@@ -698,6 +729,9 @@ reconcile:
   docker_freshness: "30s"
 
 limits:
+  default_ttl: "30m"
+  minimum_ttl: "1m"
+  maximum_ttl: "24h"
   max_sandboxes: 100
   max_concurrent_creates: 4
   max_concurrent_image_pulls: 2
@@ -709,11 +743,10 @@ recovery:
 
 admin:
   enabled: false
-  token_file: "/etc/minisandbox/admin-token"
-  allow_non_loopback: false
+  token_file: ""
 ```
 
-所有 duration、count、阈值、路径和组合关系在启动时验证。普通 API 请求不能扩大服务端上限；无效安全配置必须阻止启动。
+所有 duration、count、阈值、路径和组合关系在启动时验证。`admin.enabled=false` 时忽略且不读取空 token path；启用时 token path 和 secret file 必须通过 G7 校验。server listener 继续使用现有 loopback-only 约束，不增加 admin 放宽开关。普通 API 请求不能扩大服务端上限；无效安全配置必须阻止启动。
 
 ## 7. 每个任务的完成标准
 
@@ -752,7 +785,7 @@ commit SHA
 | A. 契约、配置与 Store 扩展 | P3-000～P3-015 | 冻结 TTL/renew/idempotency/admin 契约和持久化基础 |
 | B. Idempotency 与 Admission | P3-016～P3-027 | 原子重放、冲突、retention 和 maxSandboxes |
 | C. 周期 Reconcile、Retry 与并发 | P3-028～P3-045 | scanner、持久化退避、worker pool 和 operation limits |
-| D. TTL 与 Renew | P3-046～P3-059 | lease truth、heap、旧 timer、续期和 label projection |
+| D. TTL 与 Renew | P3-046～P3-059 | lease truth、heap、旧 timer、续期和 lease projection |
 | E. Recovery、Orphan 与 Drift | P3-060～P3-075 | 全资源对账、可信导入、anomaly 和 Running 恢复 |
 | F. 可观测性与诊断 | P3-076～P3-090 | 日志、指标、admin diagnostics 和持续 readiness |
 | G. Crash/Concurrency 验收 | P3-091～P3-105 | crash point、TTL、idempotency、orphan、文档和最终报告 |
@@ -775,7 +808,7 @@ commit SHA
 
 - **依赖**：P3-000、G2。
 - **唯一目标**：向 create request 增加可选 `ttl_seconds`，向 sandbox response 增加必填 `expires_at`。
-- **设计**：wire 秒数使用正整数；缺失由服务端默认；response 使用 RFC3339 UTC；外部 request 不接受绝对 create expiry。
+- **设计**：wire 秒数使用正整数；缺失使用现有 `limits.default_ttl=30m`；允许范围复用 `limits.minimum_ttl=1m` 与 `limits.maximum_ttl=24h`；response 使用 RFC3339 UTC；外部 request 不接受绝对 create expiry。
 - **修改范围**：lifecycle OpenAPI、`pkg/protocol`、Go SDK model 和 fixtures。
 - **测试**：缺失、min/max、零、负值、超限、JSON round trip 和 SDK duration mapping。
 - **验收**：旧客户端不传 TTL 仍可创建，所有成功 sandbox 都返回 expires_at。
@@ -785,7 +818,7 @@ commit SHA
 
 - **依赖**：P3-001、G2。
 - **唯一目标**：定义 `POST /v1/sandboxes/{id}/renew` 的 request、response 和 HTTP 语义。
-- **设计**：只接受 `expires_at`；成功 200；不存在 404；已删除/到期 409；非法时间 400；响应复用公共 sandbox model。
+- **设计**：只接受 `expires_at`；延长成功 200；等于当前值为 200 幂等 no-op；缩短为 `409 LEASE_CONFLICT`；不存在 404；已删除或 `now>=expires_at` 为 409；格式/服务端边界非法为 400；响应复用公共 sandbox model。
 - **修改范围**：lifecycle OpenAPI、protocol、Go SDK facade 和 contract fixtures。
 - **测试**：成功、非法时间、未知字段、时区归一化、404/409 fixtures。
 - **验收**：SDK 不需要拼私有 path，wire 和 Go 时间类型转换无损。
@@ -795,7 +828,7 @@ commit SHA
 
 - **依赖**：P3-000、G3。
 - **唯一目标**：定义 create header、重放响应和冲突错误。
-- **设计**：key 为 1～128 个允许字符；相同 hash 精确重放 202/Location/body；不同 hash 为 409；响应不回显 key。
+- **设计**：key 为 1～128 个允许字符；单租户 scope 固定为 `local:v1`；相同 hash 精确重放首次 202/Location/body，但使用本次新 request ID；不同 hash 为 409；只保存已接受 202；响应不回显 key。
 - **修改范围**：OpenAPI header、错误 code、SDK create options 和 fixtures。
 - **测试**：合法边界、非法字符、重复 header、same/conflict replay fixture。
 - **验收**：contract 明确无 key 仍是非幂等创建。
@@ -824,8 +857,8 @@ commit SHA
 ### P3-006：确定 metrics 格式与依赖
 
 - **依赖**：P3-000、G7。
-- **唯一目标**：用 ADR 决定 Prometheus exposition 的实现方式和固定 metric/label contract。
-- **设计**：比较标准库小型 registry 与 `prometheus/client_golang`；记录版本、transitive dependencies、license、维护性、并发和测试策略；推荐项需用户确认。
+- **唯一目标**：用 ADR 固化已确认的官方 `prometheus/client_golang` 选择和固定 metric/label contract。
+- **设计**：记录版本选择规则、transitive dependencies、license、维护性、并发和测试策略；固定 `prometheus.NewRegistry`、无默认 Go/process collectors、`minisandbox_` 前缀、低 cardinality labels、Store 周期原子 snapshot，以及“execution 请求/前台 terminal observation 不是后台任务权威总账”的边界。
 - **修改范围**：新增 Phase 3 metrics ADR，不修改 `go.mod`。
 - **测试**：无代码测试；核对 metric 名、type、bucket 和 label cardinality。
 - **验收**：每个 metric 的 type、labels、单位和更新位置唯一明确。
@@ -845,7 +878,7 @@ commit SHA
 
 - **依赖**：P3-001～P3-003、P3-005。
 - **唯一目标**：为 lease、idempotency retention、orphan policy 和 admin access 增加 typed config。
-- **设计**：admin 默认关闭；token 只引用 secret file；trusted orphan import 使用明确 boolean；不提供“删除所有 orphan”开关。
+- **设计**：TTL 复用现有 `limits.default_ttl`/`maximum_ttl` 并只新增 `minimum_ttl`；admin 默认关闭且默认 token path 为空；token 只引用 secret file；trusted orphan import 默认 true；不提供“删除所有 orphan”或 `allow_non_loopback` 开关。
 - **修改范围**：config model、defaults、example YAML 和注释。
 - **测试**：默认值、显式值、secret 字段不进入普通 config dump。
 - **验收**：配置模型没有 raw token、用户 Docker network 或任意 orphan action。
@@ -855,7 +888,7 @@ commit SHA
 
 - **依赖**：P3-007、P3-008。
 - **唯一目标**：启动前拒绝无界、矛盾或不安全的 Phase 3 配置。
-- **设计**：校验 min/default/max TTL；retry min/max；jitter 不大于 interval；page/worker/semaphore 正数；threshold；retention；admin token path；non-loopback admin gate。
+- **设计**：校验 min/default/max TTL；retry min/max；jitter 不大于 interval；page/worker/semaphore 正数；threshold；terminal retention；admin disabled 时不要求也不读取 token path，enabled 时要求非空绝对路径；server 继续复用既有 loopback-only 校验。
 - **修改范围**：config validator。
 - **测试**：每条规则一个 table case，包含边界和组合错误。
 - **验收**：无效可靠性或 admin 配置阻止启动，不静默改成宽松值。
@@ -864,8 +897,8 @@ commit SHA
 ### P3-010：迁移 sandbox lease 与 retry 字段
 
 - **依赖**：P3-009、G4。
-- **唯一目标**：在下一 schema version 中为现有 sandbox 增加 expires/retry/health/origin 字段。
-- **设计**：单事务 migration；旧 active record 按 migration clock + default TTL 回填；Terminated 记录也保留确定 expiry；retry 默认清零；origin 默认 api。
+- **唯一目标**：在 schema v2 中为现有 sandbox 增加 expires/retry/health/origin 字段，并建立可恢复的升级边界。
+- **设计**：升级前 `VACUUM INTO` 一致性备份，失败则不迁移；`BEGIN IMMEDIATE` 单事务 migration；`DesiredRunning` 按 migration clock + 现有 30m default TTL 回填，`DesiredTerminated` 使用 migration clock，已 observed Terminated 使用 `last_transition_at`；retry/health 清零、origin=api；提交前后校验 schema/version/index；记录只允许“Phase 3 副作用前恢复备份回退 Phase 2”的操作边界。
 - **修改范围**：SQLite migration 和 row schema。
 - **测试**：Phase 2 fixture 升级、空库、重复打开、每个旧状态、migration 中断回滚。
 - **验收**：旧记录 spec/revision/runtime/state 不丢失，升级后全部字段可读取。
@@ -874,8 +907,8 @@ commit SHA
 ### P3-011：迁移 idempotency records 表
 
 - **依赖**：P3-003、P3-010。
-- **唯一目标**：增加带 scope/key 唯一约束和 sandbox 外键语义的 idempotency table。
-- **设计**：response JSON 有 byte limit；时间 UTC；不级联删除 sandbox；key/hash 使用受限 text；索引支持 expiry GC。
+- **唯一目标**：在 schema v3 增加带 scope/key 唯一约束和 sandbox 外键语义的 idempotency table。
+- **设计**：response JSON 有 byte limit；时间 UTC；不级联删除 sandbox；key/hash 使用受限 text；索引支持按 sandbox 终态和 `last_transition_at` 执行 terminal-retention GC，不使用从 create 起算的固定 expiry。
 - **修改范围**：SQLite migration。
 - **测试**：唯一冲突、相同 key 不同 scope、response limit、sandbox Terminated 后记录保留、重复 migration。
 - **验收**：表不含 Authorization、raw request 或 secret 字段。
@@ -884,7 +917,7 @@ commit SHA
 ### P3-012：迁移 runtime anomalies 表
 
 - **依赖**：P3-010、G6。
-- **唯一目标**：增加可去重、可更新和可标记 resolved 的安全 anomaly 表。
+- **唯一目标**：在 schema v4 增加可去重、可更新和可标记 resolved 的安全 anomaly 表。
 - **设计**：resource key 唯一；classification enum；safe fingerprint 固定长度；observation count 有界；无 raw JSON/BLOB。
 - **修改范围**：SQLite migration。
 - **测试**：insert/upsert/resolve、非法 enum、重复 key、关闭重开。
@@ -927,7 +960,7 @@ commit SHA
 
 - **依赖**：P3-001、P3-003。
 - **唯一目标**：把客户端创建语义映射为字段顺序固定、与运行时对象解耦的 canonical model。
-- **设计**：显式列出所有受支持字段；image 采用 contract 定义的规范化；缺失可选值映射为稳定语义值；map 按 key 排序；包含 API contract version。
+- **设计**：显式列出所有受支持字段；image 采用 contract 定义的规范化；会受服务端默认影响的可选字段保留 presence 并编码显式 absent sentinel，不能填入当前默认值；map 按 key 排序；包含 API contract version。
 - **修改范围**：application idempotency canonicalizer。
 - **测试**：字段顺序、JSON map 顺序、等价 image/boolean/TTL、未知字段不可能进入。
 - **验收**：语义相同请求得到逐字节相同 canonical encoding。
@@ -947,7 +980,7 @@ commit SHA
 
 - **依赖**：P3-003。
 - **唯一目标**：把可选 header 转为受限 `(scopeID, key)`。
-- **设计**：拒绝空值、重复 header、非法字符和超长；当前 scope 从 authenticated principal port 取得，单租户默认为固定非空值；日志只记录 key 是否存在和安全 hash 前缀。
+- **设计**：拒绝空值、重复 header、非法字符和超长；当前单租户 scope 固定为 `local:v1`，未来再由 authenticated principal port 替换；日志只记录 key 是否存在，不记录 raw key 或其可关联 hash 前缀。
 - **修改范围**：API middleware/application option mapper。
 - **测试**：字符/长度边界、重复 header、不同 scope、日志 redaction。
 - **验收**：raw key 不出现在 error、log、metric 或 response。
@@ -957,7 +990,7 @@ commit SHA
 
 - **依赖**：P3-011、P3-014、P3-017、P3-018。
 - **唯一目标**：新 key 第一次请求在一个 SQLite transaction 中创建两个 record。
-- **设计**：`BEGIN IMMEDIATE`；先查 key，再进行 admission；生成 sandbox/expires/response 后插入 sandbox 和 idempotency；任一步失败全部回滚。
+- **设计**：`BEGIN IMMEDIATE`；先查 key，再进行 admission；生成 sandbox/expires/response 后插入 sandbox 和 idempotency；只保存已接受的 `202`；任一步失败全部回滚。
 - **修改范围**：Store `CreateIdempotent` 和 SQLite adapter。
 - **测试**：成功、sandbox insert 失败、idempotency insert 失败、commit 失败、关闭重开。
 - **验收**：数据库中不可能只存在 sandbox 或只存在 idempotency record。
@@ -967,7 +1000,7 @@ commit SHA
 
 - **依赖**：P3-019。
 - **唯一目标**：已有 scope/key/hash 返回首次保存的 status、Location 和 body，不新建 sandbox。
-- **设计**：读取 record 后校验 response byte limit 和 schema version；response 使用保存值而非当前 sandbox 状态；重放不更新 record expiry。
+- **设计**：读取 record 后校验 response byte limit 和 schema version；response 使用保存值而非当前 sandbox 状态；HTTP status、Location 和 body 精确重放，request ID 使用本次请求的新值；重放不延长 retention。
 - **修改范围**：Store replay result 与 application branch。
 - **测试**：Pending 后 replay、Running 后 replay、Terminated 后 replay、重启后 replay。
 - **验收**：四种场景返回相同 sandbox ID 和首次响应 bytes，sandbox 总数不变。
@@ -1026,11 +1059,11 @@ commit SHA
 ### P3-026：清理过期 idempotency records
 
 - **依赖**：P3-008、P3-011。
-- **唯一目标**：按 retention 分页删除已过期 idempotency record，限制表增长。
-- **设计**：Store 权威 now 参数；按 `(expires_at, scope_id, key)` 有界 batch；不删除 sandbox；失败下轮重试；GC 使用 server lifetime context。
+- **唯一目标**：只清理“sandbox 已 Terminated 且终态宽限已过”的 idempotency record，限制表增长又不破坏长租约幂等性。
+- **设计**：Store 权威 now 参数；join sandbox terminal state/`last_transition_at`，按稳定 key 有界 batch；非 Terminated 永不删除，Terminated 后至少保留 24h；不删除 sandbox；失败下轮重试；GC 使用 server lifetime context。
 - **修改范围**：Store delete-expired method 和 idempotency GC loop。
 - **测试**：未过期/过期、分页、并发 replay、删除失败、shutdown、race。
-- **验收**：过期前可重放；过期删除后相同 key 可作为新请求；sandbox record 不受影响。
+- **验收**：sandbox 活跃多久都可重放；Terminated 后宽限内仍可重放；宽限后删除才允许相同 key 成为新请求；sandbox record 不受影响。
 - **本任务不做**：不删除 Terminated sandbox，不做 vacuum。
 
 ### P3-027：装配 idempotent create 到 API 与 SDK
@@ -1219,11 +1252,11 @@ commit SHA
 
 - **依赖**：P3-007、P3-028、P3-031、P3-044。
 - **唯一目标**：周期更新 Store/Docker freshness，并驱动 `/readyz` 自动降级与恢复。
-- **设计**：轻量 Store probe 和 Docker Ping 有独立 timeout；保存最近成功时间和安全错误类别；超过 freshness 才 not ready；单 sandbox failure 不影响全局。
+- **设计**：轻量 Store probe 和 Docker Ping 有独立 timeout；保存最近成功时间和安全错误类别；超过 freshness 才 not ready；Docker 全局 outage 关闭 runtime operation gate，避免每个 sandbox 各自增加 attempt 或重建；单 sandbox failure 不影响全局。
 - **修改范围**：dependency health monitor 与 readiness wiring。
 - **测试**：成功、短暂失败、过 freshness、恢复、shutdown、fake clock、race。
 - **验收**：Docker 长时间不可用时 ready=false，恢复后无需重启即可 ready=true。
-- **本任务不做**：不检查单个 Running container 或 runner。
+- **本任务不做**：不检查单个 Running 聚合资源、egress 或 runner。
 
 ### D. TTL 与 Renew
 
@@ -1250,8 +1283,8 @@ commit SHA
 ### P3-048：实现 TTL heap 的 entry 与幂等 upsert
 
 - **依赖**：P3-028。
-- **唯一目标**：在内存 min-heap 中按 sandbox ID 保存最新 `(revision, expires)` entry。
-- **设计**：ID 到 heap index map；upsert 替换旧值并 fix；remove 幂等；相同 revision/expiry no-op；不保存完整 Sandbox。
+- **唯一目标**：在内存 min-heap 中按 sandbox ID 保存最新 `expected_expires_at` entry。
+- **设计**：ID 到 heap index map；upsert 替换旧 expiry 并 fix；remove 幂等；相同 expiry no-op；不保存整个 sandbox revision 或完整 Sandbox。
 - **修改范围**：`internal/reconcile` TTL heap。
 - **测试**：插入、提前/延后、替换、删除、相同值、稳定 tie-break、大量 ID、race。
 - **验收**：每个 ID 最多一个 entry，peek 始终是最早 expiry。
@@ -1267,13 +1300,13 @@ commit SHA
 - **验收**：不为每个 sandbox 创建 goroutine/timer，时间推进可完全由 fake clock 控制。
 - **本任务不做**：不判断 record 是否真的到期，不写 desired state。
 
-### P3-050：使旧 revision timer 安全失效
+### P3-050：使旧 expiry timer 安全失效
 
 - **依赖**：P3-014、P3-049。
-- **唯一目标**：timer callback 重读 Store 并拒绝对 revision/expires 已变化的 entry 执行动作。
-- **设计**：not found/Terminated 移除；revision 或 expires 不匹配时 upsert 当前值；当前 now 尚早也重排；Store error 留待 scanner/下一 retry。
+- **唯一目标**：timer callback 重读 Store，并拒绝对 `expires_at` 已变化的 entry 执行动作，同时不受无关 revision 更新干扰。
+- **设计**：not found/Terminated 移除；expires 不匹配时 upsert 当前值；相同 expiry 即使 observed/retry revision 已变化仍可继续校验；当前 now 尚早也重排；Store error 留待 scanner/下一 retry。
 - **修改范围**：TTL due-entry validator。
-- **测试**：renew 后旧 entry、普通 observed revision 变化、尚未到期、deleted/not found、Store error。
+- **测试**：renew 后旧 entry、普通 observed/retry revision 变化但 expiry 相同、尚未到期、deleted/not found、Store error。
 - **验收**：旧 timer 不能提交删除意图，且当前租约仍有新 entry。
 - **本任务不做**：不执行 expire CAS。
 
@@ -1300,10 +1333,10 @@ commit SHA
 ### P3-053：校验 renew 请求语义
 
 - **依赖**：P3-002、P3-008、P3-028。
-- **唯一目标**：验证绝对 expires 只延长当前租约且不超过服务端上限。
-- **设计**：严格 RFC3339；转 UTC；要求新值 > current；要求新值 > now 且 <= now+maxTTL；desired 必须 Running；不使用客户端 clock。
+- **唯一目标**：验证绝对 expires 的延长、幂等 no-op、已过期和服务端边界语义。
+- **设计**：严格 RFC3339 后转 UTC；`now>=current` 或 desired 非 Running 时拒绝；新值等于 current 返回 no-op，新值更早返回 `LEASE_CONFLICT`，更晚值必须在 `now+minimumTTL` 与 `now+maximumTTL` 闭区间内；不使用客户端 clock。
 - **修改范围**：application renew validator。
-- **测试**：相等、缩短、过去、最大边界、overflow、非 Running、时区。
+- **测试**：相等 no-op、缩短 conflict、尚未扫描的已过期租约、minimum/maximum 边界、overflow、非 Running、时区。
 - **验收**：非法 renew 不修改 revision、heap、manifest 或 WakeQueue。
 - **本任务不做**：不执行 Store CAS。
 
@@ -1311,7 +1344,7 @@ commit SHA
 
 - **依赖**：P3-014、P3-039、P3-053。
 - **唯一目标**：通过有限 CAS retry 让并发续期最终保留最大合法 expires。
-- **设计**：读→校验→Renew CAS；冲突重读；如果竞争者已写入更晚值，较早请求返回 INVALID_EXPIRATION/已满足的明确 contract；限制 retry 次数防 hot loop。
+- **设计**：读→校验→Renew CAS；相等直接返回当前值且不写 revision；冲突重读；如果竞争者已写入请求的同一值则返回幂等成功，写入更晚值则当前较早请求返回 `LEASE_CONFLICT`；delete/expire intent 永远优先；限制 retry 次数防 hot loop。
 - **修改范围**：application renew use case。
 - **测试**：成功、并发早/晚值、delete 竞争、expire 竞争、冲突上限。
 - **验收**：最终 expires 不倒退，DesiredTerminated 一旦成功不能被 renew 覆盖。
@@ -1340,10 +1373,10 @@ commit SHA
 ### P3-057：定义并原子写入 lease manifest
 
 - **依赖**：P3-010、Phase 1 runtime directory。
-- **唯一目标**：把最新租约投影为固定、安全、可原子替换的 `lease.json`。
-- **设计**：字段只含 version、sandbox ID、spec hash、revision、expires；同目录 temp+fsync+rename；no-follow；regular file；mode 0600；父目录 fsync；不接受请求路径。
+- **唯一目标**：冻结 label schema v2/双版本 reader，并把最新租约投影为固定、安全、可原子替换的 `lease.json`。
+- **设计**：Phase 3 新资源写 v2 label、reader 双读 v1/v2 且绝不原地改写 v1；manifest 小于等于 1 KiB，严格字段只含 `schema_version`、`sandbox_id`、`spec_hash`、`expires_at`、`projected_store_revision`；拒绝未知字段；同目录 temp+file fsync+rename+parent fsync；no-follow regular file；owner-only mode 0600；不接受请求路径。
 - **修改范围**：runtime lease manifest codec/writer。
-- **测试**：round trip、partial write、rename/fsync error、symlink、mode、版本、敏感字段 allowlist。
+- **测试**：v1/v2 label codec、v1 不改写、manifest round trip/未知字段/超限、partial write、rename/fsync error、symlink、owner/mode、版本、敏感字段 allowlist。
 - **验收**：崩溃后只有旧完整文件或新完整文件，不出现半 JSON。
 - **本任务不做**：不读取 manifest，不修改 Docker label。
 
@@ -1361,7 +1394,7 @@ commit SHA
 
 - **依赖**：P3-048～P3-058。
 - **唯一目标**：启动时从 Store 重建 heap，并用确定性测试锁定 renew/expire/restart 竞争。
-- **设计**：分页读取 active lease；upsert 后才启动 timer loop；恢复期间已过期交给 expiration coordinator；测试覆盖旧 revision 和 label/manifest 差异。
+- **设计**：分页读取 active lease；upsert 后才启动 timer loop；恢复期间已过期交给 expiration coordinator；测试覆盖旧 expiry timer、无关 revision 更新和 label/manifest 差异。
 - **修改范围**：TTL recovery bootstrap 和 focused integration tests。
 - **测试**：重启、旧 timer、renew/expire CAS 顺序、空 heap fallback、manifest 写延迟。
 - **验收**：任何竞态最终要么保留最新租约，要么保持已提交删除意图，不会复活或漏删。
@@ -1369,11 +1402,11 @@ commit SHA
 
 ### E. Recovery、Orphan 与 Drift
 
-### P3-060：盘点全部受管 container
+### P3-060：盘点全部受管 main/egress container
 
-- **依赖**：Phase 1 `ListManaged`、G6。
-- **唯一目标**：启动恢复时枚举 running/stopped 的 MiniSandbox container 并形成安全 observation。
-- **设计**：Docker filter 只做初筛；逐个 inspect 并解析名称、labels、state、network、mount、安全 profile；损坏项单独返回 anomaly，不中断其他资源。
+- **依赖**：Phase 2 聚合 `ListManaged`、G6。
+- **唯一目标**：启动恢复时枚举 running/stopped 的 MiniSandbox 主容器和 egress sidecar 并形成安全 observation。
+- **设计**：Docker filter 只做初筛；逐个 inspect 并解析名称、sandbox ID、resource role、runner/egress protocol、policy hash、state、network/netns、mount、restart policy 和安全 profile；损坏项单独返回 anomaly，不中断其他资源。
 - **修改范围**：Docker container inventory adapter。
 - **测试**：空、running/stopped、损坏/未知 labels、同名外部容器、inspect 消失竞态、稳定排序。
 - **验收**：输出不包含 env、command、raw inspect 或宿主机 bind source。
@@ -1402,8 +1435,8 @@ commit SHA
 ### P3-063：聚合实际资源 observation
 
 - **依赖**：P3-060～P3-062。
-- **唯一目标**：按 sandbox ID 合并 container、volume、directory/manifest，形成与 Store 无关的 actual snapshot。
-- **设计**：每类资源最多一个；重复、矛盾 ID/hash/schema 形成 typed anomaly；snapshot 按 ID 排序且不可变。
+- **唯一目标**：按 sandbox ID 合并主容器、可选 egress sidecar、volume、directory/manifest，形成与 Store 无关的 actual snapshot。
+- **设计**：每个 resource role 最多一个；根据 public outbound spec 验证 sidecar 应存在或必须不存在；重复、孤立 sidecar、矛盾 ID/hash/schema/netns 形成 typed anomaly；snapshot 按 ID 排序且不可变。
 - **修改范围**：recovery actual-resource aggregator。
 - **测试**：完整组合、各类缺失、重复、跨资源 hash 冲突、顺序稳定。
 - **验收**：聚合只分类事实，不决定导入或删除。
@@ -1422,8 +1455,8 @@ commit SHA
 ### P3-065：恢复 Store record 的 runtime metadata
 
 - **依赖**：P3-014、P3-064。
-- **唯一目标**：Store 与可信 container 匹配时 CAS 修复缺失/旧 runtime ID 并 Wake。
-- **设计**：再次验证 sandbox ID/spec hash；不从 Docker 覆盖 Store spec/expiry；CAS conflict 重读；已 DesiredTerminated 只修复删除所需 metadata。
+- **唯一目标**：Store 与可信主容器/可选 sidecar bundle 匹配时 CAS 修复缺失/旧 runtime metadata 并 Wake。
+- **设计**：再次验证 sandbox ID/spec hash/resource roles/protocol/policy hash/netns；不从 Docker 覆盖 Store spec/expiry；CAS conflict 重读；已 DesiredTerminated 只修复聚合删除所需 metadata。
 - **修改范围**：recovery metadata repair executor。
 - **测试**：缺失 ID、相同 ID、不同 ID、CAS conflict、desired delete、stale observation。
 - **验收**：重复恢复幂等，不制造第二个 runtime。
@@ -1442,38 +1475,38 @@ commit SHA
 ### P3-067：检测 spec 与安全 profile drift
 
 - **依赖**：P3-004、P3-060、P3-064。
-- **唯一目标**：可信 Store record 与 actual container 不一致时写安全的 SPEC_DRIFT 诊断并停止自动修改。
-- **设计**：比较 spec hash、name、image/platform、resources、network、mount、privileged/caps/ports/socket；差异只记录固定 field code，不记录 raw values/path。
+- **唯一目标**：可信 Store record 与 actual 主容器/sidecar bundle 不一致时写安全的 SPEC_DRIFT 诊断并停止自动修改。
+- **设计**：比较 spec hash、name、resource role、image/platform、runner/egress protocol、policy hash、netns identity、resources、network、mount、restart policy、privileged/caps/ports/socket；差异只记录固定 field code，不记录 raw values/path。
 - **修改范围**：runtime drift comparator 和 recovery/reconcile mapping。
 - **测试**：每个字段漂移、多个差异、safe message、CAS conflict、false-positive baseline。
 - **验收**：drift 不触发删除、重建或 Store spec 覆盖。
 - **本任务不做**：不提供 admin accept/repair endpoint。
 
-### P3-068：从可信 container 重建 resolved spec
+### P3-068：从可信 resource bundle 重建 resolved spec
 
 - **依赖**：P3-060～P3-063、Phase 1 spec hash。
-- **唯一目标**：把 allowlist inspect 字段映射为完整 domain SandboxSpec 并重算 hash。
-- **设计**：只支持已知 schema/platform/profile；image digest/name按既有 contract；workspace/network/resources 显式映射；未知字段不透传。
+- **唯一目标**：把主容器和可选 egress sidecar 的 allowlist inspect 字段映射为完整 domain SandboxSpec 并重算 hash。
+- **设计**：只支持已知 schema/platform/profile；image digest/name按既有 contract；workspace/network/outbound/resources 显式映射；outbound=true 必须验证完整 sidecar role/protocol/policy/netns，未知字段不透传。
 - **修改范围**：Docker observation-to-domain importer。
 - **测试**：golden inspect model、每个字段、unsupported platform/profile、hash match/mismatch。
 - **验收**：只有重算 hash 与 label 一致才返回 trusted spec。
 - **本任务不做**：不写 Store，不读取 container env/command。
 
-### P3-069：导入完整可信 orphan container
+### P3-069：导入完整可信 orphan resource bundle
 
 - **依赖**：P3-012、P3-064、P3-068、G6。
-- **唯一目标**：Store 无记录时把可验证 orphan 原子导入为 `origin=recovered_orphan`。
-- **设计**：sandbox ID 唯一；使用 inspect/manifest/label 的安全时间；未过期 desired Running；observed 取保守 Creating；事务成功后 Wake；并发导入唯一冲突后重读。
+- **唯一目标**：Store 无记录时把可验证主容器/可选 egress sidecar orphan bundle 原子导入为 `origin=recovered_orphan`。
+- **设计**：在单 sandboxd/daemon 不变量和默认 `import_trusted_orphans=true` 下执行；sandbox ID 唯一；使用已验证 inspect/manifest/v2 label 的安全时间；v1 缺少可信 manifest 时转 anomaly；未过期 desired Running；observed 取保守 Creating；事务成功后 Wake；并发导入唯一冲突后重读。
 - **修改范围**：Store import method 和 recovery executor。
 - **测试**：成功、重复启动、并发、ID 已存在、hash/profile 失败、manifest newer than label。
-- **验收**：导入后普通 reconciler 可收敛到 Running，且不会新建重复 container。
+- **验收**：导入后普通 reconciler 可收敛到 Running，且不会新建重复主容器或 sidecar；孤立 sidecar/主容器只进入 anomaly。
 - **本任务不做**：不导入只有 volume/dir 的资源。
 
 ### P3-070：把明确过期 orphan 导入删除路径
 
 - **依赖**：P3-051、P3-069。
 - **唯一目标**：可信 orphan 的有效恢复 expiry 已过时，导入即为 DesiredTerminated 并复用 delete reconcile。
-- **设计**：expiry 优先 manifest、再 creation label；使用 recovery clock；record reason ORPHAN_EXPIRED；事务后 Wake；不在 inventory loop 直接删除。
+- **设计**：expiry 优先可信 manifest，仅已知 v2 语义允许 creation label 兜底；v1 缺少可信 manifest 时 expiry 未知并进入 anomaly；使用 recovery clock；record reason ORPHAN_EXPIRED；事务后 Wake；不在 inventory loop 直接删除。
 - **修改范围**：orphan import expired branch。
 - **测试**：manifest expired、label fallback expired、manifest renew 未过期、边界时刻、重复恢复。
 - **验收**：过期 orphan 最终 Terminated，删除仍验证精确 labels/name/hash。
@@ -1503,27 +1536,27 @@ commit SHA
 
 - **依赖**：P3-071。
 - **唯一目标**：后续完整 inventory 不再观察到 resource key 时标记 anomaly resolved。
-- **设计**：每轮 inventory 带 scan generation/time；只 resolve 本轮覆盖资源类型且未再出现的 active anomaly；不物理删除历史行。
+- **设计**：每轮 inventory 带 scan generation/time；只有 Docker container/volume 与 filesystem inventory 全部成功且覆盖相关资源类型时，才 resolve 本轮未再出现的 active anomaly；任一 partial/global error 都不 resolve；不物理删除历史行。
 - **修改范围**：anomaly resolve method 和 recovery finalizer。
 - **测试**：消失、仍存在、部分 inventory 失败、重新出现、并发 scan。
 - **验收**：inventory 不完整时不会误 resolve，重新出现可重新激活/更新。
 - **本任务不做**：不增加 retention GC 或通知系统。
 
-### P3-074：恢复 Running container 与 runner health
+### P3-074：恢复 Running 聚合资源、egress 与 runner health
 
 - **依赖**：P3-035～P3-038、P3-045、P3-060、G5。
-- **唯一目标**：周期 reconcile 对 missing/stopped container 和连续 runner failure 执行第 5.12 节策略。
-- **设计**：每次先重读 Store/actual；missing/stopped 使用 Ensure；单次 probe 只更新 failure count；达到阈值后精确验证并 Delete→Ensure；成功清零；delete intent 始终优先。
-- **修改范围**：Running reconcile branch 和 health metadata update。
-- **测试**：missing、stopped、一次/阈值 probe failure、恢复、drift、delete/renew 竞争、race。
-- **验收**：临时 probe 抖动不重建；阈值后最终恢复；spec drift 不被重建掩盖。
+- **唯一目标**：周期 reconcile 对主容器/sidecar missing、stopped、egress unhealthy 和连续 runner failure 执行第 5.12 节策略。
+- **设计**：新增 `ReplaceCompute`/`RecreateRuntime` runtime 端口，精确保留已验证 workspace volume 与 `lease.json`，只清理主容器、可选 sidecar、socket/bootstrap/execution 临时状态；none 模式 missing/stopped 沿用 Ensure/Start；outbound 任一成员或 attestation/protocol/policy/netns 失败时先关闭 admission、有界取消 execution，再按 main → sidecar remove、sidecar → main ensure，禁止调用会删除 workspace 的完整 `Runtime.Delete`，也禁止单独 Start sidecar；runner 单次 probe 只更新 failure count，连续 3 次才关闭 admission、有界 shutdown 并 ReplaceCompute；delete intent 始终优先。服务级 `minisandbox-egress` 缺失时复用 Phase 2 幂等 Ensure；同名非受管或 driver/schema drift 视为安全全局错误，不接管、删除或覆盖。
+- **修改范围**：runtime interface/Docker adapter、Running reconcile branch、egress/runtime health gate 和 metadata update。
+- **测试**：workspace/lease 保留、完整 Delete panic spy、none/outbound 的 main missing/stopped、sidecar missing/stopped/attestation/protocol/policy/netns drift、取消当前 execution、禁止 sidecar Start spy、全局 network missing 自动 Ensure/同名非受管或 schema drift fail closed、一次/三次 runner failure、完整恢复、drift、delete/renew 竞争、race。
+- **验收**：自动恢复后 workspace 与最新 lease 不变；临时 probe 抖动不重建；阈值后最终恢复；spec drift 不被重建掩盖。
 - **本任务不做**：不恢复 runner 内 execution，不跨 sandbox 操作。
 
 ### P3-075：装配完整 recovery 与 readiness gate
 
 - **依赖**：P3-045、P3-059～P3-074。
 - **唯一目标**：按第 5.9 节顺序运行 inventory/recovery/TTL rebuild/queue，并在完成后启动周期组件。
-- **设计**：recovery 有总 timeout；每个资源错误隔离并汇总；安全全局错误阻止 ready；重复调用幂等；shutdown 可中断且不置 ready。
+- **设计**：recovery 有总 timeout；启动时先幂等 Ensure/验证带 labels 的 `minisandbox-egress`，不把它并入 per-sandbox orphan bundle；每个资源错误隔离并汇总；同名非受管或 driver/schema drift 等安全全局错误阻止 ready；重复调用幂等；shutdown 可中断且不置 ready。
 - **修改范围**：sandboxd bootstrap recovery coordinator。
 - **测试**：每个启动失败点、partial anomaly、trusted import、timeout、重复 bootstrap、关闭顺序。
 - **验收**：recovery complete 前 `/readyz` 失败；完成后所有 due work 已持久化或入队。
@@ -1595,7 +1628,7 @@ commit SHA
 
 - **依赖**：P3-006 的已确认 ADR。
 - **唯一目标**：建立并发安全、可测试、禁止重复注册的 metric registry。
-- **设计**：按 ADR 使用选定实现；所有 collector 通过依赖注入；测试可创建独立 registry；默认不使用全局 singleton。
+- **设计**：引入 ADR 固定的官方 `github.com/prometheus/client_golang`；使用 `prometheus.NewRegistry`；所有 collector 通过依赖注入；测试可创建独立 registry；不使用 default registry，不注册默认 Go/process collectors。
 - **修改范围**：observability metrics package 和必要依赖。
 - **测试**：注册、重复、并发 update、独立 registry、race。
 - **验收**：业务包依赖小型 metrics port，不依赖 HTTP handler 或全局默认 registry。
@@ -1605,37 +1638,37 @@ commit SHA
 
 - **依赖**：P3-082。
 - **唯一目标**：实现 create、reconcile、retry、expire、orphan 和 Docker error counter。
-- **设计**：labels 只使用 contract 固定 result/operation/error code/classification；未知值归一为 `unknown`，不动态创建 label 名。
+- **设计**：实现 `minisandbox_sandbox_create_requests_total`、`minisandbox_reconcile_total`、`minisandbox_retry_scheduled_total`、`minisandbox_lease_expired_total`、`minisandbox_orphan_observations_total` 和 `minisandbox_runtime_docker_operations_total`；labels 只使用 contract 固定 result/operation/error code/classification，未知值归一为 `unknown`，不动态创建 label 名。
 - **修改范围**：counter collectors 与各操作更新 hook。
 - **测试**：每个 branch 增量、失败、重复 reconcile、并发和 cardinality allowlist。
 - **验收**：metric labels 中没有任何 sandbox/image/key/message。
 - **本任务不做**：不增加 duration、execution 或 gauge。
 
-### P3-084：增加 execution counters
+### P3-084：增加控制面可证明的 execution counters
 
-- **依赖**：P3-082、Phase 2 execution terminal arbiter。
-- **唯一目标**：在唯一 terminal 决定点更新 `execution_total{result}`。
-- **设计**：result 固定 exited/failed/cancelled/timed_out；started 不计完成；重复 cancel/terminal 不重复增量；sandboxd proxy 不二次计数。
-- **修改范围**：runner metrics port 和 terminal integration。
-- **测试**：每种 terminal、竞态、重复 terminal 防护、runner shutdown、race。
-- **验收**：一条 execution 恰好增加一个 terminal result。
-- **本任务不做**：不做跨 runner 聚合持久化。
+- **依赖**：P3-082、Phase 2 sandboxd execution proxy。
+- **唯一目标**：只统计 sandboxd 能准确证明的 execution request 和前台 terminal observation。
+- **设计**：`minisandbox_execution_requests_total{mode,result}` 在控制面接受/拒绝边界更新；`minisandbox_execution_foreground_terminal_observed_total{result}` 只在前台 SSE proxy 观察到唯一 terminal 时更新；result 固定枚举；重复 terminal 不重复增量。
+- **修改范围**：sandboxd execution application/proxy 的 metrics port。
+- **测试**：前台/后台 request、拒绝、每种前台 terminal、断连、重复 terminal、runner shutdown、race。
+- **验收**：名称明确表达观察边界，不把 runner 本地、后台或重启前事件伪装为控制面权威总账。
+- **本任务不做**：不在 runnerd 暴露 endpoint，不做跨 runner 聚合或持久化 execution ledger。
 
-### P3-085：增加 duration 与 output histograms
+### P3-085：增加生命周期 duration histograms 与 runner probe counter
 
 - **依赖**：P3-082、P3-083、P3-084。
-- **唯一目标**：实现 create/reconcile/execution duration 和 stdout/stderr byte histogram/counter。
-- **设计**：单位固定 seconds/bytes；bucket 在 ADR 中固定；使用单调 duration；output 在 reader/预算处按实际观察 bytes 更新。
-- **修改范围**：histogram collectors 和 timing hooks。
-- **测试**：bucket boundary、非零/失败 duration、双 stream、截断后继续观察、并发。
-- **验收**：单位与 metric 名一致，慢客户端不改变 execution output 统计。
-- **本任务不做**：不按 sandbox、image 或 command 分桶。
+- **唯一目标**：实现 create/reconcile duration 和 `minisandbox_runner_probe_total{result}`。
+- **设计**：duration 单位固定 seconds、bucket 在 ADR 中固定、使用单调时间；probe result 固定 healthy/unhealthy/error；不从前台代理流量推导全量 execution duration 或 output bytes。
+- **修改范围**：histogram/counter collectors 和 lifecycle/probe timing hooks。
+- **测试**：bucket boundary、非零/失败 duration、probe result、并发。
+- **验收**：单位与 metric 名一致，指标只描述其真实更新位置。
+- **本任务不做**：不提供全局 execution duration/output 指标；待 durable runner event/ledger 设计后再增加。
 
 ### P3-086：增加 state、cleanup 和 scheduler gauges
 
 - **依赖**：P3-013、P3-082。
 - **唯一目标**：暴露 state count、cleanup pending、active workers/queue 和 anomaly count 的当前值。
-- **设计**：Store-backed state/anomaly 使用 scrape-time bounded query 或定期 snapshot；queue/worker 使用原子 snapshot；采集失败不伪造零值并记录内部 scrape error。
+- **设计**：Store-backed state/anomaly 只能由后台周期任务以短 timeout 生成原子不可变 snapshot；scrape 不直接查询单连接 SQLite；queue/worker 使用原子 snapshot；采集失败保留最后成功值并通过 `minisandbox_metrics_snapshot_age_seconds` 表达陈旧度，不伪造零值。
 - **修改范围**：gauge collectors 和 safe snapshot ports。
 - **测试**：各 state、Store error、并发变化、unknown enum、race。
 - **验收**：重复 scrape 不改变业务状态，查询有 timeout 和行数边界。
@@ -1645,7 +1678,7 @@ commit SHA
 
 - **依赖**：P3-008、P3-009、G7。
 - **唯一目标**：从受限 secret file 加载 admin token 并提供 constant-time HTTP auth。
-- **设计**：absolute regular non-symlink file、mode 不宽于 0600、最小长度；token 不进 config dump/log；missing/wrong 均返回同一 401，disabled route 为 404。
+- **设计**：disabled 时不读取文件且 route 不注册；enabled 时要求 absolute、owner 为服务 euid、regular non-symlink、mode 不宽于 0600，内容为至少 256 bit base64url token；只接受一个 Bearer header，对 token digest constant-time compare；token 不进 config dump/log；missing/wrong 均返回同一 401；启动只读一次，轮换需重启。
 - **修改范围**：admin secret loader、auth middleware 和 bootstrap。
 - **测试**：mode、symlink、短/空、正确/错误/重复 header、日志 redaction。
 - **验收**：admin enabled 但 token 无效时服务拒绝启动。
@@ -1655,7 +1688,7 @@ commit SHA
 
 - **依赖**：P3-005、P3-082～P3-087。
 - **唯一目标**：在固定 `/metrics` path 输出选定 exposition 格式。
-- **设计**：admin disabled 为 404；通过 admin auth port；GET only；response/header/write timeout；并发 scrape 有界；不在 handler 动态注册 metric。
+- **设计**：admin disabled 时路由不注册并自然 404；enabled 时通过相同 admin auth middleware；GET only；response/header/write timeout；并发 scrape 有界；不在 handler 动态注册 metric；不查询 Store。
 - **修改范围**：metrics HTTP handler 和 router wiring。
 - **测试**：格式、auth success/failure、disabled、method、collector failure、并发 scrape。
 - **验收**：输出通过格式 parser/golden，且 label cardinality 满足 contract。
@@ -1675,7 +1708,7 @@ commit SHA
 
 - **依赖**：P3-005、P3-078、P3-087～P3-089。
 - **唯一目标**：把 admin auth、diagnostics service、metrics 和持续 readiness 装配到现有 server。
-- **设计**：精确路由；admin disabled 不注册；相同 request ID 进入响应/日志；shutdown 首先 not ready；非 loopback gate 在 bootstrap 验证。
+- **设计**：精确路由；admin disabled 不注册且不加载 token；相同 request ID 进入响应/日志；shutdown 首先 not ready；复用现有 loopback-only listener，不增加 `allow_non_loopback` 或新端口。
 - **修改范围**：admin handler/router、sandboxd bootstrap 和 contract tests。
 - **测试**：200/401/404、disabled、not found、partial section、metrics auth、readiness degrade/recover、shutdown。
 - **验收**：不新增网络 listener，公共 execution/lifecycle route 不受 admin 配置影响。
@@ -1700,7 +1733,7 @@ commit SHA
 - **设计**：test hook 丢弃指定一次 Wake；Store transaction 正常提交；fake/短 interval 触发下一 sweep；检查无重复资源。
 - **修改范围**：periodic reconcile Docker integration test。
 - **测试**：create Wake、delete Wake、scanner 首次失败后下一轮。
-- **验收**：create 最终 Running、delete 最终 Terminated，container/volume 各不重复。
+- **验收**：create 最终 Running、delete 最终 Terminated，主容器、可选 sidecar 和 volume 各 role 不重复。
 - **本任务不做**：不测试进程 crash 或 retry backoff。
 
 ### P3-093：验收 Docker 暂时不可用与持久化 Retry
@@ -1720,7 +1753,7 @@ commit SHA
 - **设计**：独立 subtest 覆盖 Store commit、runtime dir、volume、container create、artifact copy、start、runner ready、Running CAS 前后；每次使用新 test ID/data dir。
 - **修改范围**：create crash matrix Docker test。
 - **测试**：本任务全部 subtest，至少重复两轮检查确定性。
-- **验收**：每个场景最终 Running 或稳定 non-retryable Failed；精确一个 container/volume/dir，无未知资源。
+- **验收**：每个场景最终 Running 或稳定 non-retryable Failed；精确一个主容器、按 outbound spec 恰好零或一个 sidecar、一个 volume/dir，无未知资源。
 - **本任务不做**：不测试 delete crash，不在测试中手工修 Store。
 
 ### P3-095：验收 delete crash-point 收敛
@@ -1749,7 +1782,7 @@ commit SHA
 - **唯一目标**：真实验证最新 Store lease 决定是否删除，timer/label/manifest 只作受限辅助。
 - **设计**：短测试 TTL；到期前 renew；保留旧 timer；在 renew/expire 前后 crash；比较 Store、manifest 和初始 label；轮询最终资源。
 - **修改范围**：TTL Docker integration test。
-- **测试**：正常 expiry、renew 延长、old timer、heap 丢失 scanner fallback、restart rebuild、expire/renew CAS 两种顺序。
+- **测试**：正常 expiry、renew 延长、相等 no-op、缩短 conflict、已过期但未扫描时拒绝、old expiry timer、无关 revision 更新、heap 丢失 scanner fallback、restart rebuild、expire/renew CAS 两种顺序、v1 无 manifest orphan anomaly。
 - **验收**：续期成功的 sandbox 不被旧 timer/label 误删；真正到期最终 Terminated 且资源清空。
 - **本任务不做**：不依赖亚秒精确时序，不使用生产默认 TTL。
 
@@ -1769,8 +1802,8 @@ commit SHA
 - **唯一目标**：真实 HTTP/SQLite 下验证同 key 竞争和 commit 后 crash 只产生一个 sandbox。
 - **设计**：数十并发相同 key/hash；另一组相同 key/不同 hash；failpoint 在 commit 后 response 前 kill；重启后 replay。
 - **修改范围**：idempotency end-to-end test。
-- **测试**：same、conflict、lost response、retention 前 replay、GC 后 reuse。
-- **验收**：same 组一个 ID；conflict 组一个胜者；lost response 重试仍指向原 ID。
+- **测试**：same、conflict、lost response、服务端默认变化后的 absent-field replay、长时间 active 不 GC、Terminated 后 24h 内 replay、宽限后 GC/reuse。
+- **验收**：same 组一个 ID；conflict 组一个胜者；lost response 重试仍指向原 ID；活跃 sandbox 不因固定创建时长到点而失去幂等记录。
 - **本任务不做**：不测试多租户 scope 或跨实例数据库。
 
 ### P3-100：验收 Quota 与 Operation 并发限制
@@ -1787,30 +1820,30 @@ commit SHA
 
 - **依赖**：P3-060～P3-075、P3-091。
 - **唯一目标**：真实创建各类 Store/Docker 不一致资源并验证导入、过期清理和安全保留。
-- **设计**：只操作唯一 test labels；构造完整可信、manifest-renew、明确过期、未知 schema、hash mismatch、仅 volume 和 symlink dir；重启 recovery。
+- **设计**：只操作唯一 test labels；构造 v2 完整可信、manifest-renew、明确过期、v1 无 manifest、未知 schema、hash mismatch、main/sidecar partial、仅 volume 和 symlink dir；注入 partial inventory；重启 recovery。
 - **修改范围**：orphan recovery/security test。
 - **测试**：所有 G6 分类、重复 recovery、anomaly resolve。
-- **验收**：可信资源导入不重复；过期可信资源经 normal delete 清理；歧义资源原样保留并可诊断。
+- **验收**：可信资源导入不重复；过期可信资源经 normal delete 清理；v1 无 manifest 和其他歧义资源原样保留并可诊断；partial inventory 不误 resolve anomaly。
 - **本任务不做**：不对非测试外部资源运行，不新增 admin 删除。
 
 ### P3-102：验收 Running Drift 与 Runner 恢复
 
 - **依赖**：P3-067、P3-074、P3-091。
 - **唯一目标**：真实验证 external stop/remove、runner failure 和 spec drift 的不同恢复策略。
-- **设计**：停止/删除精确 test container；使 runner probe 连续失败；另建 drift fixture；观察 health count、reason、重建 ID 和资源数量。
+- **设计**：在 workspace 写入哨兵并记录 lease；停止/删除精确 test main/sidecar；使 runner probe 连续失败；另建 drift fixture；观察 admission、health count、reason、重建 ID、资源数量及 workspace/lease 内容。
 - **修改范围**：running recovery Docker integration test。
-- **测试**：missing、stopped、单次/阈值 failure、恢复成功、delete 竞争、drift。
-- **验收**：missing/stopped/阈值 failure 最终 Running 且资源唯一；drift 保持 Failed/诊断且不被自动覆盖。
+- **测试**：none/outbound missing/stopped、一次/三次 failure、ReplaceCompute 不调用完整 Delete、恢复成功、delete 竞争、drift。
+- **验收**：missing/stopped/阈值 failure 最终 Running 且 compute 资源唯一，workspace 哨兵和最新 lease 保留；drift 保持 Failed/诊断且不被自动覆盖。
 - **本任务不做**：不恢复进行中的 execution 或 workspace 外数据。
 
 ### P3-103：验收 Logs、Metrics、Diagnostics 与 Readiness 安全
 
 - **依赖**：P3-081～P3-090、P3-091。
 - **唯一目标**：从真实服务四个观察面验证可解释性、cardinality、鉴权和秘密隔离。
-- **设计**：注入测试哨兵和可控 Docker failure；抓取 JSON logs、metrics、diagnostics、readyz；检查固定字段/labels、admin 401/404 和恢复。
+- **设计**：注入测试哨兵和可控 Docker/Store failure；抓取 JSON logs、metrics、diagnostics、readyz；检查固定字段/labels、admin 401/404、disabled 不读取 token file、scrape 不查询 SQLite、snapshot 陈旧度和恢复。
 - **修改范围**：observability/security end-to-end test。
 - **测试**：正常、retry、TTL、orphan、admin disabled/enabled、Docker degrade/recover。
-- **验收**：需要的 code/count/state 可见；所有禁止哨兵和敏感路径不可见；metrics label 集合固定。
+- **验收**：需要的 code/count/state 可见；所有禁止哨兵和敏感路径不可见；metrics label 集合固定；不存在含糊的全局 `execution_total`，admin disabled 时路由自然 404 且无 token I/O。
 - **本任务不做**：不扫描真实日志，不暴露 raw container logs。
 
 ### P3-104：编写 Phase 3 运维与故障恢复文档
@@ -1863,7 +1896,7 @@ flowchart TD
 
 - TTL/renew 是否只有一种单位和时间语义；
 - Idempotency-Key 重放和 conflict 是否明确；
-- migration 是否事务化、可重复且使用真实 Phase 2 fixture；
+- migration 是否先有成功的 `VACUUM INTO` 备份，再以 v2/v3/v4 单事务升级、可重复且使用真实 Phase 2 fixture；
 - 旧记录的 expires/retry default 是否可解释；
 - Store 是否只暴露语义化原子 method，而非通用 update map；
 - admin/metrics 默认是否关闭，安全配置是否 fail closed。
@@ -1876,7 +1909,8 @@ flowchart TD
 - replay 是否先于 quota；
 - conflict 是否不泄露旧 request；
 - maxSandboxes 是否在 SQLite 事务中原子判断；
-- retention GC 是否不删除 sandbox。
+- presence-aware canonical model 是否不受服务端默认值变化影响；
+- retention GC 是否只在 sandbox Terminated 且终态宽限已过后删除 record，并且不删除 sandbox。
 
 ### 11.3 Scanner、Retry 与并发
 
@@ -1892,10 +1926,10 @@ flowchart TD
 ### 11.4 TTL 与 Renew
 
 - Store 是否始终是唯一 expiry 权威；
-- 是否承认 Docker label 不可变并使用原子 lease manifest；
-- 旧 timer 是否同时校验 revision 和 expires；
+- 是否承认 Docker label 不可变、v2/v1 双读且使用原子 lease manifest；
+- 旧 timer 是否只校验 expected expires，从而既拒绝旧租约又不受无关 revision 变化影响；
 - periodic scan 是否能在 heap 全失时回收；
-- renew 是否只能延长；
+- renew 相等是否幂等 no-op、缩短是否 conflict、已过期但未扫描时是否拒绝；
 - expire 与 renew 是否通过 CAS 决胜；
 - 到期是否只提交 desired intent，随后复用普通删除。
 
@@ -1904,9 +1938,12 @@ flowchart TD
 - inventory 是否完全只读、bounded、no-follow；
 - Store/actual planner 是否覆盖每种组合；
 - 导入前是否重建 spec、重算 hash 并检查安全 profile；
+- outbound bundle 是否同时验证 main/sidecar role、egress protocol/policy hash、共享 netns 和 `RestartPolicy=no`；
+- 服务级 `minisandbox-egress` 是否只由全局 Ensure 管理，且不会被 per-sandbox 删除、orphan 导入或 drift 修复接管；
 - 歧义资源是否绝不进入 Delete/Ensure；
 - Terminated 是否永不复活；
-- Running missing/stopped 与 spec drift 是否使用不同策略；
+- Running missing/stopped 与 spec drift 是否使用不同策略，且自动恢复是否通过 `ReplaceCompute` 保留 workspace/lease，绝不调用完整 Delete；
+- stopped sidecar 是否先关闭 admission、取消当前 execution，再触发 main → sidecar remove、sidecar → main rebuild，而不能单独 Start；
 - runner 短暂故障是否不会立即重建；
 - recovery 是否幂等且完成前 not ready。
 
@@ -1914,10 +1951,10 @@ flowchart TD
 
 - log/metric/diagnostic 字段是否使用 allowlist；
 - metric label 是否固定且低 cardinality；
-- execution terminal 是否只计数一次；
-- Store-backed gauge 是否有 timeout；
+- execution request/前台 terminal observation 是否准确命名，且没有伪造后台全局总账；
+- Store-backed gauge 是否由周期原子 snapshot 提供，scrape 是否不占用 SQLite 连接；
 - admin token 是否来自 secret file 且 constant-time compare；
-- admin disabled 是否真 404；
+- admin disabled 是否不读取 token、不注册 route 并自然 404；
 - diagnostics 是否只读且不触发 reconcile；
 - Docker 失联后的 readiness 是否会自动降级并恢复。
 
@@ -1968,7 +2005,7 @@ reconcile: scan due sandboxes periodically
 reconcile: persist retry backoff
 reconcile: expire sandbox leases
 runtime: write atomic lease manifests
-recovery: import trusted orphan containers
+recovery: import trusted orphan resource bundles
 observability: count reconcile outcomes
 admin: expose sanitized sandbox diagnostics
 test(reliability): recover create crash points
@@ -2013,22 +2050,21 @@ Phase 3 完成后，MiniSandbox 可以在单机 Docker 环境中：
 - 无文件 API、PTY、端口代理、startup process 和持久 workspace 产品语义；
 - 无租户 RBAC、计费、全局 execution quota 和可信审计；
 - ambiguous orphan 只报告，不提供自动或 admin 强制处理；
-- outbound bridge 无细粒度 egress policy；
+- outbound 只有平台不可覆盖的内部 CIDR deny 与公网默认允许，没有用户 FQDN/CIDR/端口策略、动态更新、代理或 MITM；
 - 无 Pool、快照、Kubernetes 和跨节点调度。
 
 因此 Phase 3 的准确定位是“可以长期运行和自恢复的单机 Agent sandbox runtime”。后续还剩两个路线阶段：Phase 4“Agent 体验”用于形成更完整的 coding-agent 产品能力；Phase 5“集群化”只在需要 Kubernetes、多节点、Pool、快照或更强隔离时实施。
 
-## 15. 建议的首次审查顺序
+## 15. 已确认的首次审查结论
 
-第一次先审影响全阶段的决策，不需要一次审完 106 个任务：
+G1 仍是执行前置：Phase 3 严格等待 Phase 1/2 最终验收。2026-08-09 已确认以下七项设计，不再留作实现时的开放选择：
 
-1. 确认 G1：Phase 3 严格等待 Phase 1/2 最终验收。
-2. 确认 G2：create 使用相对 `ttl_seconds`，renew 使用绝对 `expires_at` 且只能延长。
-3. 确认 Docker label 不可变，renew 改为原子 `lease.json` 恢复投影。
-4. 确认 G3：Idempotency-Key 的 scope、hash、精确重放、冲突和 retention。
-5. 确认 G4：Phase 2 database 的 migration/backfill/备份要求。
-6. 确认 G5：delete/expire/cleanup 无限有界退避，以及 runner 连续失败后的容器重建。
-7. 确认 G6：只导入完整可信 orphan，歧义资源绝不自动修改。
-8. 确认 G7：metrics dependency 选择流程和 admin 默认关闭/独立 token。
+1. TTL/renew/lease：复用现有 limits，renew 等值 no-op、缩短 conflict、过期不可续；Store 唯一权威，原子 `lease.json` 投影，label v2/双读，timer 只绑定 expiry。
+2. Idempotency-Key：`local:v1` scope、presence-aware/domain-separated hash、精确重放、终态后 24h retention。
+3. SQLite：v2/v3/v4 migration、`VACUUM INTO` 前置备份、明确 backfill，无 down migration。
+4. Retry/cleanup/Running：持久化 full-jitter retry、可信资源 cleanup 必达、全局 outage gate，以及保留 workspace/lease 的 `ReplaceCompute`。
+5. Trusted orphan/anomaly：默认导入完整可信 orphan；v1 无可信 lease 和其他歧义资源只记 anomaly，完整 inventory 才能 resolve。
+6. Metrics：官方 `prometheus/client_golang`、私有 registry、周期 Store snapshot，以及明确的 execution observation 边界。
+7. Admin：默认不读 token、不注册路由；启用后使用受限独立 token，继续 loopback-only，不提供布尔放宽开关。
 
-这些门确认后，从 P3-000 开始；P3-000 通过后只实施 P3-001，完成、测试、提交并暂停。后续任务如果暴露新约束，先修改本文再继续。
+下一步从 P3-000 开始；P3-000 通过后只实施 P3-001，完成、测试、提交并暂停。后续任务如果暴露新约束，先修改本文再继续。
