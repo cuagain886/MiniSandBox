@@ -170,7 +170,8 @@ egress:
 示例 digest 仅展示格式，不能用于部署。`sandboxd` 会幂等 Ensure 服务级 `minisandbox-egress`
 bridge，不要求运维预创建 network。每个 outbound sandbox 有一个 egress sidecar，主容器以
 `container:<sidecar-id>` 共享它的 network namespace；主容器没有 `NET_ADMIN/NET_RAW`。
-sidecar 原子安装 nft policy、降为非 root anchor 并写入 attestation 后，sandbox 才能 Running。
+sidecar 原子安装 nft policy、降为非 root anchor、在进程内生成 attestation 并通过有界
+Docker attach 响应返回后，sandbox 才能 Running；不会写 tmpfs、Docker logs 或控制文件。
 
 ```json
 {"image":"registry.example/coding-agent@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa","network":{"outbound":true}}
@@ -181,8 +182,9 @@ sidecar 原子安装 nft policy、降为非 root anchor 并写入 attestation �
 变更只作用于随后按新配置创建/恢复的受管资源。不要配置平台公网地址 allowlist；若必须限制公网
 目的地，应使用外部显式代理或下一阶段设计，而不是把当前 CIDR deny 误当 allowlist。
 
-每次新 execution 前，控制面都会重新核对 sidecar、network mode、policy attestation 和 runner
-netns。任何漂移都 fail closed，并以 `EGRESS_UNHEALTHY`/`RUNNER_UNHEALTHY` 等安全错误拒绝新任务。
+每次新 execution 前，控制面都会用新的 request ID/nonce 重新 attach 并只读 inspect，再核对
+sidecar、network mode、policy attestation 和 runner netns。任何漂移都 fail closed，并以
+`EGRESS_UNHEALTHY`/`RUNNER_UNHEALTHY` 等安全错误拒绝新任务。
 
 ## 8. 排障
 
