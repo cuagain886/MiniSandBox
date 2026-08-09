@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 )
@@ -44,6 +45,26 @@ func NewBackgroundLogWriter(
 	})
 }
 
+// NewBackgroundLogWriterFromDirectory 使用降权前打开的受信目录句柄创建日志，避免放宽 socket 父目录的 0700 权限。
+func NewBackgroundLogWriterFromDirectory(
+	directory *os.File,
+	id ExecutionID,
+	store *EventStore,
+	arbiter *TerminalArbiter,
+) (*BackgroundLogWriter, error) {
+	if directory == nil || !validStoredExecutionID(id) || store == nil || arbiter == nil {
+		return nil, ErrBackgroundLogWrite
+	}
+	info, err := directory.Stat()
+	if err != nil || !info.IsDir() {
+		return nil, ErrBackgroundLogWrite
+	}
+	path := filepath.Join("/proc/self/fd/"+strconv.FormatUint(uint64(directory.Fd()), 10), string(id)+backgroundLogFileSuffix)
+	return newBackgroundLogWriterPath(path, id, store, arbiter, func(path string, flags int, mode os.FileMode) (backgroundLogFile, error) {
+		return os.OpenFile(path, flags, mode)
+	})
+}
+
 func newBackgroundLogWriter(
 	directory string,
 	id ExecutionID,
@@ -55,6 +76,16 @@ func newBackgroundLogWriter(
 	if err != nil || store == nil || arbiter == nil || open == nil {
 		return nil, ErrBackgroundLogWrite
 	}
+	return newBackgroundLogWriterPath(path, id, store, arbiter, open)
+}
+
+func newBackgroundLogWriterPath(
+	path string,
+	id ExecutionID,
+	store *EventStore,
+	arbiter *TerminalArbiter,
+	open backgroundLogOpen,
+) (*BackgroundLogWriter, error) {
 	file, err := open(path, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
 	if err != nil {
 		return nil, ErrBackgroundLogWrite

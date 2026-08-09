@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"os"
 	"testing"
 	"time"
 
@@ -106,10 +107,16 @@ func newExecutionLauncherFixture(t *testing.T) *ExecutionLauncher {
 		MaxRequestBytes: 64 * 1024, MaxOutputBytes: 1024 * 1024,
 		MaxEnvVars: 256, MaxEnvKeyBytes: 256, MaxEnvValueBytes: 4096, MaxEnvTotalBytes: 64 * 1024,
 	}
+	executionDataDirectory := t.TempDir()
+	executionDirectory, err := os.Open(executionDataDirectory)
+	if err != nil {
+		t.Fatalf("open execution data directory: %v", err)
+	}
+	t.Cleanup(func() { _ = executionDirectory.Close() })
 	launcher, err := NewExecutionLauncher(context.Background(), manager, runnerbootstrap.Config{
 		Limits: limits,
-		Paths:  runnerbootstrap.Paths{WorkspaceDirectory: t.TempDir(), ExecutionDataDirectory: t.TempDir()},
-	})
+		Paths:  runnerbootstrap.Paths{WorkspaceDirectory: t.TempDir(), ExecutionDataDirectory: executionDataDirectory},
+	}, executionDirectory)
 	if err != nil {
 		t.Fatalf("new launcher: %v", err)
 	}

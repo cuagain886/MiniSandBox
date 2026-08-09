@@ -62,7 +62,7 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	if err != nil {
 		return err
 	}
-	launcher, err := NewExecutionLauncher(ctx, manager, bootstrap)
+	launcher, err := NewExecutionLauncher(ctx, manager, bootstrap, executionDirectory)
 	if err != nil {
 		return err
 	}

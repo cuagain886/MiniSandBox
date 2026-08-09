@@ -14,6 +14,7 @@ import (
 // 它不解析 HTTP，也不向调用方暴露 PID、PGID 或底层启动错误。
 type ExecutionLauncher struct {
 	serverContext      context.Context
+	executionDirectory *os.File
 	manager            *Manager
 	bootstrap          runnerbootstrap.Config
 	commandBuilder     *CommandBuilder
@@ -23,8 +24,8 @@ type ExecutionLauncher struct {
 }
 
 // NewExecutionLauncher 从可信 bootstrap 创建生产 launcher；image environment 会在每次执行前经过 denylist 清洗。
-func NewExecutionLauncher(serverContext context.Context, manager *Manager, bootstrap runnerbootstrap.Config) (*ExecutionLauncher, error) {
-	if serverContext == nil || manager == nil {
+func NewExecutionLauncher(serverContext context.Context, manager *Manager, bootstrap runnerbootstrap.Config, executionDirectory *os.File) (*ExecutionLauncher, error) {
+	if serverContext == nil || manager == nil || executionDirectory == nil {
 		return nil, errors.New("execution launcher manager is required")
 	}
 	environmentBuilder, err := NewEnvironmentBuilder(bootstrap.Limits)
@@ -37,6 +38,7 @@ func NewExecutionLauncher(serverContext context.Context, manager *Manager, boots
 	}
 	return &ExecutionLauncher{
 		serverContext:      serverContext,
+		executionDirectory: executionDirectory,
 		manager:            manager,
 		bootstrap:          bootstrap,
 		commandBuilder:     NewCommandBuilder(),
@@ -184,7 +186,7 @@ func (l *ExecutionLauncher) start(ctx context.Context, request ExecutionLaunchRe
 	}
 	var completionWait func(context.Context) error
 	if background {
-		writer, writerErr := NewBackgroundLogWriter(l.bootstrap.Paths.ExecutionDataDirectory, id, store, arbiter)
+		writer, writerErr := NewBackgroundLogWriterFromDirectory(l.executionDirectory, id, store, arbiter)
 		if writerErr != nil {
 			go l.supervise(execution, store, started, readers, startedAt, reaped, finalized, arbiter, timeout, nil)
 			_, _ = arbiter.Submit(context.Background(), internalFailureCandidate(0))
