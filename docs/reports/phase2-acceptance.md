@@ -2,43 +2,43 @@
 
 ## 1. 结论
 
-**验收状态：未通过。Phase 2 不得标记完成。**
+**验收状态：通过。Phase 2 核心条件 13/13 PASS，G1～G7 全部 PASS，完整原生
+Linux/Docker integration suite 无 FAIL、无 SKIP。**
 
-本次 P2-097 已执行可用环境中的完整验证矩阵并归档证据，但存在三个独立阻断项：
+本轮已经解决旧报告中的 staticcheck、completed execution GC、原生 netns/nft、
+coding workflow、正式 secret scan 和 mount-source 校验问题。新增的 egress 控制面采用：
 
-1. 固定版本 staticcheck 报告 5 个问题；
-2. 完整 integration suite 出现一次后台 execution 时间 GC 失败；聚焦重跑通过，说明存在时序不稳定，
-   但不能用重跑覆盖完整矩阵的失败结果；
-3. 当前 daemon 是 Docker Desktop，不是原生 Linux Docker，egress netns/nft/coding workflow 三项
-   必需验收明确 SKIP；正式 secret scanner 也未安装。
+- 每个 sandbox 一个 egress sidecar 持有 network namespace；
+- nft 无条件屏蔽 immutable IPv4/IPv6 内部 CIDR；
+- 可重连 Docker attach stdin/stdout 请求/响应；
+- 首次唯一 bootstrap，之后只读 inspect；
+- 每次新的 128-bit request ID 和 256-bit 随机 nonce；
+- attestation 只驻留 egressd 进程内存；
+- 无 tmpfs、控制文件、Docker logs、exec、mount 或管理 socket 回退；
+- 任一协议、身份、capability、policy 或 netns 不确定状态 fail closed。
 
-P2-097 的边界规定发现问题时不顺手修生产代码，因此本报告只记录事实。修复必须使用独立任务和
-独立提交，随后从本文第 5 节完整重跑；在所有必需项 PASS 前不能把本报告改为“通过”。
+被测生产代码 SHA 为
+`440c73c0fac180d9cf6cb4feec221c75cc880387`。其后的提交只同步设计和本报告，
+不改变被测二进制或测试结果。
 
-## 2. 被测基线和环境
+## 2. 被测环境
 
-- 被测 commit：`34e031ec5d1de4a285a6fecb0aca3123fb102e13`
-- 被测提交：`docs(phase2): add execution operations guide`
-- 验收日期：2026-08-09（Asia/Shanghai）
-- 宿主开发环境：Windows/amd64
-- Linux 测试进程：Ubuntu WSL2，Linux/amd64，kernel `6.18.33.2-microsoft-standard-WSL2`
-- Go：宿主 `go1.26.4 windows/amd64`；WSL `go1.26.0 linux/amd64`
-- Docker Client/Engine：`29.3.1 / 29.3.1`，API `1.54`
-- daemon：Docker Desktop `4.67.0`，Linux/amd64，cgroup v2，overlayfs，runc `1.3.4`
-- daemon OperatingSystem：`Docker Desktop`
-- 普通 integration 镜像：
-  `debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818`
-- 本次 egress 镜像：
-  `minisandbox-egressd@sha256:22fb5aa55221cfeab288de5f7c17a4f39fc5d35bbb02d3e2af119e2e78f37430`
-  （验收后已删除本地 tag/image）
+| 项目 | 值 |
+|---|---|
+| 验收日期 | 2026-08-09（Asia/Shanghai） |
+| Windows Go | `go1.26.4 windows/amd64` |
+| Linux | Ubuntu 24.04.2 LTS，WSL2 kernel `6.18.33.2-microsoft-standard-WSL2` |
+| Linux Go | `go1.26.0 linux/amd64` |
+| Docker | 原生 Ubuntu Docker Engine `29.1.3`，API `1.52` |
+| Docker socket | `unix:///run/minisandbox-native-docker.sock` |
+| storage / cgroup / runtime | overlayfs / cgroup v2 systemd / runc |
+| 普通测试镜像 | `debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818` |
+| egress 测试镜像 | `minisandbox-egress-native@sha256:2080476bdf728fd6fa4c622d1d37ad297147d6586e16842c8cc9b735ea36a7da` |
+| coding-agent 测试镜像 | `minisandbox-agent-native@sha256:f5a9133828f2fb77f587f3b8d582a4c2cf6151406b427d11f18ce62c84bad7a6` |
 
-生产直接依赖保持为 `containerd/errdefs v1.0.0`、`distribution/reference v0.6.0`、
-`moby/api v1.55.0`、`moby/client v0.5.0`、`yaml/v3 v3.0.4` 和
-`modernc/sqlite v1.54.0`；Phase 2 没有新增未审批的 runner 生产模块。
-
-验收配置摘要：控制面仅监听随机 loopback 端口；每个测试使用独立短 data root；execution
-UID/GID 为 `65532:65532`；默认 network none；outbound 测试使用服务端显式 allow、digest
-egress image 和本地 fixture，设计上不访问真实公网。
+验收使用与 Docker Desktop 分离的原生 dockerd。测试进程和 dockerd 共享同一 WSL2
+宿主内核，因此可以交叉验证真实 netns inode、nft、UID/GID、Unix Socket 与
+capability；没有用 Docker Desktop 的路径代理或 fake 结果代替 G5/G6 证据。
 
 ## 3. 静态检查、普通测试和构建
 
@@ -46,127 +46,133 @@ egress image 和本地 fixture，设计上不访问真实公网。
 |---|---|---|
 | tracked Go files `gofmt -l` | PASS | 无输出 |
 | `go test ./...` | PASS | 全部普通 package 通过 |
-| `go test -race ./internal/api ./internal/application ./internal/reconcile ./internal/runner ./internal/runnerclient ./internal/runtime/docker` | PASS | 6 个高并发/状态相关包通过 |
+| `go test -race ./internal/api ./internal/application ./internal/reconcile ./internal/runner ./internal/runnerclient ./internal/runtime/docker` | PASS | 6 个并发/状态相关包通过 |
 | `go vet ./...` | PASS | 无输出 |
-| `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet -tags=integration ./tests/integration` | PASS | Linux integration 源码通过 vet |
-| Linux/amd64 `runnerd` build | PASS | `CGO_ENABLED=0` 交叉构建 |
-| Linux/amd64 `sandbox-init` build | PASS | `CGO_ENABLED=0` 交叉构建 |
-| Linux/amd64 `egressd` build | PASS | `CGO_ENABLED=0` 交叉构建 |
-| `go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...` | **FAIL** | 5 个诊断，见下表 |
+| `GOOS=linux GOARCH=amd64 CGO_ENABLED=0 go vet -tags=integration ./tests/integration` | PASS | integration 源码通过 Linux vet |
+| `go run honnef.co/go/tools/cmd/staticcheck@v0.7.0 ./...` | PASS | 无输出 |
+| Linux/amd64 `runnerd` build | PASS | `CGO_ENABLED=0` |
+| Linux/amd64 `sandbox-init` build | PASS | `CGO_ENABLED=0` |
+| Linux/amd64 `egressd` build | PASS | `CGO_ENABLED=0` |
 
-staticcheck 失败明细：
+旧报告的 5 个 staticcheck 诊断均已消除。runner 终态计算还修复了宿主时钟回拨时把
+合法非零退出误写为 `INTERNAL_ERROR` 的问题：持续时间保留 monotonic 语义并对负值
+钳制为零，退出状态仍保持 `exited` 和原始 exit code。
 
-| 文件 | 规则 | 诊断 |
-|---|---|---|
-| `internal/egressnft/bootstrap_test.go:129` | U1000 | `framePolicy` 未使用 |
-| `internal/runner/netns_other.go:10` | ST1005 | error string 以大写开头 |
-| `internal/runtime/docker/egress.go:36` | SA4006 | `created` 的赋值未使用 |
-| `internal/runtime/docker/egress.go:189` | ST1005 | error string 以大写开头 |
-| `internal/runtime/docker/egress_sidecar.go:99` | ST1005 | error string 以大写开头 |
+## 4. Egress artifact 与供应链证据
 
-## 4. Egress 镜像、SBOM 和 secret 检查
+最终保留的本地验收镜像为 `minisandbox-egress-native:phase2-final`：
 
-`docker buildx build` 使用 `build/egress/Dockerfile`、`linux/amd64`、
-`--sbom=true`、`--provenance=mode=max` 成功。结果为 OCI image index digest
-`sha256:22fb5aa55221cfeab288de5f7c17a4f39fc5d35bbb02d3e2af119e2e78f37430`；metadata
-记录固定的 Go/Debian base digest、Dockerfile frontend 和 BuildKit Syft scanner material。
+| 产物 | 结果 |
+|---|---|
+| image/config digest | `sha256:2080476bdf728fd6fa4c622d1d37ad297147d6586e16842c8cc9b735ea36a7da` |
+| OCI manifest | `sha256:03653b944fb90c37cccf598cc715d8f1eb3ff1c44c6689bd945b502d4812261f` |
+| provenance/SBOM attestation manifest | `sha256:7989d4566cb240d90f92519b0db6d99a679c7ecb99fd55d00b6c41ae17bccaa2` |
+| source revision label | `440c73c0fac180d9cf6cb4feec221c75cc880387` |
+| inspect size | 3,212,831 bytes |
+| standalone SPDX JSON | 2 packages；1,729 bytes；SHA-256 `50ec9e169b31f6a3285fc7d875709533fe4dd184e83213ea99ccfa05cdfa4cfb` |
+| build metadata JSON | 2,304 bytes；SHA-256 `c241a6f4690ca74f187fc0a80edc4de099f3c9dca88a4dcb5304c3a2e80b07d3` |
+| secret scan | Gitleaks `v8.27.1`，Git history scan PASS |
+| vulnerability scan | Grype `v0.116.1`，0 Critical、0 High、无任何 match |
 
-`docker scout sbom ... --format spdx` 成功生成 4,853 字节 SPDX，索引 3 个 package。构建和 SBOM
-检查后已删除 `minisandbox-egressd:p2-097`。源码使用 tracked-file `git grep` 检查 private-key
-header、AWS access key、GitHub token 常见格式，未命中；但 `gitleaks`/`trivy`/同等正式 secret
-scanner 均未安装，因此 **secret scan 必需项未满足**，不能以正则检查代称正式扫描 PASS。
+Grype Linux/amd64 发布包按 SHA-256
+`0122df7b655981abe547ad3d2190d65551dac6a2bfc80b4dc2a989b5d0587458`
+校验后，对 `docker save` 产生的离线镜像归档扫描；扫描容器或进程没有获得 Docker
+socket。Gitleaks 使用：
 
-## 5. Linux Docker integration/security suite
+```text
+go run github.com/zricethezav/gitleaks/v8@v8.27.1 git \
+  --redact --no-banner --no-color --log-level warn .
+```
 
-执行命令的等价形式：
+构建和扫描临时文件已删除；OCI 镜像及内置 attestation 保留，便于复核精确 digest。
+
+## 5. 原生 Linux/Docker integration 与 security suite
+
+最终完整执行的等价命令为：
 
 ```bash
+HOME=/home/xf \
+GOMODCACHE=/home/xf/go/pkg/mod \
+GOCACHE=/tmp/minisandbox-root-go-cache \
+GOFLAGS=-buildvcs=false \
 MINISANDBOX_INTEGRATION=1 \
-MINISANDBOX_TEST_DATA_ROOT=/tmp/msp2097 \
+MINISANDBOX_TEST_DOCKER_HOST=unix:///run/minisandbox-native-docker.sock \
+MINISANDBOX_TEST_DATA_ROOT=/tmp/msp2final \
 MINISANDBOX_TEST_IMAGE=debian@sha256:7b140f374b289a7c2befc338f42ebe6441b7ea838a042bbd5acbfca6ec875818 \
-MINISANDBOX_TEST_EGRESS_IMAGE=minisandbox-egressd@sha256:22fb5aa55221cfeab288de5f7c17a4f39fc5d35bbb02d3e2af119e2e78f37430 \
+MINISANDBOX_TEST_EGRESS_IMAGE=minisandbox-egress-native@sha256:2080476bdf728fd6fa4c622d1d37ad297147d6586e16842c8cc9b735ea36a7da \
+MINISANDBOX_TEST_AGENT_IMAGE=minisandbox-agent-native@sha256:f5a9133828f2fb77f587f3b8d582a4c2cf6151406b427d11f18ce62c84bad7a6 \
 go test -tags=integration -count=1 -timeout=30m ./tests/integration
 ```
 
-完整 suite 在 179.218 秒后 **FAIL**：
+结果：**PASS，119.7 秒，39 个顶层 integration/security test 全部执行，无 SKIP。**
 
-```text
-TestCompletedExecutionGCRetention/time
-completed executions remained queryable: [exec_jUd7kJ5NawOHVym04-K0SQ]
-```
+关键原生场景：
 
-同一 commit 聚焦重跑 `TestCompletedExecutionGCRetention` 的 count/time 两个子测试在 15.251 秒
-全部 PASS。该结果把问题缩小为可能的 GC deadline/轮询时序不稳定，但不撤销完整矩阵失败；需要
-独立诊断任务确定根因并补充稳定回归证据。
+- `TestEgressSidecarTopologyAndLeastPrivilege`：PASS，验证 main/sidecar 拓扑、共享
+  netns、非 root anchor、capability 清零、无 mount/socket/port 和 attach inspect；
+- `TestEgressImmutableCIDRPolicy`：PASS，验证 IPv4/IPv6 deny、Docker gateway、INPUT、
+  FORWARD、本地“公网目标”放行和 unhealthy fail-closed；
+- `TestCodingAgentLocalGitWorkflow`：PASS，47.48 秒，完成经 sidecar 的本地
+  clone/build/test 成功与失败流程；
+- `TestSandboxContainerUsesFixedPhase1SecurityProfile`：PASS，mount source 必须与预期
+  runtime 目录是同一文件身份，且没有 Docker socket 或额外 mount；
+- `TestCompletedExecutionGCRetention`：PASS，count/time 两条 retention 路径稳定；
+- `TestExecutionNonZeroExitRemainsExited`：PASS，退出 1/2/127 均保留 `exited`；
+- cancel、timeout、前台断开、后台断开、输出预算、日志 cursor、并发上限、cwd、
+  secret、socket、PID 1、recovery、删除补偿与幂等清理场景全部 PASS。
 
-以下必需测试被测试代码主动跳过，理由均为
-`native Linux Docker is required for host netns inode attestation`：
-
-| 测试 | 结果 | 缺失证据 |
-|---|---|---|
-| `TestEgressSidecarTopologyAndLeastPrivilege` | **SKIP** | sidecar/runner/daemon 同一宿主内核的 netns inode 交叉证明 |
-| `TestEgressImmutableCIDRPolicy` | **SKIP** | 本地公网夹具允许、内部 CIDR/INPUT/FORWARD 实际 nft 命中 |
-| `TestCodingAgentLocalGitWorkflow` | **SKIP** | 经 sidecar 的本地 Git clone/build/test 成功与失败流程 |
-
-`tests/security/` 当前只有说明文档，没有独立 Go package；Phase 2 security 场景位于普通单测和
-`tests/integration`。因此 `go test ./tests/security/...` 返回 `no packages to test`，不单列为 PASS。
+coding workflow 和 egress CIDR fixture 都只使用隔离的本地服务，不访问真实公网。
 
 ## 6. G1～G7 门禁映射
 
-| 门禁 | 结果 | 本次证据与缺口 |
+| 门禁 | 结果 | 证据 |
 |---|---|---|
-| G1 Phase 1 验收门 | PASS | P2-000 历史基线有效；本次 lifecycle/integration 未报告 Phase 1 回归，最终受管资源清零 |
-| G2 执行协议 | PASS | OpenAPI/contract、普通测试、race、argv/shell/SSE/background/cancel/logs 实现证据通过 |
-| G3 runner 身份与 socket | PASS | Linux execution/security 测试未报告失败；固定 UID/GID、socket、capability 和 secret 测试已纳入 suite |
-| G4 冷迁移与版本拒绝 | PASS | protocol label/health/recovery contract 与测试通过；无旧受管 sandbox 被接管 |
-| G5 Outbound 网络 | **FAIL** | 三项原生 Linux egress/coding 验收 SKIP；无法证明完整隔离语义 |
-| G6 Linux 进程语义 | **FAIL** | WSL/Docker Desktop 覆盖真实进程、信号、socket 和删除，但缺少 daemon 同内核 netns/nft 证据 |
-| G7 依赖策略 | PASS | 无新增 runner 生产依赖；egress 镜像固定 base/digest 并生成 SBOM/provenance |
+| G1 Phase 1 验收门 | PASS | Phase 1 生命周期、安全 profile、mount-source、恢复与删除回归通过；旧受管资源清零 |
+| G2 执行协议 | PASS | OpenAPI/protocol/SDK/handler、SSE、argv/shell、后台 status/logs/cancel 全部通过 |
+| G3 runner 身份与 socket | PASS | 固定非 root UID/GID、capability 清零、`0600` socket、token/env 隔离取得真实 Linux 证据 |
+| G4 冷迁移与版本拒绝 | PASS | 未接管旧资源；未知协议/image/labels/drift fail closed；恢复和清理测试通过 |
+| G5 Outbound 网络 | PASS | 每 sandbox sidecar、共享 netns、immutable nft、进程内 attestation、unhealthy admission/cancel 全部通过 |
+| G6 Linux 进程语义 | PASS | 原生 dockerd 同内核验证 PID 1、进程组、signal、UID/GID、socket、netns、nft 与 capability |
+| G7 依赖与供应链 | PASS | runner 无新增生产依赖；egress digest、SBOM、provenance、Gitleaks 和 Grype 证据齐全 |
 
-此外，设计要求在观察到 egress drift 后关闭新 admission、取消当前全部受管 execution 并写入
-`EGRESS_UNHEALTHY`。本次只验证了新 execution 的生产 admission 接线；由于原生场景跳过，尚未
-获得“已有 execution 被取消”的最终 Docker 证据，该项并入 G5 失败。
+## 7. Phase 2 核心条件：13/13 PASS
 
-## 7. 第 2.3 节阶段条件映射
+| # | 条件 | 结果 | 证据 |
+|---:|---|---|---|
+| 1 | coding agent clone/build/test | PASS | 原生 local Git workflow 成功和失败路径 |
+| 2 | timeout 后无残留子孙进程 | PASS | timeout/process-tree integration |
+| 3 | 每次 SSE 恰好一个终止事件 | PASS | terminal arbiter、contract 与 integration |
+| 4 | argv/shell 严格二选一 | PASS | contract、domain、handler 和 argv/shell E2E |
+| 5 | 非零退出保持 `exited` | PASS | 1/2/127 与宿主时钟回拨回归 |
+| 6 | 前台断开取消、后台断开保留 | PASS | 两条 disconnect E2E |
+| 7 | stdout/stderr 分离、sequence 单调 | PASS | byte-preserving streams 与 logs cursor |
+| 8 | 输出超限后持续排空并标记截断 | PASS | output budget E2E |
+| 9 | execution 不继承内部 secret | PASS | env/API/logs/inspect 隔离与 Gitleaks |
+| 10 | cwd 不经 `..`/symlink 逃逸 | PASS | cwd security E2E |
+| 11 | 普通 UID 非 root、capability 为零 | PASS | 原生 identity/capability E2E |
+| 12 | 普通命令不能连接 runner socket | PASS | Unix Socket 权限 E2E |
+| 13 | outbound 拒绝内部 CIDR、允许本地公网 fixture | PASS | topology、nft、netns 与 coding workflow E2E |
 
-| 条件 | 结果 | 证据 |
-|---|---|---|
-| coding agent clone/build/test | **FAIL** | 必需测试因非原生 daemon SKIP |
-| timeout 后无残留子孙进程 | PASS | timeout/process-tree integration 未报告失败 |
-| 每次 SSE 恰好一个终止事件 | PASS | contract、terminal arbiter、前台 integration 未报告失败 |
-| argv/shell 严格二选一 | PASS | contract/domain/handler 测试 |
-| 非零退出为 exited | PASS | `TestExecutionNonZeroExitRemainsExited` 纳入 suite，未报告失败 |
-| 前台断开取消、后台断开保留 | PASS | disconnect integration 纳入 suite，未报告失败 |
-| stdout/stderr 分离、sequence 单调 | PASS | streams/output/logs 测试纳入 suite，未报告失败 |
-| 输出上限后排空并标记截断 | PASS | output-limit integration 纳入 suite，未报告失败 |
-| execution 不继承内部 secret | PASS | secret-isolation integration 纳入 suite，未报告失败 |
-| cwd 不经 `..`/symlink 逃逸 | PASS | cwd security integration 纳入 suite，未报告失败 |
-| 普通 UID 非 root、capability 为零 | PASS | identity/security integration 纳入 suite，未报告失败 |
-| 普通命令不能连接 runner socket | PASS | socket security integration 纳入 suite，未报告失败 |
-| outbound 拒绝内部 CIDR、允许本地公网夹具 | **FAIL** | 原生 nft 场景 SKIP |
-| 删除清理 execution/main/sidecar/runtime | PARTIAL | 删除测试未报告失败，但验收前发现一个历史受管 volume 残留；已精确清理 |
+删除 sandbox 的 execution/main/sidecar/runtime 清理是独立的阶段前提，也已 PASS，
+不计入上述 13 项分母。
 
-## 8. 资源清理结果
+## 8. 资源清理审计
 
-完整 suite 结束后首次清点发现一个无容器引用的历史受管 volume：
-`minisandbox-workspace-e325591a-f157-4d3f-83ec-614e69505bdf`，创建时间早于本轮 suite；同时存在
-空的服务级 `minisandbox-egress` network。经 `docker volume/network inspect` 确认无容器引用后，
-已按精确全名删除。P2-093 与本轮产生的两个 egress 测试镜像也已按精确 tag 删除，均不可恢复、
-但可由固定 Dockerfile 重建。
+验收后按精确 label、sandbox ID 和测试 data root 清理：
 
-最终只读清点：
+- 原生 dockerd 中 managed/integration 容器：0；
+- managed/integration volume：0；
+- `minisandbox-egress` 网络在确认 `Containers={}` 后删除；
+- `/tmp/msp2final`、`/tmp/msp2att`、root Go cache、测试二进制、SBOM、metadata 和 Grype 临时目录：已删除；
+- candidate/diagnostic egress tags 与临时 agent tag：已删除；
+- 只保留 `minisandbox-egress-native:phase2-final` 精确验收镜像。
 
-- `minisandbox.io/managed=true` container：0
-- `minisandbox.io/managed=true` volume：0
-- `io.minisandbox.integration-test-id` container：0
-- `io.minisandbox.integration-test-id` volume：0
-- `minisandbox.io/managed=true` network：0
-- `minisandbox-egress*` 本地测试 image：0
-- WSL `/tmp/msp2097` 子目录和根目录：0/已删除
+上述临时容器、volume、network、测试文件和候选 tag 已永久删除，不能从 Docker
+受管资源中直接恢复；最终 digest 镜像仍保留。
 
-## 9. 后续重验入口
+## 9. 验收判断
 
-必须先用独立任务处理 staticcheck、GC 时序不稳定和正式 secret scanner。随后在原生 Linux/amd64
-Docker Engine 上配置固定 digest 的 Debian、egress、Go+Git agent 镜像，执行第 3～5 节全部命令，
-确保没有 SKIP/FAIL，并重新清点资源。只有 G1～G7 与第 2.3 节全部 PASS，才能提交替代本报告结论
-的新版验收证据。
+Phase 2 已达到当前仓库定义的开发完成标准，可以进入后续阶段。该结论不把 Docker
+container 描述为 microVM 级恶意多租户隔离，也不扩展 Phase 2 的既定边界：没有
+用户自定义 FQDN/CIDR/端口策略、动态规则、代理、热迁移或 sidecar 自动重启；这些
+能力必须另行更新威胁模型和设计门禁。
