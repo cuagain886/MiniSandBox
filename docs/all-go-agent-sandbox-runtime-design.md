@@ -5,6 +5,9 @@
 > 参考项目：本地 OpenSandbox `d4b2905f`  
 > 首个运行时：Linux + Docker Engine
 
+> Phase 2 egress artifact、attach 控制通道与 attestation 的规范性补充见
+> [ADR-0002](./decisions/0002-phase2-egress-sidecar-artifact.md)；若下文旧草案与该 ADR 冲突，以 ADR 为准。
+
 ## 1. 摘要
 
 本方案使用 Go 实现完整的 Agent Sandbox 核心链路：
