@@ -17,7 +17,7 @@ func TestReadBootstrap(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read bootstrap: %v", err)
 	}
-	if got.Hash != policy.Hash || len(got.IPv4) != len(policy.IPv4) || len(got.IPv6) != len(policy.IPv6) {
+	if got.Policy.Hash != policy.Hash || len(got.Policy.IPv4) != len(policy.IPv4) || len(got.Policy.IPv6) != len(policy.IPv6) {
 		t.Fatalf("decoded policy mismatch: %+v", got)
 	}
 }
@@ -38,6 +38,7 @@ func TestReadBootstrapRejections(t *testing.T) {
 		{name: "trailing byte replay", data: append(frame(validPayload), 0)},
 		{name: "trailing JSON value", data: frame(append(validPayload, []byte(" {}")...))},
 		{name: "unknown field", data: frame([]byte(strings.TrimSuffix(string(validPayload), "}") + `,"extra":true}`))},
+		{name: "duplicate field", data: frame([]byte(strings.TrimSuffix(string(validPayload), "}") + `,"protocol_version":1}`))},
 		{name: "malformed JSON", data: frame([]byte("{"))},
 		{name: "missing deny sets", data: frame([]byte(`{"protocol_version":1,"rule_schema_version":1,"policy_hash":"` + policy.Hash + `"}`))},
 	}
@@ -89,6 +90,10 @@ func wirePolicy(policy egresspolicy.Policy) bootstrapWire {
 	wire := bootstrapWire{
 		ProtocolVersion: policy.ProtocolVersion, RuleSchemaVersion: policy.RuleSchemaVersion,
 		PolicyHash: policy.Hash, IPv4Denied: make([]string, len(policy.IPv4)), IPv6Denied: make([]string, len(policy.IPv6)),
+		NetworkNamespace: "linux-netns:4:4026533000",
+		ImageDigest:      "registry.example/egressd@sha256:" + strings.Repeat("a", 64),
+		AnchorUID:        65532,
+		AnchorGID:        65532,
 	}
 	for index, prefix := range policy.IPv4 {
 		wire.IPv4Denied[index] = prefix.String()
