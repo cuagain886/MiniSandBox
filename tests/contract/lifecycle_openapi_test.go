@@ -38,7 +38,6 @@ func TestPhase3LifecycleOpenAPISurface(t *testing.T) {
 	}
 
 	forbidden := []string{
-		"Idempotency-Key",
 		"working_dir:",
 		"description: Timeout in nanoseconds",
 		"sidecar_image:",
@@ -51,6 +50,65 @@ func TestPhase3LifecycleOpenAPISurface(t *testing.T) {
 		if strings.Contains(document, fragment) {
 			t.Errorf("lifecycle OpenAPI contains unsupported surface %q", fragment)
 		}
+	}
+}
+
+// TestPhase3IdempotencyKeyContract 固定 create header、重放和冲突语义。
+func TestPhase3IdempotencyKeyContract(t *testing.T) {
+	document := readLifecycleOpenAPI(t)
+	parameter := openAPISchemaBlock(
+		t,
+		document,
+		"    IdempotencyKey:",
+		"    SandboxID:",
+	)
+	for _, fragment := range []string{
+		"      name: Idempotency-Key",
+		"      in: header",
+		"      required: false",
+		"        minLength: 1",
+		"        maxLength: 128",
+		"        pattern: '^[A-Za-z0-9._:-]+$'",
+		"Exactly zero or one field-value is accepted",
+		"The raw key is never returned or logged",
+	} {
+		if !strings.Contains(parameter, fragment) {
+			t.Errorf("idempotency parameter is missing %q", fragment)
+		}
+	}
+
+	createPath := openAPISchemaBlock(
+		t,
+		document,
+		"  /v1/sandboxes:",
+		"  /v1/sandboxes/{sandbox_id}:",
+	)
+	for _, fragment := range []string{
+		`$ref: "#/components/parameters/IdempotencyKey"`,
+		"Without Idempotency-Key every accepted call creates a new sandbox",
+		"the same key and presence-aware canonical request replays the first 202 status",
+		"a different request returns 409",
+		"Only committed 202",
+		"Every replay receives a fresh X-Request-ID response header",
+		"            Location:",
+		"              required: true",
+		"            X-Request-ID:",
+	} {
+		if !strings.Contains(createPath, fragment) {
+			t.Errorf("create idempotency contract is missing %q", fragment)
+		}
+	}
+	if !strings.Contains(document, "        - IDEMPOTENCY_CONFLICT") {
+		t.Fatal("ErrorCode enum is missing IDEMPOTENCY_CONFLICT")
+	}
+	sandboxSchema := openAPISchemaBlock(
+		t,
+		document,
+		"    Sandbox:",
+		"      example:",
+	)
+	if strings.Contains(strings.ToLower(sandboxSchema), "idempotency") {
+		t.Fatal("Sandbox response must not echo idempotency metadata")
 	}
 }
 

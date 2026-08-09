@@ -36,6 +36,8 @@ const (
 	ErrorCodeLeaseConflict ErrorCode = "LEASE_CONFLICT"
 	// ErrorCodeSandboxExpiring 表示 sandbox 已过期或终止意图已经提交，不能续期。
 	ErrorCodeSandboxExpiring ErrorCode = "SANDBOX_EXPIRING"
+	// ErrorCodeIdempotencyConflict 表示同一幂等 key 已绑定到不同创建请求。
+	ErrorCodeIdempotencyConflict ErrorCode = "IDEMPOTENCY_CONFLICT"
 )
 
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。

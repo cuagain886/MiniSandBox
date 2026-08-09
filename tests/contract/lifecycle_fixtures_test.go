@@ -55,6 +55,8 @@ func TestLifecycleFixtures(t *testing.T) {
 		}
 		expected := []string{
 			"create-accepted.json",
+			"create-idempotency-conflict.json",
+			"create-idempotency-replay.json",
 			"create-request-network-false.json",
 			"create-request-network-true.json",
 			"create-request-ttl-max.json",
@@ -142,6 +144,43 @@ func TestLifecycleFixtures(t *testing.T) {
 			sandbox,
 			protocol.SandboxStatePending,
 			protocol.SandboxReasonCreateAccepted,
+		)
+	})
+
+	t.Run("create idempotency replay", func(t *testing.T) {
+		first, err := os.ReadFile(filepath.Join(lifecycleFixtureDir(t), "create-accepted.json"))
+		if err != nil {
+			t.Fatalf("read first create response: %v", err)
+		}
+		replay, err := os.ReadFile(filepath.Join(lifecycleFixtureDir(t), "create-idempotency-replay.json"))
+		if err != nil {
+			t.Fatalf("read replay create response: %v", err)
+		}
+		if !bytes.Equal(replay, first) {
+			t.Fatal("idempotency replay body must exactly match the first accepted response")
+		}
+		sandbox := decodeLifecycleFixture[protocol.Sandbox](
+			t,
+			"create-idempotency-replay.json",
+		)
+		assertSandboxFixture(
+			t,
+			sandbox,
+			protocol.SandboxStatePending,
+			protocol.SandboxReasonCreateAccepted,
+		)
+	})
+
+	t.Run("create idempotency conflict", func(t *testing.T) {
+		response := decodeLifecycleFixture[errorFixture](
+			t,
+			"create-idempotency-conflict.json",
+		)
+		assertErrorFixture(
+			t,
+			response,
+			string(protocol.ErrorCodeIdempotencyConflict),
+			false,
 		)
 	})
 

@@ -11,8 +11,9 @@ import (
 )
 
 const (
-	minimumSandboxTTL = time.Minute
-	maximumSandboxTTL = 24 * time.Hour
+	minimumSandboxTTL    = time.Minute
+	maximumSandboxTTL    = 24 * time.Hour
+	idempotencyKeyHeader = "Idempotency-Key"
 )
 
 // CreateSandboxRequest 是 Go SDK 面向调用方的创建请求模型。
@@ -38,6 +39,12 @@ type SandboxNetworkRequest struct {
 type RenewSandboxRequest struct {
 	// ExpiresAt 是请求的新绝对到期时间；SDK 会无损归一化为 UTC 后发送。
 	ExpiresAt time.Time
+}
+
+// CreateSandboxOptions 描述不属于 JSON body 的可选创建语义。
+type CreateSandboxOptions struct {
+	// IdempotencyKey 在当前 local:v1 scope 内标识可安全重放的创建请求；空字符串表示不发送。
+	IdempotencyKey string
 }
 
 // wire 把 SDK 原生 duration 映射为稳定的秒级创建协议。
@@ -81,9 +88,66 @@ func (c *Client) CreateSandbox(
 	ctx context.Context,
 	request protocol.CreateSandboxRequest,
 ) (protocol.Sandbox, error) {
+	return c.createSandbox(ctx, request, "")
+}
+
+// CreateSandboxWithOptions 使用 SDK 原生创建模型并附加可选幂等 key。
+//
+// 无 key 时与 CreateSandbox 相同，每次调用都保持非幂等创建语义。
+func (c *Client) CreateSandboxWithOptions(
+	ctx context.Context,
+	request CreateSandboxRequest,
+	options CreateSandboxOptions,
+) (protocol.Sandbox, error) {
+	wire, err := request.wire()
+	if err != nil {
+		return protocol.Sandbox{}, err
+	}
+	if options.IdempotencyKey != "" && !validIdempotencyKey(options.IdempotencyKey) {
+		return protocol.Sandbox{}, fmt.Errorf(
+			"minisandbox: idempotency key must contain 1 to 128 allowed ASCII characters",
+		)
+	}
+	return c.createSandbox(ctx, wire, options.IdempotencyKey)
+}
+
+func (c *Client) createSandbox(
+	ctx context.Context,
+	request protocol.CreateSandboxRequest,
+	idempotencyKey string,
+) (protocol.Sandbox, error) {
 	var sandbox protocol.Sandbox
-	err := c.doJSON(ctx, http.MethodPost, "/v1/sandboxes", request, &sandbox)
+	var headers http.Header
+	if idempotencyKey != "" {
+		headers = make(http.Header)
+		headers.Set(idempotencyKeyHeader, idempotencyKey)
+	}
+	err := c.doJSONWithHeaders(
+		ctx,
+		http.MethodPost,
+		"/v1/sandboxes",
+		request,
+		&sandbox,
+		headers,
+	)
 	return sandbox, err
+}
+
+func validIdempotencyKey(value string) bool {
+	if len(value) == 0 || len(value) > 128 {
+		return false
+	}
+	for index := range value {
+		character := value[index]
+		if character >= 'A' && character <= 'Z' ||
+			character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' ||
+			character == '.' || character == '_' || character == ':' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // GetSandbox 返回指定 sandbox 的当前生命周期状态。

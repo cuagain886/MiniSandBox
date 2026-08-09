@@ -30,6 +30,14 @@ paths:
   /v1/sandboxes:
     post:
       operationId: createSandbox
+      description: >-
+        Without Idempotency-Key every accepted call creates a new sandbox. Within retention,
+        the same key and presence-aware canonical request replays the first 202 status,
+        Location, and safe response body; a different request returns 409. Only committed 202
+        results are retained. Every replay receives a fresh X-Request-ID response header, and
+        the server-computed absolute expires_at is not part of the request identity.
+      parameters:
+        - $ref: "#/components/parameters/IdempotencyKey"
       requestBody:
         required: true
         content:
@@ -39,6 +47,17 @@ paths:
       responses:
         "202":
           description: Sandbox creation was accepted
+          headers:
+            Location:
+              required: true
+              description: Stable resource path returned by the first accepted request and every replay
+              schema:
+                type: string
+            X-Request-ID:
+              required: true
+              description: Fresh request identifier for this transport attempt, including replays
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -230,6 +249,18 @@ paths:
           $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
+    IdempotencyKey:
+      name: Idempotency-Key
+      in: header
+      required: false
+      description: >-
+        Optional key scoped to local:v1. Exactly zero or one field-value is accepted; repeated
+        field-lines or comma-joined values are invalid. The raw key is never returned or logged.
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 128
+        pattern: '^[A-Za-z0-9._:-]+$'
     SandboxID:
       name: sandbox_id
       in: path
@@ -364,6 +395,7 @@ components:
         - INVALID_EXPIRATION
         - LEASE_CONFLICT
         - SANDBOX_EXPIRING
+        - IDEMPOTENCY_CONFLICT
         - RUNTIME_UNAVAILABLE
         - NOT_IMPLEMENTED
         - INTERNAL_ERROR

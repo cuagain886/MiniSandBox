@@ -61,6 +61,25 @@ func (c *Client) doJSON(
 	requestBody any,
 	responseBody any,
 ) error {
+	return c.doJSONWithHeaders(
+		ctx,
+		method,
+		path,
+		requestBody,
+		responseBody,
+		nil,
+	)
+}
+
+// doJSONWithHeaders 在统一 JSON 语义上附加调用点严格控制的请求头。
+func (c *Client) doJSONWithHeaders(
+	ctx context.Context,
+	method string,
+	path string,
+	requestBody any,
+	responseBody any,
+	headers http.Header,
+) error {
 	var body bytes.Buffer
 	if requestBody != nil {
 		if err := json.NewEncoder(&body).Encode(requestBody); err != nil {
@@ -77,6 +96,11 @@ func (c *Client) doJSON(
 		return err
 	}
 	request.Header.Set("Content-Type", "application/json")
+	for name, values := range headers {
+		for _, value := range values {
+			request.Header.Add(name, value)
+		}
+	}
 	response, err := c.httpClient.Do(request)
 	if err != nil {
 		return err

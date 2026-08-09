@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -95,6 +96,107 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 	}
 	if !sandbox.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("unexpected updated time: got %s, want %s", sandbox.UpdatedAt, updatedAt)
+	}
+}
+
+// TestCreateSandboxWithOptionsMapping 验证 SDK 发送单个幂等 header 和原生 TTL 映射。
+func TestCreateSandboxWithOptionsMapping(t *testing.T) {
+	ttl := time.Hour
+	expiresAt := time.Date(2026, time.July, 25, 14, 0, 0, 0, time.UTC)
+	server := httptest.NewServer(http.HandlerFunc(func(
+		response http.ResponseWriter,
+		request *http.Request,
+	) {
+		values := request.Header.Values(idempotencyKeyHeader)
+		if len(values) != 1 || values[0] != "build-job_42:v1" {
+			t.Errorf("unexpected idempotency header values: %#v", values)
+		}
+		var body protocol.CreateSandboxRequest
+		if err := json.NewDecoder(request.Body).Decode(&body); err != nil {
+			t.Errorf("decode request body: %v", err)
+		}
+		if body.TTLSeconds == nil || *body.TTLSeconds != 3600 {
+			t.Errorf("unexpected TTL mapping: %#v", body.TTLSeconds)
+		}
+		if body.Network == nil || !body.Network.Outbound {
+			t.Errorf("unexpected network mapping: %#v", body.Network)
+		}
+
+		response.Header().Set("Content-Type", "application/json")
+		response.Header().Set("Location", "/v1/sandboxes/sbx-idempotent")
+		response.WriteHeader(http.StatusAccepted)
+		_ = json.NewEncoder(response).Encode(protocol.Sandbox{
+			ID:        "sbx-idempotent",
+			State:     protocol.SandboxStatePending,
+			Reason:    protocol.SandboxReasonCreateAccepted,
+			Message:   "Sandbox creation has been accepted.",
+			Image:     "alpine:3.22",
+			ExpiresAt: expiresAt,
+			CreatedAt: expiresAt.Add(-time.Hour),
+			UpdatedAt: expiresAt.Add(-time.Hour),
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	sandbox, err := client.CreateSandboxWithOptions(
+		context.Background(),
+		CreateSandboxRequest{
+			Image: "alpine:3.22",
+			TTL:   &ttl,
+			Network: &SandboxNetworkRequest{
+				Outbound: true,
+			},
+		},
+		CreateSandboxOptions{IdempotencyKey: "build-job_42:v1"},
+	)
+	if err != nil {
+		t.Fatalf("create sandbox with options: %v", err)
+	}
+	if sandbox.ID != "sbx-idempotent" || !sandbox.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("unexpected sandbox response: %#v", sandbox)
+	}
+}
+
+// TestCreateSandboxOptionsIdempotencyKey 验证 key 字符、长度边界和安全错误文本。
+func TestCreateSandboxOptionsIdempotencyKey(t *testing.T) {
+	valid := []string{
+		"a",
+		strings.Repeat("A", 128),
+		"Az09._:-",
+	}
+	for _, value := range valid {
+		if !validIdempotencyKey(value) {
+			t.Errorf("valid key was rejected: length=%d", len(value))
+		}
+	}
+	invalid := []string{
+		"",
+		strings.Repeat("a", 129),
+		"has space",
+		"slash/value",
+		"comma,value",
+		"unicode-密钥",
+		"line\nbreak",
+	}
+	for _, value := range invalid {
+		if validIdempotencyKey(value) {
+			t.Errorf("invalid key was accepted: length=%d", len(value))
+		}
+	}
+
+	secretInvalid := "secret/value"
+	client := NewClient("http://127.0.0.1:1", nil)
+	_, err := client.CreateSandboxWithOptions(
+		context.Background(),
+		CreateSandboxRequest{Image: "alpine:3.22"},
+		CreateSandboxOptions{IdempotencyKey: secretInvalid},
+	)
+	if err == nil {
+		t.Fatal("invalid idempotency key must be rejected before HTTP")
+	}
+	if strings.Contains(err.Error(), secretInvalid) {
+		t.Fatalf("validation error leaked idempotency key: %v", err)
 	}
 }
 

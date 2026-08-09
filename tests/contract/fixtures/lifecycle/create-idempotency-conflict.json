@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "IDEMPOTENCY_CONFLICT",
+    "message": "Idempotency key conflicts with a different request.",
+    "request_id": "req-idempotency-conflict",
+    "retryable": false
+  }
+}
