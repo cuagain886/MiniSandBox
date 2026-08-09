@@ -195,24 +195,42 @@ func startProductionHTTP(
 		queueWaker{queue: queue},
 		cfg.Security.AllowOutbound,
 	)
+	masterKey, err := runnerauth.LoadMasterKey(cfg.Security.RunnerMasterKeyFile)
+	if err != nil {
+		return nil, err
+	}
+	runnerFactory, err := runnerclient.NewFactory(cfg.Runtime.RunnerSocketDirectory, &masterKey, runnerbootstrap.CurrentProtocolVersion, cfg.Reconcile.RunnerReadyTimeout)
+	masterKey.Clear()
+	if err != nil {
+		return nil, err
+	}
+	execution, err := application.NewExecutionService(sandboxStore, applicationExecutionFactory{factory: runnerFactory}, cfg.Runner.MaxLogPageEvents)
+	if err != nil {
+		runnerFactory.Close()
+		return nil, err
+	}
 	server := &http.Server{
 		Addr: cfg.Server.ListenAddress,
 		Handler: controlapi.NewRouter(
 			build,
 			controlapi.RouterDependencies{
-				Lifecycle: lifecycle,
-				Readiness: readiness,
+				Lifecycle:       lifecycle,
+				Execution:       execution,
+				SSEWriteTimeout: cfg.Runner.SSEWriteTimeout,
+				Readiness:       readiness,
 			},
 		),
 		ReadHeaderTimeout: cfg.Server.ShutdownTimeout,
 	}
 	listener, err := net.Listen("tcp", cfg.Server.ListenAddress)
 	if err != nil {
+		runnerFactory.Close()
 		return nil, err
 	}
 	handle := &runningHTTP{
-		server: server,
-		done:   make(chan error, 1),
+		server:       server,
+		done:         make(chan error, 1),
+		closeFactory: runnerFactory.Close,
 	}
 	go func() {
 		err := server.Serve(listener)
@@ -261,9 +279,10 @@ func (w *runningWorker) Close(ctx context.Context) error {
 
 // runningHTTP 管理已经绑定端口的 HTTP server。
 type runningHTTP struct {
-	server *http.Server
-	done   chan error
-	once   sync.Once
+	server       *http.Server
+	done         chan error
+	once         sync.Once
+	closeFactory func()
 }
 
 // Done 返回 server 退出结果。
@@ -273,6 +292,9 @@ func (s *runningHTTP) Done() <-chan error {
 
 // Close 优雅关闭 HTTP server。
 func (s *runningHTTP) Close(ctx context.Context) error {
+	if s.closeFactory != nil {
+		defer s.closeFactory()
+	}
 	var err error
 	s.once.Do(func() {
 		err = s.server.Shutdown(ctx)
