@@ -30,6 +30,12 @@ const (
 	ErrorCodeEgressNotReady ErrorCode = "EGRESS_NOT_READY"
 	// ErrorCodeEgressUnhealthy 表示已创建 sandbox 的 egress 安全证明失效。
 	ErrorCodeEgressUnhealthy ErrorCode = "EGRESS_UNHEALTHY"
+	// ErrorCodeInvalidExpiration 表示 renew 到期时间格式或服务端边界非法。
+	ErrorCodeInvalidExpiration ErrorCode = "INVALID_EXPIRATION"
+	// ErrorCodeLeaseConflict 表示 renew 试图缩短租约或与更晚的并发续期冲突。
+	ErrorCodeLeaseConflict ErrorCode = "LEASE_CONFLICT"
+	// ErrorCodeSandboxExpiring 表示 sandbox 已过期或终止意图已经提交，不能续期。
+	ErrorCodeSandboxExpiring ErrorCode = "SANDBOX_EXPIRING"
 )
 
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。

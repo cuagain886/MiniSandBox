@@ -34,6 +34,12 @@ type SandboxNetworkRequest struct {
 	Outbound bool
 }
 
+// RenewSandboxRequest 是 Go SDK 面向调用方的续期请求。
+type RenewSandboxRequest struct {
+	// ExpiresAt 是请求的新绝对到期时间；SDK 会无损归一化为 UTC 后发送。
+	ExpiresAt time.Time
+}
+
 // wire 把 SDK 原生 duration 映射为稳定的秒级创建协议。
 func (r CreateSandboxRequest) wire() (protocol.CreateSandboxRequest, error) {
 	var ttlSeconds *int64
@@ -60,6 +66,16 @@ func (r CreateSandboxRequest) wire() (protocol.CreateSandboxRequest, error) {
 	}, nil
 }
 
+// wire 校验非零绝对时间并归一化为 UTC wire model。
+func (r RenewSandboxRequest) wire() (protocol.RenewSandboxRequest, error) {
+	if r.ExpiresAt.IsZero() {
+		return protocol.RenewSandboxRequest{}, fmt.Errorf(
+			"minisandbox: sandbox expiration must not be zero",
+		)
+	}
+	return protocol.RenewSandboxRequest{ExpiresAt: r.ExpiresAt.UTC()}, nil
+}
+
 // CreateSandbox 提交 sandbox 创建请求。
 func (c *Client) CreateSandbox(
 	ctx context.Context,
@@ -81,6 +97,30 @@ func (c *Client) GetSandbox(
 		http.MethodGet,
 		"/v1/sandboxes/"+url.PathEscape(id),
 		nil,
+		&sandbox,
+	)
+	return sandbox, err
+}
+
+// RenewSandbox 请求把指定 sandbox 的租约延长到绝对 UTC 时间。
+//
+// 等于当前到期时间由服务端作为幂等 no-op 返回 200；缩短、已过期或已提交终止
+// 意图由服务端返回稳定 409 错误。
+func (c *Client) RenewSandbox(
+	ctx context.Context,
+	id string,
+	request RenewSandboxRequest,
+) (protocol.Sandbox, error) {
+	wire, err := request.wire()
+	if err != nil {
+		return protocol.Sandbox{}, err
+	}
+	var sandbox protocol.Sandbox
+	err = c.doJSON(
+		ctx,
+		http.MethodPost,
+		"/v1/sandboxes/"+url.PathEscape(id)+"/renew",
+		wire,
 		&sandbox,
 	)
 	return sandbox, err

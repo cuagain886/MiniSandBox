@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "LEASE_CONFLICT",
+    "message": "Sandbox lease conflicts with the current expiration.",
+    "request_id": "req-renew-conflict",
+    "retryable": false
+  }
+}

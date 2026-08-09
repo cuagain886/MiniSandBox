@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SANDBOX_EXPIRING",
+    "message": "Sandbox is expiring or terminating.",
+    "request_id": "req-renew-expiring",
+    "retryable": false
+  }
+}

@@ -82,6 +82,15 @@ type SandboxNetworkRequest struct {
 	Outbound bool `json:"outbound"`
 }
 
+// RenewSandboxRequest 是续期 sandbox 的公共请求模型。
+//
+// ExpiresAt 使用绝对时间，避免重试相对增量时重复延长；服务端负责校验只能延长、
+// 尚未过期以及配置的最小和最大续期边界。
+type RenewSandboxRequest struct {
+	// ExpiresAt 是客户端请求的新绝对到期时间，wire 使用 RFC3339。
+	ExpiresAt time.Time `json:"expires_at"`
+}
+
 // Sandbox 是生命周期 API 返回的公共资源描述。
 type Sandbox struct {
 	// ID 是控制面生成的稳定 sandbox 标识。

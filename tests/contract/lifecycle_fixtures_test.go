@@ -64,6 +64,15 @@ func TestLifecycleFixtures(t *testing.T) {
 			"get-running.json",
 			"health-ok.json",
 			"ready-unavailable.json",
+			"renew-invalid-expiration.json",
+			"renew-lease-conflict.json",
+			"renew-not-found.json",
+			"renew-request-invalid-time.json",
+			"renew-request-offset.json",
+			"renew-request-unknown-field.json",
+			"renew-request.json",
+			"renew-sandbox-expiring.json",
+			"renew-success.json",
 		}
 		slices.Sort(actual)
 		if !slices.Equal(actual, expected) {
@@ -149,6 +158,57 @@ func TestLifecycleFixtures(t *testing.T) {
 		)
 	})
 
+	t.Run("renew request", func(t *testing.T) {
+		want := time.Date(2026, time.July, 26, 11, 0, 0, 0, time.UTC)
+		for _, name := range []string{"renew-request.json", "renew-request-offset.json"} {
+			request := decodeLifecycleFixture[protocol.RenewSandboxRequest](t, name)
+			if !request.ExpiresAt.Equal(want) {
+				t.Fatalf("%s expiration: got %s, want %s", name, request.ExpiresAt, want)
+			}
+			if got := request.ExpiresAt.UTC(); !got.Equal(want) || got.Location() != time.UTC {
+				t.Fatalf("%s UTC normalization: got %s, want %s", name, got, want)
+			}
+		}
+	})
+
+	t.Run("renew request rejects invalid documents", func(t *testing.T) {
+		for _, name := range []string{
+			"renew-request-invalid-time.json",
+			"renew-request-unknown-field.json",
+		} {
+			assertLifecycleFixtureDecodeError[protocol.RenewSandboxRequest](t, name)
+		}
+	})
+
+	t.Run("renew success", func(t *testing.T) {
+		sandbox := decodeLifecycleFixture[protocol.Sandbox](t, "renew-success.json")
+		assertSandboxFixture(
+			t,
+			sandbox,
+			protocol.SandboxStateRunning,
+			protocol.SandboxReasonRunning,
+		)
+		want := time.Date(2026, time.July, 26, 11, 0, 0, 0, time.UTC)
+		if !sandbox.ExpiresAt.Equal(want) {
+			t.Fatalf("renewed expiration: got %s, want %s", sandbox.ExpiresAt, want)
+		}
+	})
+
+	t.Run("renew errors", func(t *testing.T) {
+		for _, test := range []struct {
+			name string
+			code protocol.ErrorCode
+		}{
+			{name: "renew-invalid-expiration.json", code: protocol.ErrorCodeInvalidExpiration},
+			{name: "renew-not-found.json", code: "SANDBOX_NOT_FOUND"},
+			{name: "renew-lease-conflict.json", code: protocol.ErrorCodeLeaseConflict},
+			{name: "renew-sandbox-expiring.json", code: protocol.ErrorCodeSandboxExpiring},
+		} {
+			response := decodeLifecycleFixture[errorFixture](t, test.name)
+			assertErrorFixture(t, response, string(test.code), false)
+		}
+	})
+
 	t.Run("delete not found", func(t *testing.T) {
 		response := decodeLifecycleFixture[errorFixture](
 			t,
@@ -230,6 +290,20 @@ func decodeLifecycleFixture[T any](t *testing.T, name string) T {
 		t.Fatalf("fixture %s must contain one JSON document, got %v", name, err)
 	}
 	return value
+}
+
+func assertLifecycleFixtureDecodeError[T any](t *testing.T, name string) {
+	t.Helper()
+	content, err := os.ReadFile(filepath.Join(lifecycleFixtureDir(t), name))
+	if err != nil {
+		t.Fatalf("read fixture %s: %v", name, err)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(content))
+	decoder.DisallowUnknownFields()
+	var value T
+	if err := decoder.Decode(&value); err == nil {
+		t.Fatalf("fixture %s must be rejected", name)
+	}
 }
 
 // lifecycleFixtureDir 返回相对于当前测试文件的 lifecycle fixture 目录。

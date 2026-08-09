@@ -1,8 +1,10 @@
 package sdk
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -93,6 +95,71 @@ func TestCreateSandboxRequestMapping(t *testing.T) {
 	}
 	if !sandbox.UpdatedAt.Equal(updatedAt) {
 		t.Fatalf("unexpected updated time: got %s, want %s", sandbox.UpdatedAt, updatedAt)
+	}
+}
+
+// TestRenewSandboxMapping 验证 SDK 使用公开 renew path、UTC 时间和公共响应模型。
+func TestRenewSandboxMapping(t *testing.T) {
+	location := time.FixedZone("UTC+8", 8*60*60)
+	requested := time.Date(2026, time.July, 25, 21, 0, 0, 123_456_789, location)
+	createdAt := time.Date(2026, time.July, 25, 11, 0, 0, 0, time.UTC)
+	updatedAt := createdAt.Add(time.Minute)
+	server := httptest.NewServer(http.HandlerFunc(func(
+		response http.ResponseWriter,
+		request *http.Request,
+	) {
+		if got, want := request.Method, http.MethodPost; got != want {
+			t.Errorf("unexpected method: got %s, want %s", got, want)
+		}
+		if got, want := request.URL.Path, "/v1/sandboxes/sbx-test/renew"; got != want {
+			t.Errorf("unexpected path: got %s, want %s", got, want)
+		}
+		content, err := io.ReadAll(request.Body)
+		if err != nil {
+			t.Errorf("read request: %v", err)
+		}
+		const wantBody = `{"expires_at":"2026-07-25T13:00:00.123456789Z"}` + "\n"
+		if !bytes.Equal(content, []byte(wantBody)) {
+			t.Errorf("unexpected request body: got %s, want %s", content, wantBody)
+		}
+
+		response.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(response).Encode(protocol.Sandbox{
+			ID:        "sbx-test",
+			State:     protocol.SandboxStateRunning,
+			Reason:    protocol.SandboxReasonRunning,
+			Message:   "Sandbox is running.",
+			Image:     "alpine:3.22",
+			ExpiresAt: requested.UTC(),
+			CreatedAt: createdAt,
+			UpdatedAt: updatedAt,
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	sandbox, err := client.RenewSandbox(
+		context.Background(),
+		"sbx-test",
+		RenewSandboxRequest{ExpiresAt: requested},
+	)
+	if err != nil {
+		t.Fatalf("renew sandbox: %v", err)
+	}
+	if !sandbox.ExpiresAt.Equal(requested) || sandbox.ExpiresAt.Location() != time.UTC {
+		t.Fatalf("renewed expiration: got %s, want %s UTC", sandbox.ExpiresAt, requested)
+	}
+}
+
+// TestRenewSandboxRejectsZeroExpiration 验证 SDK 不发送无法表示租约的零时间。
+func TestRenewSandboxRejectsZeroExpiration(t *testing.T) {
+	client := NewClient("http://127.0.0.1:1", nil)
+	if _, err := client.RenewSandbox(
+		context.Background(),
+		"sbx-test",
+		RenewSandboxRequest{},
+	); err == nil {
+		t.Fatal("zero expiration must be rejected before HTTP")
 	}
 }
 

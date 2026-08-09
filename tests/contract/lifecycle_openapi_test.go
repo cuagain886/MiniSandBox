@@ -18,10 +18,12 @@ func TestPhase3LifecycleOpenAPISurface(t *testing.T) {
 		"  /readyz:",
 		"  /v1/sandboxes:",
 		"  /v1/sandboxes/{sandbox_id}:",
+		"  /v1/sandboxes/{sandbox_id}/renew:",
 		"  /v1/sandboxes/{sandbox_id}/executions:",
 		"      operationId: createSandbox",
 		"      operationId: getSandbox",
 		"      operationId: deleteSandbox",
+		"      operationId: renewSandbox",
 		"      operationId: health",
 		"      operationId: ready",
 		"      operationId: executeSandboxCommand",
@@ -37,8 +39,6 @@ func TestPhase3LifecycleOpenAPISurface(t *testing.T) {
 
 	forbidden := []string{
 		"Idempotency-Key",
-		"/renew:",
-		"renewSandbox",
 		"working_dir:",
 		"description: Timeout in nanoseconds",
 		"sidecar_image:",
@@ -61,7 +61,7 @@ func TestPhase3SandboxResponseSchema(t *testing.T) {
 	if got, want := strings.Count(
 		document,
 		`$ref: "#/components/schemas/Sandbox"`,
-	), 2; got != want {
+	), 3; got != want {
 		t.Fatalf("unexpected Sandbox schema reference count: got %d, want %d", got, want)
 	}
 
@@ -110,6 +110,61 @@ func TestPhase3SandboxResponseSchema(t *testing.T) {
 	for _, fragment := range forbidden {
 		if strings.Contains(document, fragment) {
 			t.Errorf("Sandbox response contains unsupported field %q", fragment)
+		}
+	}
+}
+
+// TestPhase3RenewContract 固定绝对续期时间、响应状态和租约错误语义。
+func TestPhase3RenewContract(t *testing.T) {
+	document := readLifecycleOpenAPI(t)
+	pathBlock := openAPISchemaBlock(
+		t,
+		document,
+		"  /v1/sandboxes/{sandbox_id}/renew:",
+		"  /v1/sandboxes/{sandbox_id}/executions:",
+	)
+	for _, fragment := range []string{
+		"      operationId: renewSandbox",
+		`$ref: "#/components/schemas/RenewSandboxRequest"`,
+		`$ref: "#/components/schemas/Sandbox"`,
+		"        \"200\":",
+		"        \"400\":",
+		"        \"404\":",
+		"        \"409\":",
+	} {
+		if !strings.Contains(pathBlock, fragment) {
+			t.Errorf("renew path is missing %q", fragment)
+		}
+	}
+
+	requestSchema := openAPISchemaBlock(
+		t,
+		document,
+		"    RenewSandboxRequest:",
+		"    ExecuteRequest:",
+	)
+	for _, fragment := range []string{
+		"      additionalProperties: false",
+		"      required: [expires_at]",
+		"        expires_at:",
+		"          format: date-time",
+	} {
+		if !strings.Contains(requestSchema, fragment) {
+			t.Errorf("renew request schema is missing %q", fragment)
+		}
+	}
+	for _, forbidden := range []string{"ttl_seconds", "duration", "extend_by"} {
+		if strings.Contains(requestSchema, forbidden) {
+			t.Errorf("renew request contains relative field %q", forbidden)
+		}
+	}
+	for _, code := range []string{
+		"INVALID_EXPIRATION",
+		"LEASE_CONFLICT",
+		"SANDBOX_EXPIRING",
+	} {
+		if !strings.Contains(document, "        - "+code) {
+			t.Errorf("renew error enum is missing %s", code)
 		}
 	}
 }

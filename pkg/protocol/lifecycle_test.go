@@ -93,6 +93,32 @@ func TestCreateSandboxRequestSurface(t *testing.T) {
 	}
 }
 
+// TestRenewSandboxRequestJSONRoundTrip 验证续期 wire 只包含绝对到期时间。
+func TestRenewSandboxRequestJSONRoundTrip(t *testing.T) {
+	original := RenewSandboxRequest{
+		ExpiresAt: time.Date(2026, time.July, 25, 13, 0, 0, 123_456_789, time.UTC),
+	}
+	encoded, err := json.Marshal(original)
+	if err != nil {
+		t.Fatalf("marshal renew request: %v", err)
+	}
+	const expected = `{"expires_at":"2026-07-25T13:00:00.123456789Z"}`
+	if got := string(encoded); got != expected {
+		t.Fatalf("unexpected JSON: got %s, want %s", got, expected)
+	}
+	var decoded RenewSandboxRequest
+	if err := json.Unmarshal(encoded, &decoded); err != nil {
+		t.Fatalf("unmarshal renew request: %v", err)
+	}
+	if !reflect.DeepEqual(decoded, original) {
+		t.Fatalf("round trip mismatch: got %#v, want %#v", decoded, original)
+	}
+	requestType := reflect.TypeOf(RenewSandboxRequest{})
+	if requestType.NumField() != 1 || requestType.Field(0).Name != "ExpiresAt" {
+		t.Fatalf("unexpected renew request fields: %#v", requestType)
+	}
+}
+
 // TestSandboxJSONRoundTrip 验证 Phase 1 状态响应的字段名称、枚举和时间格式。
 func TestSandboxJSONRoundTrip(t *testing.T) {
 	timestamp := time.Date(2026, time.July, 25, 10, 30, 0, 0, time.UTC)
