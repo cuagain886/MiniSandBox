@@ -11,7 +11,7 @@ import (
 
 const (
 	// createAcceptedReason 是创建意图首次持久化时的稳定机器可读原因。
-	createAcceptedReason = "CREATE_ACCEPTED"
+	createAcceptedReason = domain.SandboxReasonCreateAccepted
 	// createAcceptedMessage 是不会泄露内部状态的固定创建受理文案。
 	createAcceptedMessage = "Sandbox creation has been accepted."
 )

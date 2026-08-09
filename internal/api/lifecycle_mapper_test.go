@@ -51,10 +51,18 @@ func TestMapSandboxReason(t *testing.T) {
 		protocol.SandboxReasonArtifactInjectionFailed,
 		protocol.SandboxReasonContainerStartFailed,
 		protocol.SandboxReasonRunnerUnhealthy,
+		protocol.SandboxReasonRunnerProtocolMismatch,
+		protocol.SandboxReasonEgressUnhealthy,
 		protocol.SandboxReasonSpecDrift,
 		protocol.SandboxReasonCleanupPending,
 		protocol.SandboxReasonRuntimeUnavailable,
 		protocol.SandboxReasonInternalError,
+		protocol.SandboxReasonRetryScheduled,
+		protocol.SandboxReasonRecoveringRuntime,
+		protocol.SandboxReasonRunnerHealthDegraded,
+		protocol.SandboxReasonTTLExpired,
+		protocol.SandboxReasonOrphanImported,
+		protocol.SandboxReasonOrphanExpired,
 	}
 	for _, reason := range reasons {
 		got, err := mapSandboxReason(string(reason))
@@ -84,7 +92,7 @@ func TestMapSandboxResponseSafeFields(t *testing.T) {
 		DesiredState:  domain.DesiredRunning,
 		ObservedState: domain.StateFailed,
 		Reason:        "RUNNER_UNHEALTHY",
-		Message:       "Sandbox runner did not become ready.",
+		Message:       "secret runner probe detail from Store",
 		RuntimeID:     "secret-runtime-id",
 		SpecHash:      "secret-spec-hash",
 		Revision:      42,
@@ -99,7 +107,7 @@ func TestMapSandboxResponseSafeFields(t *testing.T) {
 	if got.ID != sandbox.ID ||
 		got.State != protocol.SandboxStateFailed ||
 		got.Reason != protocol.SandboxReasonRunnerUnhealthy ||
-		got.Message != sandbox.Message ||
+		got.Message != "Sandbox runner is unhealthy." ||
 		got.Image != sandbox.Spec.Image {
 		t.Fatalf("public response mismatch: %#v", got)
 	}
@@ -119,6 +127,7 @@ func TestMapSandboxResponseSafeFields(t *testing.T) {
 		"revision",
 		"memory_mib",
 		"mount_path",
+		"secret runner probe detail from Store",
 	} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("public response leaked %q: %s", forbidden, encoded)
@@ -149,6 +158,15 @@ func TestMapSandboxResponseRejectsUnknownValues(t *testing.T) {
 				Reason:        secret,
 			},
 			want: errUnsupportedSandboxReason,
+		},
+		{
+			name: "known reason with invalid state",
+			sandbox: domain.Sandbox{
+				ObservedState: domain.StateRunning,
+				Reason:        domain.SandboxReasonTTLExpired,
+				Message:       secret,
+			},
+			want: errUnsupportedSandboxStatus,
 		},
 	}
 	for _, tt := range tests {

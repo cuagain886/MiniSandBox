@@ -2,6 +2,7 @@
 package contract_test
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"runtime"
@@ -153,10 +154,18 @@ func TestPhase3SandboxResponseSchema(t *testing.T) {
 		"ARTIFACT_INJECTION_FAILED",
 		"CONTAINER_START_FAILED",
 		"RUNNER_UNHEALTHY",
+		"RUNNER_PROTOCOL_MISMATCH",
+		"EGRESS_UNHEALTHY",
 		"SPEC_DRIFT",
 		"CLEANUP_PENDING",
 		"RUNTIME_UNAVAILABLE",
 		"INTERNAL_ERROR",
+		"RETRY_SCHEDULED",
+		"RECOVERING_RUNTIME",
+		"RUNNER_HEALTH_DEGRADED",
+		"TTL_EXPIRED",
+		"ORPHAN_IMPORTED",
+		"ORPHAN_EXPIRED",
 	}
 	for _, reason := range reasons {
 		if !strings.Contains(document, "        - "+reason) {
@@ -169,6 +178,90 @@ func TestPhase3SandboxResponseSchema(t *testing.T) {
 		if strings.Contains(document, fragment) {
 			t.Errorf("Sandbox response contains unsupported field %q", fragment)
 		}
+	}
+}
+
+// TestPhase3ReasonAndErrorContract 固定 reason/state/message 与新增错误的 HTTP/retryable 矩阵。
+func TestPhase3ReasonAndErrorContract(t *testing.T) {
+	document := readLifecycleOpenAPI(t)
+	reasonContracts := []struct {
+		reason  string
+		states  string
+		message string
+	}{
+		{"CREATE_ACCEPTED", "Pending", "Sandbox creation has been accepted."},
+		{"CREATING_RUNTIME", "Creating", "Preparing sandbox runtime."},
+		{"WAITING_RUNNER", "Creating", "Waiting for sandbox runner."},
+		{"RUNNING", "Running", "Sandbox is running."},
+		{"DELETE_ACCEPTED", "Stopping", "Sandbox deletion has been accepted."},
+		{"DELETING_RUNTIME", "Stopping", "Deleting sandbox runtime."},
+		{"TERMINATED", "Terminated", "Sandbox runtime has been deleted."},
+		{"IMAGE_PULL_FAILED", "Failed", "Failed to pull sandbox image."},
+		{"ARTIFACT_INVALID", "Failed", "Sandbox runtime artifacts are invalid."},
+		{"CONTAINER_CREATE_FAILED", "Failed", "Failed to create sandbox container."},
+		{"ARTIFACT_INJECTION_FAILED", "Failed", "Failed to inject sandbox runtime artifacts."},
+		{"CONTAINER_START_FAILED", "Failed", "Failed to start sandbox container."},
+		{"RUNNER_UNHEALTHY", "Failed", "Sandbox runner is unhealthy."},
+		{"RUNNER_PROTOCOL_MISMATCH", "Failed", "Sandbox runner protocol is incompatible."},
+		{"EGRESS_UNHEALTHY", "Failed", "Sandbox outbound isolation is unhealthy."},
+		{"SPEC_DRIFT", "Failed", "Sandbox runtime does not match the persisted specification."},
+		{"CLEANUP_PENDING", "Failed, Stopping", "Sandbox runtime cleanup is pending."},
+		{"RUNTIME_UNAVAILABLE", "Failed", "Sandbox runtime is temporarily unavailable."},
+		{"INTERNAL_ERROR", "Failed", "An unexpected internal error occurred."},
+		{"RETRY_SCHEDULED", "Failed, Creating, Stopping", "Sandbox reconciliation retry is scheduled."},
+		{"RECOVERING_RUNTIME", "Creating", "Sandbox runtime is being recovered."},
+		{"RUNNER_HEALTH_DEGRADED", "Running", "Sandbox runner health is degraded."},
+		{"TTL_EXPIRED", "Stopping", "Sandbox lease has expired."},
+		{"ORPHAN_IMPORTED", "Creating, Running", "Trusted sandbox resources have been imported."},
+		{"ORPHAN_EXPIRED", "Stopping", "Expired sandbox resources are being deleted."},
+	}
+	for _, contract := range reasonContracts {
+		fragment := fmt.Sprintf(
+			"        %s:\n          states: [%s]\n          message: %s",
+			contract.reason,
+			contract.states,
+			contract.message,
+		)
+		if !strings.Contains(document, fragment) {
+			t.Errorf("reason contract is missing %s", contract.reason)
+		}
+	}
+
+	errorContracts := []struct {
+		code      string
+		status    int
+		retryable bool
+		message   string
+	}{
+		{"INVALID_TTL", 400, false, "Sandbox TTL is invalid."},
+		{"INVALID_EXPIRATION", 400, false, "Sandbox expiration is invalid."},
+		{"LEASE_CONFLICT", 409, false, "Sandbox lease conflicts with the current expiration."},
+		{"SANDBOX_EXPIRING", 409, false, "Sandbox is expiring or terminating."},
+		{"IDEMPOTENCY_CONFLICT", 409, false, "Idempotency key conflicts with a different request."},
+		{"SANDBOX_LIMIT_REACHED", 429, true, "Sandbox limit has been reached."},
+		{"ADMIN_DISABLED", 404, false, "Admin API is not available."},
+	}
+	for _, contract := range errorContracts {
+		fragment := fmt.Sprintf(
+			"        %s:\n          http_status: %d\n          retryable: %t\n          message: %s",
+			contract.code,
+			contract.status,
+			contract.retryable,
+			contract.message,
+		)
+		if !strings.Contains(document, fragment) {
+			t.Errorf("error contract is missing %s", contract.code)
+		}
+	}
+	createPath := openAPISchemaBlock(
+		t,
+		document,
+		"  /v1/sandboxes:",
+		"  /v1/sandboxes/{sandbox_id}:",
+	)
+	if !strings.Contains(createPath, `"429":`) ||
+		!strings.Contains(createPath, `#/components/responses/TooManyRequests`) {
+		t.Fatal("create contract is missing sandbox limit response")
 	}
 }
 

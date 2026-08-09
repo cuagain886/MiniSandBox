@@ -38,6 +38,12 @@ const (
 	ErrorCodeSandboxExpiring ErrorCode = "SANDBOX_EXPIRING"
 	// ErrorCodeIdempotencyConflict 表示同一幂等 key 已绑定到不同创建请求。
 	ErrorCodeIdempotencyConflict ErrorCode = "IDEMPOTENCY_CONFLICT"
+	// ErrorCodeInvalidTTL 表示创建租约时长不在服务端允许范围内。
+	ErrorCodeInvalidTTL ErrorCode = "INVALID_TTL"
+	// ErrorCodeSandboxLimitReached 表示 active sandbox 数量已经达到准入上限。
+	ErrorCodeSandboxLimitReached ErrorCode = "SANDBOX_LIMIT_REACHED"
+	// ErrorCodeAdminDisabled 表示只读管理面未启用，并以 404 隐藏其存在性。
+	ErrorCodeAdminDisabled ErrorCode = "ADMIN_DISABLED"
 )
 
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。

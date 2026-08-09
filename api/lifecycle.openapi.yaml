@@ -68,6 +68,8 @@ paths:
           $ref: "#/components/responses/Forbidden"
         "409":
           $ref: "#/components/responses/Conflict"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
         "500":
           $ref: "#/components/responses/InternalError"
         "503":
@@ -337,7 +339,7 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
     TooManyRequests:
-      description: Execution concurrency limit has been reached
+      description: A sandbox or execution admission limit has been reached
       content:
         application/json:
           schema:
@@ -392,13 +394,45 @@ components:
         - EGRESS_POLICY_INVALID
         - EGRESS_NOT_READY
         - EGRESS_UNHEALTHY
+        - INVALID_TTL
         - INVALID_EXPIRATION
         - LEASE_CONFLICT
         - SANDBOX_EXPIRING
         - IDEMPOTENCY_CONFLICT
+        - SANDBOX_LIMIT_REACHED
+        - ADMIN_DISABLED
         - RUNTIME_UNAVAILABLE
         - NOT_IMPLEMENTED
         - INTERNAL_ERROR
+      x-phase3-error-contract:
+        INVALID_TTL:
+          http_status: 400
+          retryable: false
+          message: Sandbox TTL is invalid.
+        INVALID_EXPIRATION:
+          http_status: 400
+          retryable: false
+          message: Sandbox expiration is invalid.
+        LEASE_CONFLICT:
+          http_status: 409
+          retryable: false
+          message: Sandbox lease conflicts with the current expiration.
+        SANDBOX_EXPIRING:
+          http_status: 409
+          retryable: false
+          message: Sandbox is expiring or terminating.
+        IDEMPOTENCY_CONFLICT:
+          http_status: 409
+          retryable: false
+          message: Idempotency key conflicts with a different request.
+        SANDBOX_LIMIT_REACHED:
+          http_status: 429
+          retryable: true
+          message: Sandbox limit has been reached.
+        ADMIN_DISABLED:
+          http_status: 404
+          retryable: false
+          message: Admin API is not available.
     CreateSandboxRequest:
       type: object
       additionalProperties: false
@@ -659,10 +693,94 @@ components:
         - ARTIFACT_INJECTION_FAILED
         - CONTAINER_START_FAILED
         - RUNNER_UNHEALTHY
+        - RUNNER_PROTOCOL_MISMATCH
+        - EGRESS_UNHEALTHY
         - SPEC_DRIFT
         - CLEANUP_PENDING
         - RUNTIME_UNAVAILABLE
         - INTERNAL_ERROR
+        - RETRY_SCHEDULED
+        - RECOVERING_RUNTIME
+        - RUNNER_HEALTH_DEGRADED
+        - TTL_EXPIRED
+        - ORPHAN_IMPORTED
+        - ORPHAN_EXPIRED
+      x-reason-contract:
+        CREATE_ACCEPTED:
+          states: [Pending]
+          message: Sandbox creation has been accepted.
+        CREATING_RUNTIME:
+          states: [Creating]
+          message: Preparing sandbox runtime.
+        WAITING_RUNNER:
+          states: [Creating]
+          message: Waiting for sandbox runner.
+        RUNNING:
+          states: [Running]
+          message: Sandbox is running.
+        DELETE_ACCEPTED:
+          states: [Stopping]
+          message: Sandbox deletion has been accepted.
+        DELETING_RUNTIME:
+          states: [Stopping]
+          message: Deleting sandbox runtime.
+        TERMINATED:
+          states: [Terminated]
+          message: Sandbox runtime has been deleted.
+        IMAGE_PULL_FAILED:
+          states: [Failed]
+          message: Failed to pull sandbox image.
+        ARTIFACT_INVALID:
+          states: [Failed]
+          message: Sandbox runtime artifacts are invalid.
+        CONTAINER_CREATE_FAILED:
+          states: [Failed]
+          message: Failed to create sandbox container.
+        ARTIFACT_INJECTION_FAILED:
+          states: [Failed]
+          message: Failed to inject sandbox runtime artifacts.
+        CONTAINER_START_FAILED:
+          states: [Failed]
+          message: Failed to start sandbox container.
+        RUNNER_UNHEALTHY:
+          states: [Failed]
+          message: Sandbox runner is unhealthy.
+        RUNNER_PROTOCOL_MISMATCH:
+          states: [Failed]
+          message: Sandbox runner protocol is incompatible.
+        EGRESS_UNHEALTHY:
+          states: [Failed]
+          message: Sandbox outbound isolation is unhealthy.
+        SPEC_DRIFT:
+          states: [Failed]
+          message: Sandbox runtime does not match the persisted specification.
+        CLEANUP_PENDING:
+          states: [Failed, Stopping]
+          message: Sandbox runtime cleanup is pending.
+        RUNTIME_UNAVAILABLE:
+          states: [Failed]
+          message: Sandbox runtime is temporarily unavailable.
+        INTERNAL_ERROR:
+          states: [Failed]
+          message: An unexpected internal error occurred.
+        RETRY_SCHEDULED:
+          states: [Failed, Creating, Stopping]
+          message: Sandbox reconciliation retry is scheduled.
+        RECOVERING_RUNTIME:
+          states: [Creating]
+          message: Sandbox runtime is being recovered.
+        RUNNER_HEALTH_DEGRADED:
+          states: [Running]
+          message: Sandbox runner health is degraded.
+        TTL_EXPIRED:
+          states: [Stopping]
+          message: Sandbox lease has expired.
+        ORPHAN_IMPORTED:
+          states: [Creating, Running]
+          message: Trusted sandbox resources have been imported.
+        ORPHAN_EXPIRED:
+          states: [Stopping]
+          message: Expired sandbox resources are being deleted.
     Sandbox:
       type: object
       additionalProperties: false

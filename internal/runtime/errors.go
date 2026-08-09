@@ -9,27 +9,27 @@ import (
 
 const (
 	// FailureReasonImagePullFailed 表示 sandbox image 拉取失败。
-	FailureReasonImagePullFailed = "IMAGE_PULL_FAILED"
+	FailureReasonImagePullFailed = domain.SandboxReasonImagePullFailed
 	// FailureReasonArtifactInvalid 表示 runner/init artifact 缺失或平台不兼容。
-	FailureReasonArtifactInvalid = "ARTIFACT_INVALID"
+	FailureReasonArtifactInvalid = domain.SandboxReasonArtifactInvalid
 	// FailureReasonContainerCreateFailed 表示 Docker container 创建失败。
-	FailureReasonContainerCreateFailed = "CONTAINER_CREATE_FAILED"
+	FailureReasonContainerCreateFailed = domain.SandboxReasonContainerCreateFailed
 	// FailureReasonArtifactInjectionFailed 表示 artifact 复制到 container 失败。
-	FailureReasonArtifactInjectionFailed = "ARTIFACT_INJECTION_FAILED"
+	FailureReasonArtifactInjectionFailed = domain.SandboxReasonArtifactInjectionFailed
 	// FailureReasonContainerStartFailed 表示已准备 container 启动失败。
-	FailureReasonContainerStartFailed = "CONTAINER_START_FAILED"
+	FailureReasonContainerStartFailed = domain.SandboxReasonContainerStartFailed
 	// FailureReasonRunnerUnhealthy 表示 runner 未在时限内就绪。
-	FailureReasonRunnerUnhealthy = "RUNNER_UNHEALTHY"
+	FailureReasonRunnerUnhealthy = domain.SandboxReasonRunnerUnhealthy
 	// FailureReasonRunnerProtocolMismatch 表示容器 label 与 runner health 版本不兼容。
-	FailureReasonRunnerProtocolMismatch = "RUNNER_PROTOCOL_MISMATCH"
+	FailureReasonRunnerProtocolMismatch = domain.SandboxReasonRunnerProtocolMismatch
 	// FailureReasonSpecDrift 表示实际资源身份或 spec hash 与 Store 不一致。
-	FailureReasonSpecDrift = "SPEC_DRIFT"
+	FailureReasonSpecDrift = domain.SandboxReasonSpecDrift
 	// FailureReasonCleanupPending 表示受管资源尚未完全清理。
-	FailureReasonCleanupPending = "CLEANUP_PENDING"
+	FailureReasonCleanupPending = domain.SandboxReasonCleanupPending
 	// FailureReasonRuntimeUnavailable 表示 Docker 等 runtime 依赖暂时不可用。
-	FailureReasonRuntimeUnavailable = "RUNTIME_UNAVAILABLE"
+	FailureReasonRuntimeUnavailable = domain.SandboxReasonRuntimeUnavailable
 	// FailureReasonInternalError 表示无法安全归类的内部错误。
-	FailureReasonInternalError = "INTERNAL_ERROR"
+	FailureReasonInternalError = domain.SandboxReasonInternalError
 )
 
 // Failure 保存可写入 observed state 的安全失败分类。

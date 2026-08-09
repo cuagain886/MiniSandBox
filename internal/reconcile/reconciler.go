@@ -15,18 +15,18 @@ import (
 )
 
 const (
-	reasonCreatingRuntime = "CREATING_RUNTIME"
-	reasonWaitingRunner   = "WAITING_RUNNER"
-	reasonRunning         = "RUNNING"
-	reasonDeletingRuntime = "DELETING_RUNTIME"
-	reasonTerminated      = "TERMINATED"
+	reasonCreatingRuntime = domain.SandboxReasonCreatingRuntime
+	reasonWaitingRunner   = domain.SandboxReasonWaitingRunner
+	reasonRunning         = domain.SandboxReasonRunning
+	reasonDeletingRuntime = domain.SandboxReasonDeletingRuntime
+	reasonTerminated      = domain.SandboxReasonTerminated
 
 	messageCreatingRuntime = "Preparing sandbox runtime."
 	messageWaitingRunner   = "Waiting for sandbox runner."
 	messageRunning         = "Sandbox is running."
 	messageDeletingRuntime = "Deleting sandbox runtime."
 	messageTerminated      = "Sandbox runtime has been deleted."
-	reasonEgressUnhealthy  = "EGRESS_UNHEALTHY"
+	reasonEgressUnhealthy  = domain.SandboxReasonEgressUnhealthy
 	messageEgressUnhealthy = "Sandbox outbound isolation is unhealthy."
 )
 

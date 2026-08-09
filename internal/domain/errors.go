@@ -37,4 +37,18 @@ var (
 	ErrEgressNotReady = errors.New("egress not ready")
 	// ErrEgressUnhealthy 表示既有 egress sidecar 的安全证明已失效。
 	ErrEgressUnhealthy = errors.New("egress unhealthy")
+	// ErrInvalidTTL 表示 create TTL 缺失默认之外的显式值不满足服务端边界。
+	ErrInvalidTTL = errors.New("invalid sandbox TTL")
+	// ErrInvalidExpiration 表示 renew 的绝对到期时间格式或服务端边界非法。
+	ErrInvalidExpiration = errors.New("invalid sandbox expiration")
+	// ErrLeaseConflict 表示 renew 试图缩短租约或并发记录已经包含更晚到期时间。
+	ErrLeaseConflict = errors.New("sandbox lease conflict")
+	// ErrSandboxExpiring 表示 sandbox 已过期或终止意图已经提交，不能再续期。
+	ErrSandboxExpiring = errors.New("sandbox is expiring")
+	// ErrIdempotencyConflict 表示同一幂等 key 已经绑定到不同的创建请求。
+	ErrIdempotencyConflict = errors.New("idempotency conflict")
+	// ErrSandboxLimitReached 表示 active sandbox 数量达到准入上限，稍后重试可能成功。
+	ErrSandboxLimitReached = errors.New("sandbox limit reached")
+	// ErrAdminDisabled 表示管理面未启用；HTTP 层必须用 404 隐藏该 surface。
+	ErrAdminDisabled = errors.New("admin API disabled")
 )

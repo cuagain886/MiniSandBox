@@ -73,6 +73,55 @@ func writeError(w http.ResponseWriter, r *http.Request, err error) {
 // mapError 按 errors.Is/As 分类内部错误并返回固定公共语义。
 func mapError(err error) errorMapping {
 	switch {
+	case errors.Is(err, domain.ErrInvalidTTL):
+		return errorMapping{
+			status:    http.StatusBadRequest,
+			code:      string(protocol.ErrorCodeInvalidTTL),
+			message:   "Sandbox TTL is invalid.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrInvalidExpiration):
+		return errorMapping{
+			status:    http.StatusBadRequest,
+			code:      string(protocol.ErrorCodeInvalidExpiration),
+			message:   "Sandbox expiration is invalid.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrLeaseConflict):
+		return errorMapping{
+			status:    http.StatusConflict,
+			code:      string(protocol.ErrorCodeLeaseConflict),
+			message:   "Sandbox lease conflicts with the current expiration.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrSandboxExpiring):
+		return errorMapping{
+			status:    http.StatusConflict,
+			code:      string(protocol.ErrorCodeSandboxExpiring),
+			message:   "Sandbox is expiring or terminating.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrIdempotencyConflict):
+		return errorMapping{
+			status:    http.StatusConflict,
+			code:      string(protocol.ErrorCodeIdempotencyConflict),
+			message:   "Idempotency key conflicts with a different request.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrSandboxLimitReached):
+		return errorMapping{
+			status:    http.StatusTooManyRequests,
+			code:      string(protocol.ErrorCodeSandboxLimitReached),
+			message:   "Sandbox limit has been reached.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrAdminDisabled):
+		return errorMapping{
+			status:    http.StatusNotFound,
+			code:      string(protocol.ErrorCodeAdminDisabled),
+			message:   "Admin API is not available.",
+			retryable: false,
+		}
 	case errors.Is(err, domain.ErrInvalidExecutionRequest):
 		return errorMapping{
 			status:    http.StatusBadRequest,

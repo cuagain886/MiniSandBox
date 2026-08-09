@@ -54,6 +54,10 @@ const (
 	SandboxReasonContainerStartFailed SandboxReason = "CONTAINER_START_FAILED"
 	// SandboxReasonRunnerUnhealthy 表示 runner 未在规定时间内就绪。
 	SandboxReasonRunnerUnhealthy SandboxReason = "RUNNER_UNHEALTHY"
+	// SandboxReasonRunnerProtocolMismatch 表示 runner 协议版本与控制面不兼容。
+	SandboxReasonRunnerProtocolMismatch SandboxReason = "RUNNER_PROTOCOL_MISMATCH"
+	// SandboxReasonEgressUnhealthy 表示 outbound 隔离的安全证明已经失效。
+	SandboxReasonEgressUnhealthy SandboxReason = "EGRESS_UNHEALTHY"
 	// SandboxReasonSpecDrift 表示已有容器与持久化的 sandbox 规格不一致。
 	SandboxReasonSpecDrift SandboxReason = "SPEC_DRIFT"
 	// SandboxReasonCleanupPending 表示创建失败后的资源补偿尚未完成。
@@ -62,6 +66,18 @@ const (
 	SandboxReasonRuntimeUnavailable SandboxReason = "RUNTIME_UNAVAILABLE"
 	// SandboxReasonInternalError 表示发生未分类错误，Message 必须使用安全固定文案。
 	SandboxReasonInternalError SandboxReason = "INTERNAL_ERROR"
+	// SandboxReasonRetryScheduled 表示下一次收敛已经持久化调度。
+	SandboxReasonRetryScheduled SandboxReason = "RETRY_SCHEDULED"
+	// SandboxReasonRecoveringRuntime 表示控制面正在恢复 sandbox 计算资源。
+	SandboxReasonRecoveringRuntime SandboxReason = "RECOVERING_RUNTIME"
+	// SandboxReasonRunnerHealthDegraded 表示 runner 探测暂时降级但 sandbox 仍处于 Running。
+	SandboxReasonRunnerHealthDegraded SandboxReason = "RUNNER_HEALTH_DEGRADED"
+	// SandboxReasonTTLExpired 表示租约到期已经提交终止意图。
+	SandboxReasonTTLExpired SandboxReason = "TTL_EXPIRED"
+	// SandboxReasonOrphanImported 表示可信孤儿资源已经导入 Store。
+	SandboxReasonOrphanImported SandboxReason = "ORPHAN_IMPORTED"
+	// SandboxReasonOrphanExpired 表示已过期的可信孤儿资源正在删除。
+	SandboxReasonOrphanExpired SandboxReason = "ORPHAN_EXPIRED"
 )
 
 // CreateSandboxRequest 是创建 sandbox 的公共请求模型。

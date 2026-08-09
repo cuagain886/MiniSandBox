@@ -12,6 +12,8 @@ var (
 	errUnsupportedSandboxState = errors.New("unsupported sandbox state")
 	// errUnsupportedSandboxReason 表示内部 reason 不属于已冻结公共枚举。
 	errUnsupportedSandboxReason = errors.New("unsupported sandbox reason")
+	// errUnsupportedSandboxStatus 表示已知 state 和 reason 形成了未冻结组合。
+	errUnsupportedSandboxStatus = errors.New("unsupported sandbox status")
 )
 
 // mapSandboxResponse 把领域 Sandbox 显式转换为安全的公共响应。
@@ -27,11 +29,18 @@ func mapSandboxResponse(sandbox domain.Sandbox) (protocol.Sandbox, error) {
 	if err != nil {
 		return protocol.Sandbox{}, err
 	}
+	if !domain.SandboxReasonStateAllowed(sandbox.Reason, sandbox.ObservedState) {
+		return protocol.Sandbox{}, errUnsupportedSandboxStatus
+	}
+	message, ok := domain.SandboxReasonPublicMessage(sandbox.Reason)
+	if !ok {
+		return protocol.Sandbox{}, errUnsupportedSandboxReason
+	}
 	return protocol.Sandbox{
 		ID:        sandbox.ID,
 		State:     state,
 		Reason:    reason,
-		Message:   sandbox.Message,
+		Message:   message,
 		Image:     sandbox.Spec.Image,
 		CreatedAt: sandbox.CreatedAt.UTC(),
 		UpdatedAt: sandbox.UpdatedAt.UTC(),
@@ -61,40 +70,56 @@ func mapSandboxState(state domain.SandboxState) (protocol.SandboxState, error) {
 // mapSandboxReason 只接受公共协议已经冻结的生命周期原因。
 func mapSandboxReason(reason string) (protocol.SandboxReason, error) {
 	switch reason {
-	case string(protocol.SandboxReasonCreateAccepted):
+	case domain.SandboxReasonCreateAccepted:
 		return protocol.SandboxReasonCreateAccepted, nil
-	case string(protocol.SandboxReasonCreatingRuntime):
+	case domain.SandboxReasonCreatingRuntime:
 		return protocol.SandboxReasonCreatingRuntime, nil
-	case string(protocol.SandboxReasonWaitingRunner):
+	case domain.SandboxReasonWaitingRunner:
 		return protocol.SandboxReasonWaitingRunner, nil
-	case string(protocol.SandboxReasonRunning):
+	case domain.SandboxReasonRunning:
 		return protocol.SandboxReasonRunning, nil
-	case string(protocol.SandboxReasonDeleteAccepted):
+	case domain.SandboxReasonDeleteAccepted:
 		return protocol.SandboxReasonDeleteAccepted, nil
-	case string(protocol.SandboxReasonDeletingRuntime):
+	case domain.SandboxReasonDeletingRuntime:
 		return protocol.SandboxReasonDeletingRuntime, nil
-	case string(protocol.SandboxReasonTerminated):
+	case domain.SandboxReasonTerminated:
 		return protocol.SandboxReasonTerminated, nil
-	case string(protocol.SandboxReasonImagePullFailed):
+	case domain.SandboxReasonImagePullFailed:
 		return protocol.SandboxReasonImagePullFailed, nil
-	case string(protocol.SandboxReasonArtifactInvalid):
+	case domain.SandboxReasonArtifactInvalid:
 		return protocol.SandboxReasonArtifactInvalid, nil
-	case string(protocol.SandboxReasonContainerCreateFailed):
+	case domain.SandboxReasonContainerCreateFailed:
 		return protocol.SandboxReasonContainerCreateFailed, nil
-	case string(protocol.SandboxReasonArtifactInjectionFailed):
+	case domain.SandboxReasonArtifactInjectionFailed:
 		return protocol.SandboxReasonArtifactInjectionFailed, nil
-	case string(protocol.SandboxReasonContainerStartFailed):
+	case domain.SandboxReasonContainerStartFailed:
 		return protocol.SandboxReasonContainerStartFailed, nil
-	case string(protocol.SandboxReasonRunnerUnhealthy):
+	case domain.SandboxReasonRunnerUnhealthy:
 		return protocol.SandboxReasonRunnerUnhealthy, nil
-	case string(protocol.SandboxReasonSpecDrift):
+	case domain.SandboxReasonRunnerProtocolMismatch:
+		return protocol.SandboxReasonRunnerProtocolMismatch, nil
+	case domain.SandboxReasonEgressUnhealthy:
+		return protocol.SandboxReasonEgressUnhealthy, nil
+	case domain.SandboxReasonSpecDrift:
 		return protocol.SandboxReasonSpecDrift, nil
-	case string(protocol.SandboxReasonCleanupPending):
+	case domain.SandboxReasonCleanupPending:
 		return protocol.SandboxReasonCleanupPending, nil
-	case string(protocol.SandboxReasonRuntimeUnavailable):
+	case domain.SandboxReasonRuntimeUnavailable:
 		return protocol.SandboxReasonRuntimeUnavailable, nil
-	case string(protocol.SandboxReasonInternalError):
+	case domain.SandboxReasonInternalError:
 		return protocol.SandboxReasonInternalError, nil
+	case domain.SandboxReasonRetryScheduled:
+		return protocol.SandboxReasonRetryScheduled, nil
+	case domain.SandboxReasonRecoveringRuntime:
+		return protocol.SandboxReasonRecoveringRuntime, nil
+	case domain.SandboxReasonRunnerHealthDegraded:
+		return protocol.SandboxReasonRunnerHealthDegraded, nil
+	case domain.SandboxReasonTTLExpired:
+		return protocol.SandboxReasonTTLExpired, nil
+	case domain.SandboxReasonOrphanImported:
+		return protocol.SandboxReasonOrphanImported, nil
+	case domain.SandboxReasonOrphanExpired:
+		return protocol.SandboxReasonOrphanExpired, nil
 	default:
 		return "", errUnsupportedSandboxReason
 	}
