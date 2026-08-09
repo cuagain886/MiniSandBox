@@ -1,6 +1,7 @@
 package runnerclient
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"net/http"
@@ -11,6 +12,8 @@ import (
 
 	"minisandbox/internal/runnerauth"
 )
+
+const runnerShutdownTimeout = 5 * time.Second
 
 // AuthenticationError 表示 runner 拒绝了派生凭据；错误文本不包含 token。
 type AuthenticationError struct{}
@@ -78,6 +81,17 @@ func (f *Factory) Client(sandboxID string) (*Client, error) {
 	}
 	client.authorization = func() ([]byte, error) { return f.authorization(sandboxID) }
 	return client, nil
+}
+
+// Shutdown 通过固定 Unix Socket 端点有界关闭指定 sandbox 的 runner 准入与全部 execution。
+func (f *Factory) Shutdown(ctx context.Context, sandboxID string) error {
+	client, err := f.Client(sandboxID)
+	if err != nil {
+		return err
+	}
+	shutdownContext, cancel := context.WithTimeout(ctx, runnerShutdownTimeout)
+	defer cancel()
+	return client.Shutdown(shutdownContext)
 }
 
 func (f *Factory) authorization(sandboxID string) ([]byte, error) {

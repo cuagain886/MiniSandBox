@@ -18,7 +18,7 @@ func TestConfiguredServerRequiresReadinessAndExactRoutes(t *testing.T) {
 		t.Fatal("incomplete route table accepted")
 	}
 
-	called := make(chan string, 4)
+	called := make(chan string, 5)
 	handler := func(name string) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 			called <- name
@@ -27,7 +27,7 @@ func TestConfiguredServerRequiresReadinessAndExactRoutes(t *testing.T) {
 	}
 	readiness := NewServerReadiness()
 	server, err := newConfiguredServer("build", "token", readiness, ServerRoutes{
-		Create: handler("create"), Status: handler("status"), Cancel: handler("cancel"), Logs: handler("logs"),
+		Create: handler("create"), Status: handler("status"), Cancel: handler("cancel"), Logs: handler("logs"), Shutdown: handler("shutdown"),
 	}, func() (string, error) { return "linux-netns:4:9", nil })
 	if err != nil {
 		t.Fatalf("new configured server: %v", err)
@@ -44,6 +44,7 @@ func TestConfiguredServerRequiresReadinessAndExactRoutes(t *testing.T) {
 		{http.MethodGet, "/v1/executions/exec_1", "status"},
 		{http.MethodDelete, "/v1/executions/exec_1", "cancel"},
 		{http.MethodGet, "/v1/executions/exec_1/logs", "logs"},
+		{http.MethodPost, "/v1/shutdown", "shutdown"},
 	} {
 		request := httptest.NewRequest(test.method, test.path, nil)
 		request.Header.Set("Authorization", "Bearer token")

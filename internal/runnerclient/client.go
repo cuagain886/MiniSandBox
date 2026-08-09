@@ -102,6 +102,25 @@ func (c *Client) Health(ctx context.Context, expectedProtocolVersion int) (proto
 	return health, nil
 }
 
+// Shutdown 请求当前 sandbox runner 永久关闭准入并取消全部 execution。
+//
+// 本操作不先执行 health gate，确保 draining 或部分失效的 runner 仍有机会完成有界清理。
+func (c *Client) Shutdown(ctx context.Context) error {
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/v1/shutdown", nil)
+	if err != nil {
+		return err
+	}
+	response, err := c.do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusNoContent {
+		return &StatusError{StatusCode: response.StatusCode}
+	}
+	return nil
+}
+
 func (c *Client) do(request *http.Request) (*http.Response, error) {
 	if c == nil || c.httpClient == nil || c.authorization == nil || request == nil {
 		return nil, errors.New("runner client is not configured")

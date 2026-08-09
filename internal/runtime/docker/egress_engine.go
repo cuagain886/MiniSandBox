@@ -23,6 +23,10 @@ type EgressEngine interface {
 	ContainerStart(context.Context, string, mobyclient.ContainerStartOptions) (mobyclient.ContainerStartResult, error)
 	// CopyFromContainer 只读取得 readiness attestation，不在容器内 exec。
 	CopyFromContainer(context.Context, string, mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error)
+	// ContainerStop 有界停止已验证身份的 namespace anchor。
+	ContainerStop(context.Context, string, mobyclient.ContainerStopOptions) (mobyclient.ContainerStopResult, error)
+	// ContainerRemove 删除已验证身份且不再被主容器引用的 namespace anchor。
+	ContainerRemove(context.Context, string, mobyclient.ContainerRemoveOptions) (mobyclient.ContainerRemoveResult, error)
 }
 
 // NetNSResolver 从 Docker init PID 解析宿主机可观察的 network namespace 身份。

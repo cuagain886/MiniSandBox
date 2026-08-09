@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"strings"
 	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
@@ -34,6 +35,11 @@ func (r *Runtime) Delete(ctx context.Context, sandboxID string) error {
 		defaultContainerStopTimeout,
 	); err != nil {
 		failures = append(failures, fmt.Errorf("delete container: %w", err))
+	} else if engine, ok := r.engine.(EgressEngine); ok {
+		// 只有主容器已确认不存在后才能移除 namespace anchor，避免在途 execution 突然落入不同网络语义。
+		if err := deleteManagedEgressSidecar(ctx, engine, sandboxID, defaultContainerStopTimeout); err != nil {
+			failures = append(failures, fmt.Errorf("delete egress sidecar: %w", err))
+		}
 	}
 	if err := deleteWorkspaceVolume(ctx, r.engine, sandboxID); err != nil {
 		failures = append(
@@ -48,6 +54,42 @@ func (r *Runtime) Delete(ctx context.Context, sandboxID string) error {
 		)
 	}
 	return errors.Join(failures...)
+}
+
+func deleteManagedEgressSidecar(ctx context.Context, engine EgressEngine, sandboxID string, stopTimeout time.Duration) error {
+	timeoutSeconds, err := stopTimeoutSeconds(stopTimeout)
+	if err != nil {
+		return err
+	}
+	name := egressSidecarName(sandboxID)
+	inspection, err := engine.ContainerInspect(ctx, name, mobyclient.ContainerInspectOptions{})
+	if cerrdefs.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return runtimeUnavailable(err)
+	}
+	container := inspection.Container
+	labels := map[string]string(nil)
+	if container.Config != nil {
+		labels = container.Config.Labels
+	}
+	if container.ID == "" || strings.TrimPrefix(container.Name, "/") != name || labels[LabelManaged] != labelManagedValue || labels[LabelSchemaVersion] != labelSchemaVersionValue || labels[LabelSandboxID] != sandboxID || labels[LabelResourceRole] != resourceRoleEgressSidecar {
+		return containerIdentityConflict()
+	}
+	force := false
+	if containerNeedsStop(container.State) {
+		_, stopErr := engine.ContainerStop(ctx, container.ID, mobyclient.ContainerStopOptions{Timeout: &timeoutSeconds})
+		if cerrdefs.IsNotFound(stopErr) {
+			return nil
+		}
+		force = stopErr != nil
+	}
+	_, err = engine.ContainerRemove(ctx, container.ID, mobyclient.ContainerRemoveOptions{Force: force})
+	if err == nil || cerrdefs.IsNotFound(err) {
+		return nil
+	}
+	return runtimeUnavailable(err)
 }
 
 // deleteManagedContainer 幂等停止并删除单个经过身份验证的 sandbox 容器。

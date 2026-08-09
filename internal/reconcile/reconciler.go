@@ -26,14 +26,24 @@ const (
 	messageRunning         = "Sandbox is running."
 	messageDeletingRuntime = "Deleting sandbox runtime."
 	messageTerminated      = "Sandbox runtime has been deleted."
+	reasonEgressUnhealthy  = "EGRESS_UNHEALTHY"
+	messageEgressUnhealthy = "Sandbox outbound isolation is unhealthy."
 )
 
 // Reconciler 将单个 sandbox 的期望状态幂等收敛到 runtime 实际状态。
 type Reconciler struct {
-	store   store.Store
-	runtime runtimeport.Runtime
-	probe   RunnerProbe
-	locks   *KeyedLock
+	store    store.Store
+	runtime  runtimeport.Runtime
+	probe    RunnerProbe
+	shutdown RunnerShutdown
+	locks    *KeyedLock
+}
+
+// NewWithShutdown 创建带 runner cancel-all 前置步骤的状态收敛器。
+func NewWithShutdown(s store.Store, r runtimeport.Runtime, probe RunnerProbe, shutdown RunnerShutdown) *Reconciler {
+	reconciler := New(s, r, probe)
+	reconciler.shutdown = shutdown
+	return reconciler
 }
 
 // New 使用持久化、runtime 和 runner probe 端口创建状态收敛器。
@@ -66,6 +76,32 @@ func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
 	default:
 		return fmt.Errorf("sandbox desired state is invalid: %w", domain.ErrInvalid)
 	}
+}
+
+// FailEgress 以 CAS 记录已确认的 outbound 隔离漂移，并永久关闭当前 runner 准入。
+//
+// 本操作保留 DesiredRunning，等待调用方显式删除；重复观察保持稳定失败原因，不触发透明重建。
+func (r *Reconciler) FailEgress(ctx context.Context, sandboxID string) error {
+	unlock := r.locks.Lock(sandboxID)
+	defer unlock()
+	sandbox, err := r.store.Get(ctx, sandboxID)
+	if err != nil {
+		return fmt.Errorf("read sandbox for egress failure: %w", err)
+	}
+	if sandbox.DesiredState != domain.DesiredRunning || sandbox.ObservedState == domain.StateTerminated || sandbox.ObservedState == domain.StateFailed && sandbox.Reason == reasonEgressUnhealthy {
+		return nil
+	}
+	failed, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID: sandbox.ID, ExpectedRevision: sandbox.Revision, State: domain.StateFailed,
+		Reason: reasonEgressUnhealthy, Message: messageEgressUnhealthy, RuntimeID: sandbox.RuntimeID,
+	})
+	if err != nil {
+		return fmt.Errorf("record egress unhealthy: %w", err)
+	}
+	if r.shutdown != nil {
+		_ = r.shutdown.Shutdown(ctx, failed.ID)
+	}
+	return nil
 }
 
 // reconcileRunning 把 DesiredRunning 记录从任意未完成创建态推进到 Running。
@@ -138,6 +174,10 @@ func (r *Reconciler) reconcileTerminated(
 	})
 	if err != nil {
 		return fmt.Errorf("mark sandbox runtime deleting: %w", err)
+	}
+	// runner 关闭只用于缩短进程退出窗口；Docker 主容器删除才是不可绕过的永久清理边界。
+	if r.shutdown != nil {
+		_ = r.shutdown.Shutdown(ctx, stopping.ID)
 	}
 	if err := r.runtime.Delete(ctx, stopping.ID); err != nil {
 		return r.recordFailure(

@@ -22,6 +22,7 @@ func TestRuntimeDeleteCleansAllResourcesInOrder(t *testing.T) {
 	want := []string{
 		"container-inspect",
 		"container-remove",
+		"sidecar-inspect",
 		"volume-inspect",
 		"volume-remove",
 	}
@@ -79,9 +80,9 @@ func TestRuntimeDeletePartialMissingIsSuccess(t *testing.T) {
 	dataDirectory := prepareRuntimeRoot(t)
 	engine := &fakeEngine{
 		containerInspectFunc: func(
-			context.Context,
-			string,
-			mobyclient.ContainerInspectOptions,
+			_ context.Context,
+			_ string,
+			_ mobyclient.ContainerInspectOptions,
 		) (mobyclient.ContainerInspectResult, error) {
 			return mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound
 		},
@@ -172,13 +173,17 @@ func newDeleteRuntime(
 	if err != nil {
 		t.Fatalf("ensure runtime directory: %v", err)
 	}
-	events := make([]string, 0, 4)
+	events := make([]string, 0, 5)
 	engine := &fakeEngine{
 		containerInspectFunc: func(
-			context.Context,
-			string,
-			mobyclient.ContainerInspectOptions,
+			_ context.Context,
+			name string,
+			_ mobyclient.ContainerInspectOptions,
 		) (mobyclient.ContainerInspectResult, error) {
+			if name == egressSidecarName(testSandboxID) {
+				events = append(events, "sidecar-inspect")
+				return mobyclient.ContainerInspectResult{}, cerrdefs.ErrNotFound
+			}
 			events = append(events, "container-inspect")
 			result := matchingContainerInspection(
 				t,

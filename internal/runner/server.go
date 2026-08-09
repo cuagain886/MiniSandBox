@@ -30,6 +30,8 @@ type ServerRoutes struct {
 	Cancel http.Handler
 	// Logs 处理 GET /v1/executions/{execution_id}/logs。
 	Logs http.Handler
+	// Shutdown 处理 POST /v1/shutdown，并永久关闭当前 sandbox 的 execution 准入。
+	Shutdown http.Handler
 }
 
 // ServerReadiness 保存 runner 的单向 readiness 状态；开始 draining 后不可恢复。
@@ -68,7 +70,7 @@ func NewServer(version, token string) (http.Handler, error) {
 	if err := readiness.MarkReady(); err != nil {
 		return nil, err
 	}
-	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented)}
+	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented), Shutdown: http.HandlerFunc(notImplemented)}
 	return newConfiguredServer(version, token, readiness, routes, currentNetNSIdentity)
 }
 
@@ -81,7 +83,7 @@ func newConfiguredServer(version, token string, readiness *ServerReadiness, rout
 	if version == "" || readiness == nil || readNetNSIdentity == nil {
 		return nil, errors.New("runner server identity is not configured")
 	}
-	if routes.Create == nil || routes.Status == nil || routes.Cancel == nil || routes.Logs == nil {
+	if routes.Create == nil || routes.Status == nil || routes.Cancel == nil || routes.Logs == nil || routes.Shutdown == nil {
 		return nil, errors.New("runner server routes are not configured")
 	}
 	mux := http.NewServeMux()
@@ -105,6 +107,7 @@ func newConfiguredServer(version, token string, readiness *ServerReadiness, rout
 	mux.Handle("GET /v1/executions/{execution_id}", routes.Status)
 	mux.Handle("DELETE /v1/executions/{execution_id}", routes.Cancel)
 	mux.Handle("GET /v1/executions/{execution_id}/logs", routes.Logs)
+	mux.Handle("POST /v1/shutdown", routes.Shutdown)
 	authenticated, err := TokenAuth(token, mux)
 	if err != nil {
 		return nil, err
@@ -118,7 +121,7 @@ func newServer(version, token string, readNetNSIdentity func() (string, error)) 
 	if err := readiness.MarkReady(); err != nil {
 		return nil, err
 	}
-	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented)}
+	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented), Shutdown: http.HandlerFunc(notImplemented)}
 	return newConfiguredServer(version, token, readiness, routes, readNetNSIdentity)
 }
 

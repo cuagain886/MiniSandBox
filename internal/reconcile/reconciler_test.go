@@ -232,6 +232,27 @@ func TestReconcileTerminatedDeleteFailureWritesCleanupPending(t *testing.T) {
 	}
 }
 
+// TestFailEgressPreservesDesiredAndClosesAdmission 验证网络隔离漂移只写 observed failure 并关闭 runner。
+func TestFailEgressPreservesDesiredAndClosesAdmission(t *testing.T) {
+	events := make([]string, 0, 3)
+	sandbox := pendingSandbox()
+	sandbox.ObservedState = domain.StateRunning
+	sandbox.RuntimeID = "container-id"
+	sandboxStore := newReconcileStore(&events, sandbox)
+	shutdown := &recordingShutdown{events: &events, err: errors.New("runner unavailable")}
+	reconciler := NewWithShutdown(sandboxStore, &recordingRuntime{events: &events}, &recordingProbe{events: &events}, shutdown)
+	if err := reconciler.FailEgress(context.Background(), sandbox.ID); err != nil {
+		t.Fatalf("fail egress: %v", err)
+	}
+	if sandboxStore.record.DesiredState != domain.DesiredRunning || sandboxStore.record.ObservedState != domain.StateFailed || sandboxStore.record.Reason != reasonEgressUnhealthy {
+		t.Fatalf("record: %#v", sandboxStore.record)
+	}
+	want := []string{"store-get", "store-update-Failed-EGRESS_UNHEALTHY", "runner-shutdown"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events: got %v want %v", events, want)
+	}
+}
+
 // TestReconcileRunningPersistsEveryFailureReason 验证所有 runtime 分类均以安全状态落库。
 func TestReconcileRunningPersistsEveryFailureReason(t *testing.T) {
 	const secret = "daemon secret detail"
@@ -526,6 +547,18 @@ type recordingProbe struct {
 	events          *[]string
 	err             error
 	protocolVersion int
+}
+
+// recordingShutdown 记录 runner 关闭顺序与错误。
+type recordingShutdown struct {
+	events *[]string
+	err    error
+}
+
+// Shutdown 模拟固定 cancel-all 端口。
+func (s *recordingShutdown) Shutdown(context.Context, string) error {
+	*s.events = append(*s.events, "runner-shutdown")
+	return s.err
 }
 
 // Probe 记录调用并返回预设错误。

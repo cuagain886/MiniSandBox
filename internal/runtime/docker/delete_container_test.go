@@ -3,6 +3,7 @@ package docker
 import (
 	"context"
 	"errors"
+	"reflect"
 	"testing"
 	"time"
 
@@ -214,6 +215,40 @@ func TestDeleteManagedContainerRejectsLabelMismatch(t *testing.T) {
 	}
 	if stopCalls != 0 || removeCalls != 0 {
 		t.Fatalf("unsafe calls: stop=%d remove=%d", stopCalls, removeCalls)
+	}
+}
+
+// TestDeleteManagedEgressSidecarStopsAndRemoves 验证只删除身份匹配的 namespace anchor。
+func TestDeleteManagedEgressSidecarStopsAndRemoves(t *testing.T) {
+	events := make([]string, 0, 3)
+	engine := &fakeEngine{
+		containerInspectFunc: func(context.Context, string, mobyclient.ContainerInspectOptions) (mobyclient.ContainerInspectResult, error) {
+			events = append(events, "inspect")
+			return mobyclient.ContainerInspectResult{Container: mobycontainer.InspectResponse{
+				ID: "sidecar-id", Name: "/" + egressSidecarName(testSandboxID),
+				Config: &mobycontainer.Config{Labels: map[string]string{
+					LabelManaged: labelManagedValue, LabelSchemaVersion: labelSchemaVersionValue,
+					LabelSandboxID: testSandboxID, LabelResourceRole: resourceRoleEgressSidecar,
+				}}, State: &mobycontainer.State{Status: mobycontainer.StateRunning, Running: true},
+			}}, nil
+		},
+		containerStopFunc: func(context.Context, string, mobyclient.ContainerStopOptions) (mobyclient.ContainerStopResult, error) {
+			events = append(events, "stop")
+			return mobyclient.ContainerStopResult{}, nil
+		},
+		containerRemoveFunc: func(_ context.Context, id string, options mobyclient.ContainerRemoveOptions) (mobyclient.ContainerRemoveResult, error) {
+			events = append(events, "remove")
+			if id != "sidecar-id" || options.Force {
+				t.Fatalf("remove request: id=%q options=%#v", id, options)
+			}
+			return mobyclient.ContainerRemoveResult{}, nil
+		},
+	}
+	if err := deleteManagedEgressSidecar(context.Background(), engine, testSandboxID, time.Second); err != nil {
+		t.Fatalf("delete egress sidecar: %v", err)
+	}
+	if want := []string{"inspect", "stop", "remove"}; !reflect.DeepEqual(events, want) {
+		t.Fatalf("events: got %v want %v", events, want)
 	}
 }
 
