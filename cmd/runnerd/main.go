@@ -9,13 +9,12 @@ import (
 	"context"
 	"flag"
 	"log/slog"
-	"net"
 	"os"
 	"os/signal"
-	"path/filepath"
 	"syscall"
 
 	"minisandbox/internal/runner"
+	"minisandbox/internal/runnerbootstrap"
 )
 
 var version = "dev"
@@ -27,33 +26,10 @@ func main() {
 	}
 
 	flags := flag.NewFlagSet("serve", flag.ExitOnError)
-	socketPath := flags.String(
-		"socket",
-		"/run/minisandbox/runner.sock",
-		"Unix socket path",
-	)
 	_ = flags.Parse(os.Args[2:])
-	token := os.Getenv("MINISANDBOX_RUNNER_TOKEN")
-
-	if err := os.MkdirAll(filepath.Dir(*socketPath), 0o700); err != nil {
-		slog.Error("create socket directory", "error", err)
-		os.Exit(1)
-	}
-	// socket 路径由 sandboxd 为当前 sandbox 独立挂载。这里只清理同一路径上的
-	// 失效 socket，不扫描也不影响其他 sandbox 的运行目录。
-	if err := os.Remove(*socketPath); err != nil && !os.IsNotExist(err) {
-		slog.Error("remove stale socket", "error", err)
-		os.Exit(1)
-	}
-
-	listener, err := net.Listen("unix", *socketPath)
+	bootstrap, token, err := runner.LoadBootstrapMaterial(runnerbootstrap.RuntimeDirectory)
 	if err != nil {
-		slog.Error("listen on runner socket", "error", err)
-		os.Exit(1)
-	}
-	defer listener.Close()
-	if err := os.Chmod(*socketPath, 0o600); err != nil {
-		slog.Error("secure runner socket", "error", err)
+		slog.Error("load runner bootstrap", "error", err)
 		os.Exit(1)
 	}
 
@@ -64,13 +40,8 @@ func main() {
 	)
 	defer stop()
 
-	slog.Info("runnerd listening", "socket", *socketPath, "version", version)
-	handler, err := runner.NewServer(version, token)
-	if err != nil {
-		slog.Error("configure runner server", "error", err)
-		os.Exit(1)
-	}
-	if err := runner.Serve(ctx, listener, handler); err != nil {
+	slog.Info("runnerd starting", "sandbox_id", bootstrap.SandboxID, "version", version)
+	if err := runner.ServeConfigured(ctx, version, bootstrap, &token); err != nil {
 		slog.Error("runnerd stopped", "error", err)
 		os.Exit(1)
 	}

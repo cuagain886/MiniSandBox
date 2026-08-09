@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"path/filepath"
 	"time"
 
@@ -131,12 +132,20 @@ func (e *RuntimeUnavailableError) FailureReason() string {
 
 // Runtime 是 runtime 端口的 Docker Engine 实现。
 type Runtime struct {
-	engine        Engine
-	netNSResolver NetNSResolver
-	dataDirectory string
-	artifacts     ArtifactProvider
-	createTimeout time.Duration
-	egressConfig  *EgressPlatformConfig
+	engine          Engine
+	netNSResolver   NetNSResolver
+	dataDirectory   string
+	artifacts       ArtifactProvider
+	createTimeout   time.Duration
+	egressConfig    *EgressPlatformConfig
+	bootstrap       RunnerBootstrapProvider
+	bootstrapCloser io.Closer
+}
+
+// RunnerBootstrapProvider 为单个 sandbox 在受管 runtime 目录准备可信配置与一次性凭据。
+type RunnerBootstrapProvider interface {
+	// Stage 必须只写入给定受管目录，且不能把凭据放入 labels、环境变量或命令行。
+	Stage(runtimeDirectory, sandboxID string) error
 }
 
 // EgressPlatformConfig 是只由 sandboxd 配置装配的 outbound sidecar 固定参数。
@@ -166,6 +175,8 @@ type RuntimeOptions struct {
 	CreateTimeout time.Duration
 	// Egress 非 nil 时允许 runtime 为 outbound=true 创建受管 sidecar；nil 时 fail closed。
 	Egress *EgressPlatformConfig
+	// Bootstrap 负责在容器启动前重建 runner 可信配置和一次性 token。
+	Bootstrap RunnerBootstrapProvider
 }
 
 // New 创建 Docker client 并立即探测 daemon。
@@ -249,6 +260,8 @@ func (r *Runtime) applyOptions(options RuntimeOptions) {
 	r.artifacts = options.Artifacts
 	r.createTimeout = options.CreateTimeout
 	r.egressConfig = nil
+	r.bootstrap = options.Bootstrap
+	r.bootstrapCloser, _ = options.Bootstrap.(io.Closer)
 	if options.Egress != nil {
 		copy := *options.Egress
 		copy.AdditionalDeniedCIDRs = append([]string(nil), options.Egress.AdditionalDeniedCIDRs...)
@@ -261,7 +274,11 @@ func (r *Runtime) Close() error {
 	if r == nil || r.engine == nil {
 		return nil
 	}
-	return r.engine.Close()
+	var bootstrapErr error
+	if r.bootstrapCloser != nil {
+		bootstrapErr = r.bootstrapCloser.Close()
+	}
+	return errors.Join(r.engine.Close(), bootstrapErr)
 }
 
 var _ runtimeport.Runtime = (*Runtime)(nil)

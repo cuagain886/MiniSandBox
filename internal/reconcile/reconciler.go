@@ -139,7 +139,20 @@ func (r *Reconciler) reconcileRunning(
 	if err != nil {
 		return fmt.Errorf("mark sandbox waiting for runner: %w", err)
 	}
-	if err := r.probe.Probe(ctx, waiting.ID, actual.RunnerProtocolVersion); err != nil {
+	if waiting.Spec.Network.Outbound {
+		networkProbe, ok := r.probe.(RunnerNetworkProbe)
+		egressGate, runtimeOK := r.runtime.(runtimeport.ExecutionEgressGate)
+		if !ok || !runtimeOK {
+			return r.failRunning(ctx, waiting, errors.New("outbound readiness gate is unavailable"))
+		}
+		identity, err := networkProbe.ProbeNetwork(ctx, waiting.ID, actual.RunnerProtocolVersion)
+		if err != nil {
+			return r.failRunning(ctx, waiting, err)
+		}
+		if err := egressGate.CheckSandboxEgress(ctx, waiting.ID, identity); err != nil {
+			return r.failRunning(ctx, waiting, err)
+		}
+	} else if err := r.probe.Probe(ctx, waiting.ID, actual.RunnerProtocolVersion); err != nil {
 		return r.failRunning(ctx, waiting, err)
 	}
 	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{

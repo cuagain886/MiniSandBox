@@ -66,6 +66,23 @@ func TestReconcileRunningTransitionsInOrder(t *testing.T) {
 	}
 }
 
+// TestReconcileOutboundRequiresRunnerAndEgressIdentity 验证 outbound 只有双重就绪后才能进入 Running。
+func TestReconcileOutboundRequiresRunnerAndEgressIdentity(t *testing.T) {
+	events := make([]string, 0, 8)
+	sandbox := pendingSandbox()
+	sandbox.Spec.Network.Outbound = true
+	sandboxStore := newReconcileStore(&events, sandbox)
+	runtime := &recordingRuntime{events: &events, ensureResult: runtimeport.ActualSandbox{RuntimeID: "container-id", RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion}}
+	probe := &recordingProbe{events: &events, networkIdentity: "linux-netns:4:9"}
+	if err := New(sandboxStore, runtime, probe).Reconcile(context.Background(), sandbox.ID); err != nil {
+		t.Fatalf("reconcile outbound: %v", err)
+	}
+	want := []string{"store-get", "store-update-Creating-CREATING_RUNTIME", "runtime-ensure", "store-update-Creating-WAITING_RUNNER", "runner-network-probe", "runtime-egress-gate", "store-update-Running-RUNNING"}
+	if !reflect.DeepEqual(events, want) {
+		t.Fatalf("events: got %v want %v", events, want)
+	}
+}
+
 // TestReconcileRunningRecordIsNoOp 验证已 Running 记录不会触发 Runtime、Probe 或 CAS。
 func TestReconcileRunningRecordIsNoOp(t *testing.T) {
 	events := make([]string, 0, 1)
@@ -511,6 +528,15 @@ type recordingRuntime struct {
 	deleteErr     error
 }
 
+// CheckSandboxEgress 记录只读 outbound readiness gate。
+func (r *recordingRuntime) CheckSandboxEgress(_ context.Context, _ string, identity string) error {
+	*r.events = append(*r.events, "runtime-egress-gate")
+	if identity == "" {
+		return errors.New("missing network identity")
+	}
+	return nil
+}
+
 // Ensure 记录调用并返回预设实际状态。
 func (r *recordingRuntime) Ensure(
 	_ context.Context,
@@ -547,6 +573,14 @@ type recordingProbe struct {
 	events          *[]string
 	err             error
 	protocolVersion int
+	networkIdentity string
+}
+
+// ProbeNetwork 返回同一 runner health 的受验证 netns identity。
+func (p *recordingProbe) ProbeNetwork(_ context.Context, _ string, protocolVersion int) (string, error) {
+	*p.events = append(*p.events, "runner-network-probe")
+	p.protocolVersion = protocolVersion
+	return p.networkIdentity, p.err
 }
 
 // recordingShutdown 记录 runner 关闭顺序与错误。

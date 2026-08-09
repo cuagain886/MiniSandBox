@@ -27,11 +27,19 @@ type Waker interface {
 
 // SandboxService 编排 sandbox 生命周期用例及其持久化访问。
 type SandboxService struct {
-	store       store.Store
-	idGenerator IDGenerator
-	clock       Clock
-	specBuilder SandboxSpecBuilder
-	waker       Waker
+	store         store.Store
+	idGenerator   IDGenerator
+	clock         Clock
+	specBuilder   SandboxSpecBuilder
+	waker         Waker
+	allowOutbound bool
+}
+
+// NewSandboxServiceWithOutbound 创建按平台门禁允许 outbound 意图的生命周期服务。
+func NewSandboxServiceWithOutbound(s store.Store, idGenerator IDGenerator, clock Clock, specBuilder SandboxSpecBuilder, waker Waker, allowOutbound bool) *SandboxService {
+	service := NewSandboxService(s, idGenerator, clock, specBuilder, waker)
+	service.allowOutbound = allowOutbound
+	return service
 }
 
 // NewSandboxService 使用显式依赖创建可确定测试的生命周期服务。
@@ -64,7 +72,7 @@ func (s *SandboxService) Create(
 ) (domain.Sandbox, error) {
 	// P2-005 只冻结并贯通 outbound 契约；在后续配置门禁和 sidecar runtime
 	// 完成前拒绝实际创建，避免把 NetworkMode=none 伪装成 outbound 成功。
-	if command.Outbound {
+	if command.Outbound && !s.allowOutbound {
 		return domain.Sandbox{}, domain.ErrOutboundNotAllowed
 	}
 	spec, err := s.specBuilder.Build(command)

@@ -13,7 +13,10 @@ import (
 	"minisandbox/internal/config"
 	"minisandbox/internal/datadir"
 	"minisandbox/internal/reconcile"
+	"minisandbox/internal/runnerauth"
+	"minisandbox/internal/runnerbootstrap"
 	"minisandbox/internal/runnerclient"
+	"minisandbox/internal/runnerstage"
 	runtimeport "minisandbox/internal/runtime"
 	dockerruntime "minisandbox/internal/runtime/docker"
 	"minisandbox/internal/store"
@@ -67,15 +70,33 @@ func openProductionRuntime(
 	paths datadir.Paths,
 	artifacts dockerruntime.ArtifactProvider,
 ) (managedRuntime, error) {
-	return dockerruntime.New(
+	stager, err := runnerstage.New(cfg)
+	if err != nil {
+		return nil, err
+	}
+	var egress *dockerruntime.EgressPlatformConfig
+	if cfg.Security.AllowOutbound {
+		egress = &dockerruntime.EgressPlatformConfig{
+			Image: cfg.Egress.Image, AdditionalDeniedCIDRs: append([]string(nil), cfg.Egress.DeniedCIDRs...),
+			AnchorUID: cfg.Egress.AnchorUID, AnchorGID: cfg.Egress.AnchorGID,
+			Limits: cfg.Egress.Limits, ReadyTimeout: cfg.Egress.ReadyTimeout,
+		}
+	}
+	runtime, err := dockerruntime.New(
 		ctx,
 		cfg.Runtime.DockerHost,
 		dockerruntime.RuntimeOptions{
 			DataDirectory: paths.DataDirectory,
 			Artifacts:     artifacts,
 			CreateTimeout: defaultRuntimeCreateTimeout,
+			Egress:        egress,
+			Bootstrap:     stager,
 		},
 	)
+	if err != nil {
+		return nil, errors.Join(err, stager.Close())
+	}
+	return runtime, nil
 }
 
 // startProductionWorker 装配 runner probe、reconciler 和单 worker。
@@ -87,15 +108,16 @@ func startProductionWorker(
 	runtime runtimeport.Runtime,
 	queue *reconcile.WakeQueue,
 ) (workerHandle, error) {
-	probe, err := runnerclient.NewRunnerProbe(
-		paths.RunRoot,
-		cfg.Reconcile.RunnerReadyTimeout,
-		"",
-	)
+	masterKey, err := runnerauth.LoadMasterKey(cfg.Security.RunnerMasterKeyFile)
 	if err != nil {
 		return nil, err
 	}
-	reconciler := reconcile.New(sandboxStore, runtime, probe)
+	factory, err := runnerclient.NewFactory(paths.RunRoot, &masterKey, runnerbootstrap.CurrentProtocolVersion, cfg.Reconcile.RunnerReadyTimeout)
+	masterKey.Clear()
+	if err != nil {
+		return nil, err
+	}
+	reconciler := reconcile.NewWithShutdown(sandboxStore, runtime, factory, factory)
 	worker, err := reconcile.NewWorker(
 		queue,
 		cfg.Reconcile.DeletionTimeout,
@@ -114,8 +136,9 @@ func startProductionWorker(
 	}
 	workerCtx, cancel := context.WithCancel(ctx)
 	handle := &runningWorker{
-		cancel: cancel,
-		done:   make(chan struct{}),
+		cancel:       cancel,
+		done:         make(chan struct{}),
+		closeFactory: factory.Close,
 	}
 	go func() {
 		defer close(handle.done)
@@ -161,7 +184,7 @@ func startProductionHTTP(
 	queue *reconcile.WakeQueue,
 	readiness *controlapi.Readiness,
 ) (httpHandle, error) {
-	lifecycle := application.NewSandboxService(
+	lifecycle := application.NewSandboxServiceWithOutbound(
 		sandboxStore,
 		application.NewRandomIDGenerator(),
 		application.SystemClock{},
@@ -170,6 +193,7 @@ func startProductionHTTP(
 			cfg.Limits.MaxResources,
 		),
 		queueWaker{queue: queue},
+		cfg.Security.AllowOutbound,
 	)
 	server := &http.Server{
 		Addr: cfg.Server.ListenAddress,
@@ -213,14 +237,20 @@ func (w queueWaker) Wake(id string) {
 
 // runningWorker 管理 worker goroutine 的取消和等待。
 type runningWorker struct {
-	cancel context.CancelFunc
-	done   chan struct{}
-	once   sync.Once
+	cancel       context.CancelFunc
+	done         chan struct{}
+	once         sync.Once
+	closeFactory func()
 }
 
 // Close 取消 worker 并等待当前 reconcile 退出。
 func (w *runningWorker) Close(ctx context.Context) error {
 	w.once.Do(w.cancel)
+	defer func() {
+		if w.closeFactory != nil {
+			w.closeFactory()
+		}
+	}()
 	select {
 	case <-w.done:
 		return nil

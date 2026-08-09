@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"minisandbox/internal/runnerauth"
+	"minisandbox/internal/runnerbootstrap"
 )
 
 const runnerShutdownTimeout = 5 * time.Second
@@ -92,6 +93,33 @@ func (f *Factory) Shutdown(ctx context.Context, sandboxID string) error {
 	shutdownContext, cancel := context.WithTimeout(ctx, runnerShutdownTimeout)
 	defer cancel()
 	return client.Shutdown(shutdownContext)
+}
+
+// Probe 对固定 sandbox client 执行有界 health 检查，并精确校验调用方声明的协议版本。
+func (f *Factory) Probe(ctx context.Context, sandboxID string, expectedProtocolVersion int) error {
+	_, err := f.ProbeNetwork(ctx, sandboxID, expectedProtocolVersion)
+	return err
+}
+
+// ProbeNetwork 执行有界 health 检查并返回经过严格格式校验的 runner netns identity。
+func (f *Factory) ProbeNetwork(ctx context.Context, sandboxID string, expectedProtocolVersion int) (string, error) {
+	if expectedProtocolVersion != runnerbootstrap.CurrentProtocolVersion {
+		return "", &ProtocolMismatchError{}
+	}
+	client, err := f.Client(sandboxID)
+	if err != nil {
+		return "", err
+	}
+	f.mu.RLock()
+	timeout := f.healthCacheTTL
+	f.mu.RUnlock()
+	probeContext, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+	health, err := client.Health(probeContext, expectedProtocolVersion)
+	if err != nil {
+		return "", err
+	}
+	return health.NetNSIdentity, nil
 }
 
 func (f *Factory) authorization(sandboxID string) ([]byte, error) {

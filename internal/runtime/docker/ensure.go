@@ -76,6 +76,11 @@ func (r *Runtime) Ensure(
 	); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
+	if r.bootstrap != nil {
+		if err := r.bootstrap.Stage(paths.Directory, sandbox.ID); err != nil {
+			return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, errors.New("stage runner bootstrap failed"))
+		}
+	}
 	volume, err := ensureWorkspaceVolume(
 		ctx,
 		r.engine,
@@ -126,6 +131,7 @@ func (r *Runtime) validateEnsureInput(
 		DataDirectory: r.dataDirectory,
 		Artifacts:     r.artifacts,
 		CreateTimeout: r.createTimeout,
+		Bootstrap:     r.bootstrap,
 	}
 	if err := validateRuntimeOptions(options); err != nil {
 		return ResourceNames{}, err

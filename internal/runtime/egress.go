@@ -53,3 +53,9 @@ type EgressRuntime interface {
 	// CheckEgressForExecution 在每次新 execution 前比较 sidecar health 与 runner netns。
 	CheckEgressForExecution(context.Context, EgressRequest, string) error
 }
+
+// ExecutionEgressGate 使用 runtime 内受信平台配置验证 outbound execution 隔离身份。
+type ExecutionEgressGate interface {
+	// CheckSandboxEgress 只读校验 sidecar、策略、主容器拓扑和 runner netns，不进行修复。
+	CheckSandboxEgress(context.Context, string, string) error
+}

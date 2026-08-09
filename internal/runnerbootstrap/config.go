@@ -26,6 +26,8 @@ const (
 	SocketPath = "/run/minisandbox/runner.sock"
 	// ExecutionDataDirectory 是后台 execution 状态和日志的容器内受管目录。
 	ExecutionDataDirectory = "/run/minisandbox/executions"
+	// ConfigFileName 是宿主机经受管 bind mount 交给 runnerd 的一次性可信配置文件名。
+	ConfigFileName = "bootstrap.json"
 )
 
 // Config 是单个 runnerd 启动所需的完整可信配置。

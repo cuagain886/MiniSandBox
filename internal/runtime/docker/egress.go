@@ -90,6 +90,15 @@ func (r *Runtime) CheckEgressForExecution(ctx context.Context, request runtimepo
 	return nil
 }
 
+// CheckSandboxEgress 从 runtime 受信配置重建请求并执行 outbound 双重就绪校验。
+func (r *Runtime) CheckSandboxEgress(ctx context.Context, sandboxID, runnerNetNS string) error {
+	request, err := r.egressRequest(sandboxID)
+	if err != nil {
+		return err
+	}
+	return r.CheckEgressForExecution(ctx, request, runnerNetNS)
+}
+
 func (r *Runtime) validateMainContainerNetwork(ctx context.Context, containerID string, outbound bool, egress *runtimeport.EgressActual) error {
 	inspection, err := r.engine.ContainerInspect(ctx, containerID, mobyclient.ContainerInspectOptions{})
 	if err != nil || inspection.Container.Config == nil || inspection.Container.HostConfig == nil {
@@ -195,3 +204,4 @@ func (r *Runtime) validateEgressAttestation(attestation egressanchor.Attestation
 }
 
 var _ runtimeport.EgressRuntime = (*Runtime)(nil)
+var _ runtimeport.ExecutionEgressGate = (*Runtime)(nil)
