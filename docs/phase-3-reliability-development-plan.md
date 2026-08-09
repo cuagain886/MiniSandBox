@@ -149,7 +149,7 @@ P3-000 必须重新执行前两阶段的核心 smoke，并读取两个验收报�
 - wire 使用 RFC3339 UTC，Go SDK 使用 `time.Time` 和 `time.Duration`；
 - `POST /v1/sandboxes/{id}/renew` 只接受绝对 `expires_at`；
 - renew 只能延长；等于当前值是 `200` 幂等 no-op，早于当前值返回 `409 LEASE_CONFLICT`；
-- 新到期时间必须位于 `now + minimum_ttl` 与 `now + maximum_ttl` 的闭区间内；
+- 只有真正延长时，新到期时间才必须位于 `now + minimum_ttl` 与 `now + maximum_ttl` 的闭区间内；等值 no-op 不重新套用该边界；
 - `now >= expires_at` 后即视为已过期，即使 scanner 尚未提交终止意图也不能续期；
 - desired 已是 Terminated 时不能续期，也不能复活；
 - 显式 delete 的优先级高于 renew、timer 和 Running recovery；
@@ -205,7 +205,7 @@ Phase 3 会增加 sandbox 列和新表，属于持久化兼容风险。开始 mi
 - create/delete/renew 等新用户意图绕过旧 backoff；
 - Docker 全局失联时降低 readiness，不对每个 sandbox 各自制造重建风暴；
 - `outbound=false` 的 Running 主容器缺失或停止时复用 Ensure/Start，并保留已验证的 workspace volume；
-- Running 自动恢复新增独立 `ReplaceCompute`/`RecreateRuntime` runtime 操作：只替换主容器、可选 egress sidecar、socket/bootstrap/execution 临时状态，必须保留已验证的 workspace volume 和 `lease.json`；当前完整 `Runtime.Delete` 会删除 workspace，只能用于显式 delete/expire/cleanup，严禁被自动恢复调用；
+- Running 自动恢复新增唯一的 `ReplaceCompute` runtime 操作：只替换主容器、可选 egress sidecar、socket/bootstrap/execution 临时状态，必须保留已验证的 workspace volume 和 `lease.json`；当前完整 `Runtime.Delete` 会删除 workspace，只能用于显式 delete/expire/cleanup，严禁被自动恢复调用；
 - runner 连续 3 次健康失败后先关闭新 execution admission、有界 shutdown，再调用 `ReplaceCompute`；
 - `outbound=true` 的主容器/sidecar/attestation 任一缺失、停止或不健康时，先关闭新 admission 并有界取消当前受管 execution，再按 main → sidecar 移除 compute，随后 sidecar → main 完整重建；绝不单独 Start stopped sidecar；
 - spec drift 永不自动覆盖或删除。
@@ -233,7 +233,7 @@ SQLite 当前单连接上限为 1，Store-backed gauge 由带 timeout 的周期�
 - `admin.enabled=false` 时不读取 token file、不注册路由，对外自然返回 404；
 - 复用现有 server listener，不新增公网端口；
 - 启用后 `token_file` 必填，缺失、无效或读取失败都阻止启动；默认配置中的 `token_file` 为空；
-- token file 必须是绝对路径的 owner-owned、regular、non-symlink 文件，权限不宽于 `0600`；内容是至少 256 bit 的 base64url token；只接受一个 Bearer header，比较摘要时使用 constant-time，且 token 不进入日志、错误或 config dump；
+- token file 必须是绝对路径、owner 为服务 euid 的 regular non-symlink 文件，权限不宽于 `0600`；内容去除一个可选末尾 LF 后必须是无 padding base64url，解码后恰好 32 字节，其他 whitespace 一律拒绝；只接受一个 Bearer header，解码后以 constant-time 比较固定长度值，且 token 不进入日志、错误或 config dump；
 - token 启动时只读一次，轮换通过重启完成；
 - 当前全局 server listener 已强制 loopback，不增加 `allow_non_loopback`。未来远程 admin 必须单独设计 listener/mTLS 和威胁模型，不能由一个布尔开关放宽；
 - diagnostics 不返回原始 Docker logs、命令、env、token 或宿主机绝对路径。
@@ -603,7 +603,7 @@ Recovery 只能提交持久化结果或 Wake；不在 inventory loop 内执行�
 周期检查 Running record 及其主容器/可选 egress sidecar 聚合资源：
 
 - `outbound=false` 的主容器不存在或 stopped：进入 `RECOVERING_RUNTIME` 并按既有 Ensure/Start 语义恢复；
-- 所有自动恢复都必须保留身份已验证的 workspace volume 和 `lease.json`；新增 `ReplaceCompute`/`RecreateRuntime` runtime 端口只清理主容器、可选 sidecar、runner socket/bootstrap/execution 临时状态，当前会删除 volume/runtime directory 的完整 `Runtime.Delete` 只用于显式 delete/expire/cleanup；
+- 所有自动恢复都必须保留身份已验证的 workspace volume 和 `lease.json`；新增唯一的 `ReplaceCompute` runtime 端口只清理主容器、可选 sidecar、runner socket/bootstrap/execution 临时状态，当前会删除 volume/runtime directory 的完整 `Runtime.Delete` 只用于显式 delete/expire/cleanup；
 - `outbound=true` 的主容器或 sidecar 不存在、stopped、attestation/protocol/policy/netns unhealthy：先关闭新 admission 并有界取消当前受管 execution，精确验证后由 `ReplaceCompute` 按 main → sidecar 移除现有 compute，再通过 sidecar → main 正常 bootstrap 完整重建；
 - 禁止单独 Start stopped sidecar，因为原进程内的 bootstrap 状态和 attestation 已丢失，且新 namespace 不能热替换到现有主容器；
 - labels/spec/security profile drift：`SPEC_DRIFT`，不自动修正；
@@ -1546,7 +1546,7 @@ commit SHA
 
 - **依赖**：P3-035～P3-038、P3-045、P3-060、G5。
 - **唯一目标**：周期 reconcile 对主容器/sidecar missing、stopped、egress unhealthy 和连续 runner failure 执行第 5.12 节策略。
-- **设计**：新增 `ReplaceCompute`/`RecreateRuntime` runtime 端口，精确保留已验证 workspace volume 与 `lease.json`，只清理主容器、可选 sidecar、socket/bootstrap/execution 临时状态；none 模式 missing/stopped 沿用 Ensure/Start；outbound 任一成员或 attestation/protocol/policy/netns 失败时先关闭 admission、有界取消 execution，再按 main → sidecar remove、sidecar → main ensure，禁止调用会删除 workspace 的完整 `Runtime.Delete`，也禁止单独 Start sidecar；runner 单次 probe 只更新 failure count，连续 3 次才关闭 admission、有界 shutdown 并 ReplaceCompute；delete intent 始终优先。服务级 `minisandbox-egress` 缺失时复用 Phase 2 幂等 Ensure；同名非受管或 driver/schema drift 视为安全全局错误，不接管、删除或覆盖。
+- **设计**：新增唯一的 `ReplaceCompute` runtime 端口，精确保留已验证 workspace volume 与 `lease.json`，只清理主容器、可选 sidecar、socket/bootstrap/execution 临时状态；none 模式 missing/stopped 沿用 Ensure/Start；outbound 任一成员或 attestation/protocol/policy/netns 失败时先关闭 admission、有界取消 execution，再按 main → sidecar remove、sidecar → main ensure，禁止调用会删除 workspace 的完整 `Runtime.Delete`，也禁止单独 Start sidecar；runner 单次 probe 只更新 failure count，连续 3 次才关闭 admission、有界 shutdown 并 ReplaceCompute；delete intent 始终优先。服务级 `minisandbox-egress` 缺失时复用 Phase 2 幂等 Ensure；同名非受管或 driver/schema drift 视为安全全局错误，不接管、删除或覆盖。
 - **修改范围**：runtime interface/Docker adapter、Running reconcile branch、egress/runtime health gate 和 metadata update。
 - **测试**：workspace/lease 保留、完整 Delete panic spy、none/outbound 的 main missing/stopped、sidecar missing/stopped/attestation/protocol/policy/netns drift、取消当前 execution、禁止 sidecar Start spy、全局 network missing 自动 Ensure/同名非受管或 schema drift fail closed、一次/三次 runner failure、完整恢复、drift、delete/renew 竞争、race。
 - **验收**：自动恢复后 workspace 与最新 lease 不变；临时 probe 抖动不重建；阈值后最终恢复；spec drift 不被重建掩盖。
@@ -1678,7 +1678,7 @@ commit SHA
 
 - **依赖**：P3-008、P3-009、G7。
 - **唯一目标**：从受限 secret file 加载 admin token 并提供 constant-time HTTP auth。
-- **设计**：disabled 时不读取文件且 route 不注册；enabled 时要求 absolute、owner 为服务 euid、regular non-symlink、mode 不宽于 0600，内容为至少 256 bit base64url token；只接受一个 Bearer header，对 token digest constant-time compare；token 不进 config dump/log；missing/wrong 均返回同一 401；启动只读一次，轮换需重启。
+- **设计**：disabled 时不读取文件且 route 不注册；enabled 时要求 absolute、owner 为服务 euid、regular non-symlink、mode 不宽于 0600；内容去除一个可选末尾 LF 后必须是无 padding base64url，解码后恰好 32 字节，其他 whitespace 拒绝；只接受一个 Bearer header，解码后 constant-time compare 固定长度值；token 不进 config dump/log；missing/wrong 均返回同一 401；启动只读一次，轮换需重启。
 - **修改范围**：admin secret loader、auth middleware 和 bootstrap。
 - **测试**：mode、symlink、短/空、正确/错误/重复 header、日志 redaction。
 - **验收**：admin enabled 但 token 无效时服务拒绝启动。

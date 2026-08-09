@@ -955,7 +955,7 @@ v1 backfill 使用一次注入的 `migration_time`：`DesiredRunning` 的 expiry
 
 retryable create/runtime/runner error 使用持久化 capped exponential backoff + full jitter，默认 1 秒起步、1 分钟封顶；选中的 next time 跨重启保持。CAS conflict 立即重读且不计 attempt，新用户 intent 抢占旧 backoff。delete、expire 和 `CLEANUP_PENDING` 对身份完整可信的受管资源无限有界重试；未知或 drift 资源只进入 anomaly。Docker 全局 outage 降低 readiness，并通过共享 dependency gate 避免每 sandbox 重建风暴。
 
-Running 自动恢复不得调用当前会删除 workspace volume/runtime directory 的完整 `Runtime.Delete`。runtime 必须提供独立 `ReplaceCompute`/`RecreateRuntime`：保留已验证 workspace volume 与 `lease.json`，只替换主容器、可选 egress sidecar、socket/bootstrap/execution 临时状态。显式 delete/expire/cleanup 才使用完整 Delete。
+Running 自动恢复不得调用当前会删除 workspace volume/runtime directory 的完整 `Runtime.Delete`。runtime 必须提供唯一的 `ReplaceCompute`：保留已验证 workspace volume 与 `lease.json`，只替换主容器、可选 egress sidecar、socket/bootstrap/execution 临时状态。显式 delete/expire/cleanup 才使用完整 Delete。
 
 `outbound=false` 的 missing/stopped 主容器复用 Ensure/Start；runner 连续 3 次 probe 失败后先关闭新 admission、有界 shutdown，再 ReplaceCompute。`outbound=true` 任一 main/sidecar/attestation/protocol/policy/netns 失败时先关闭 admission、有界取消 execution，再按 main → sidecar 移除、sidecar → main 重建；stopped sidecar 绝不单独 Start。spec/security drift 保持 `SPEC_DRIFT`，不自动覆盖或删除。
 
@@ -1330,7 +1330,7 @@ GET /v1/admin/sandboxes/{id}/diagnostics
 
 不返回 Docker raw inspect/logs、命令、输出、env、token、socket path、data dir 或内部堆栈。
 
-`/metrics` 与 `/v1/admin/**` 共用现有 loopback-only server listener，不新增端口。`admin.enabled=false` 时不读取 token file、不注册路由，对外自然 404。启用时 `token_file` 必填且启动失败即 fail closed：文件必须是绝对路径、owner 为服务 euid、regular non-symlink、mode 不宽于 `0600`，内容为至少 256 bit 的 base64url token。只接受一个 Bearer header，对 token digest 做 constant-time compare；token 不进入日志、错误或 config dump。token 启动时读取一次，轮换通过重启完成。
+`/metrics` 与 `/v1/admin/**` 共用现有 loopback-only server listener，不新增端口。`admin.enabled=false` 时不读取 token file、不注册路由，对外自然 404。启用时 `token_file` 必填且启动失败即 fail closed：文件必须是绝对路径、owner 为服务 euid、regular non-symlink、mode 不宽于 `0600`；内容去除一个可选末尾 LF 后必须是无 padding base64url，解码后恰好 32 字节，其他 whitespace 一律拒绝。只接受一个 Bearer header，解码后对固定 32 字节值做 constant-time compare；token 不进入日志、错误或 config dump。token 启动时读取一次，轮换通过重启完成。
 
 不提供 `allow_non_loopback`。未来远程 admin 必须单独设计 listener、mTLS 和威胁模型，不能用一个布尔开关放宽当前监听边界。
 
