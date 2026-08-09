@@ -1,0 +1,359 @@
+openapi: 3.1.0
+info:
+  title: MiniSandbox Read-Only Admin API
+  version: 0.3.0
+  description: >-
+    Loopback-only administrative diagnostics. This contract exposes sanitized typed summaries
+    and never exposes raw Docker inspect or logs, commands, output, environment values, tokens,
+    socket paths, data directories, host paths, or internal stack traces.
+servers:
+  - url: http://127.0.0.1:8080
+x-admin-disabled-contract:
+  route_registered: false
+  token_file_read: false
+  http_status: 404
+paths:
+  /v1/admin/sandboxes/{sandbox_id}/diagnostics:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    get:
+      operationId: getSandboxDiagnostics
+      summary: Get a bounded sanitized diagnostics snapshot
+      security:
+        - AdminBearer: []
+      responses:
+        "200":
+          description: Complete or partially unavailable typed diagnostics snapshot
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/SandboxDiagnostics"
+        "401":
+          description: Admin bearer authentication failed
+        "404":
+          description: Sandbox does not exist; disabled deployments do not register this route and naturally return 404
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/ErrorResponse"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+components:
+  securitySchemes:
+    AdminBearer:
+      type: http
+      scheme: bearer
+      bearerFormat: base64url-encoded-32-byte-secret
+      description: Loaded once from the configured restricted secret file when admin is enabled
+  parameters:
+    SandboxID:
+      name: sandbox_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+  responses:
+    InternalError:
+      description: An unexpected internal error occurred
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    ServiceUnavailable:
+      description: A required local diagnostics dependency is unavailable
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+  schemas:
+    ErrorResponse:
+      type: object
+      additionalProperties: false
+      required: [error]
+      properties:
+        error:
+          $ref: "#/components/schemas/ErrorDetail"
+    ErrorDetail:
+      type: object
+      additionalProperties: false
+      required: [code, message, request_id, retryable]
+      properties:
+        code:
+          $ref: "#/components/schemas/ErrorCode"
+        message:
+          type: string
+          description: Fixed safe message without an internal cause
+        request_id:
+          type: string
+        retryable:
+          type: boolean
+    ErrorCode:
+      type: string
+      enum:
+        - SANDBOX_NOT_FOUND
+        - ADMIN_DISABLED
+        - RUNTIME_UNAVAILABLE
+        - INTERNAL_ERROR
+    DiagnosticsSectionStatus:
+      type: string
+      enum: [available, unavailable]
+    DiagnosticsUnavailableCode:
+      type: string
+      enum: [timeout, dependency_unavailable, not_collected, internal_error]
+    DiagnosticsDesiredState:
+      type: string
+      enum: [Running, Terminated]
+    DiagnosticsSandboxOrigin:
+      type: string
+      enum: [api, recovered_orphan]
+    DiagnosticsComputeStatus:
+      type: string
+      enum: [not_expected, absent, running, stopped, unknown]
+    DiagnosticsResourcePresence:
+      type: string
+      enum: [not_expected, absent, present, unknown]
+    DiagnosticsMatchStatus:
+      type: string
+      enum: [match, mismatch, unknown]
+    DiagnosticsRunnerHealth:
+      type: string
+      enum: [unknown, healthy, degraded, unhealthy, unreachable]
+    DiagnosticsReconcileCode:
+      type: string
+      enum:
+        - not_run
+        - converged
+        - retry_scheduled
+        - cleanup_pending
+        - spec_drift
+        - runtime_unavailable
+        - internal_error
+    DiagnosticsAnomalyClassification:
+      type: string
+      enum:
+        - incomplete_bundle
+        - unknown_schema
+        - identity_mismatch
+        - spec_hash_mismatch
+        - security_profile_mismatch
+        - network_namespace_mismatch
+        - lease_untrusted
+        - duplicate_resource
+    SandboxDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [sandbox_id, generated_at, store, runtime, runner, reconcile, anomaly]
+      properties:
+        sandbox_id:
+          type: string
+        generated_at:
+          type: string
+          format: date-time
+          description: UTC RFC3339Nano timestamp captured after all bounded section attempts finish
+        store:
+          $ref: "#/components/schemas/StoreDiagnostics"
+        runtime:
+          $ref: "#/components/schemas/RuntimeDiagnostics"
+        runner:
+          $ref: "#/components/schemas/RunnerDiagnostics"
+        reconcile:
+          $ref: "#/components/schemas/ReconcileDiagnostics"
+        anomaly:
+          $ref: "#/components/schemas/AnomalyDiagnostics"
+    StoreDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/DiagnosticsSectionStatus"
+        unavailable_code:
+          $ref: "#/components/schemas/DiagnosticsUnavailableCode"
+        desired_state:
+          $ref: "#/components/schemas/DiagnosticsDesiredState"
+        observed_state:
+          $ref: "lifecycle.openapi.yaml#/components/schemas/SandboxState"
+        reason:
+          $ref: "lifecycle.openapi.yaml#/components/schemas/SandboxReason"
+        revision:
+          type: integer
+          minimum: 0
+        expires_at:
+          type: string
+          format: date-time
+          description: Authoritative Store lease as a UTC RFC3339Nano timestamp
+        retry_attempt:
+          type: integer
+          minimum: 0
+        next_reconcile_at:
+          type: string
+          format: date-time
+          description: UTC RFC3339Nano timestamp; omitted when no retry is scheduled
+        last_reconcile_at:
+          type: string
+          format: date-time
+          description: UTC RFC3339Nano timestamp; omitted before the first completed reconcile
+        health_failure_count:
+          type: integer
+          minimum: 0
+        origin:
+          $ref: "#/components/schemas/DiagnosticsSandboxOrigin"
+      allOf:
+        - if:
+            properties:
+              status:
+                const: available
+          then:
+            required:
+              - desired_state
+              - observed_state
+              - reason
+              - revision
+              - expires_at
+              - retry_attempt
+              - health_failure_count
+              - origin
+        - if:
+            properties:
+              status:
+                const: unavailable
+          then:
+            required: [unavailable_code]
+    RuntimeDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/DiagnosticsSectionStatus"
+        unavailable_code:
+          $ref: "#/components/schemas/DiagnosticsUnavailableCode"
+        main_container:
+          $ref: "#/components/schemas/DiagnosticsComputeStatus"
+        egress_sidecar:
+          $ref: "#/components/schemas/DiagnosticsComputeStatus"
+        workspace_volume:
+          $ref: "#/components/schemas/DiagnosticsResourcePresence"
+        runtime_directory:
+          $ref: "#/components/schemas/DiagnosticsResourcePresence"
+        security_profile:
+          $ref: "#/components/schemas/DiagnosticsMatchStatus"
+        safe_spec_hash:
+          type: string
+          pattern: "^[0-9a-f]{64}$"
+          description: Safe SHA-256 of the resolved spec; raw spec fields are not returned
+        spec_hash_match:
+          $ref: "#/components/schemas/DiagnosticsMatchStatus"
+      allOf:
+        - if:
+            properties:
+              status:
+                const: available
+          then:
+            required:
+              - main_container
+              - egress_sidecar
+              - workspace_volume
+              - runtime_directory
+              - security_profile
+              - safe_spec_hash
+              - spec_hash_match
+        - if:
+            properties:
+              status:
+                const: unavailable
+          then:
+            required: [unavailable_code]
+    RunnerDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/DiagnosticsSectionStatus"
+        unavailable_code:
+          $ref: "#/components/schemas/DiagnosticsUnavailableCode"
+        health:
+          $ref: "#/components/schemas/DiagnosticsRunnerHealth"
+        last_checked_at:
+          type: string
+          format: date-time
+          description: UTC RFC3339Nano timestamp; omitted when runner has not been checked
+      allOf:
+        - if:
+            properties:
+              status:
+                const: available
+          then:
+            required: [health]
+        - if:
+            properties:
+              status:
+                const: unavailable
+          then:
+            required: [unavailable_code]
+    ReconcileDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/DiagnosticsSectionStatus"
+        unavailable_code:
+          $ref: "#/components/schemas/DiagnosticsUnavailableCode"
+        last_code:
+          $ref: "#/components/schemas/DiagnosticsReconcileCode"
+        last_finished_at:
+          type: string
+          format: date-time
+          description: UTC RFC3339Nano timestamp; omitted before the first completed reconcile
+      allOf:
+        - if:
+            properties:
+              status:
+                const: available
+          then:
+            required: [last_code]
+        - if:
+            properties:
+              status:
+                const: unavailable
+          then:
+            required: [unavailable_code]
+    AnomalyDiagnostics:
+      type: object
+      additionalProperties: false
+      required: [status]
+      properties:
+        status:
+          $ref: "#/components/schemas/DiagnosticsSectionStatus"
+        unavailable_code:
+          $ref: "#/components/schemas/DiagnosticsUnavailableCode"
+        active_count:
+          type: integer
+          minimum: 0
+        classifications:
+          type: array
+          uniqueItems: true
+          items:
+            $ref: "#/components/schemas/DiagnosticsAnomalyClassification"
+        last_observed_at:
+          type: string
+          format: date-time
+          description: UTC RFC3339Nano timestamp; omitted when there is no active anomaly
+      allOf:
+        - if:
+            properties:
+              status:
+                const: available
+          then:
+            required: [active_count, classifications]
+        - if:
+            properties:
+              status:
+                const: unavailable
+          then:
+            required: [unavailable_code]

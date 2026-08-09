@@ -1,0 +1,46 @@
+{
+  "sandbox_id": "sbx-diagnostics-01",
+  "generated_at": "2026-07-25T12:00:00.123456789Z",
+  "store": {
+    "status": "available",
+    "desired_state": "Running",
+    "observed_state": "Running",
+    "reason": "RUNNER_HEALTH_DEGRADED",
+    "revision": 42,
+    "expires_at": "2026-07-25T13:00:00Z",
+    "retry_attempt": 2,
+    "next_reconcile_at": "2026-07-25T12:00:05Z",
+    "last_reconcile_at": "2026-07-25T11:59:58.500000001Z",
+    "health_failure_count": 1,
+    "origin": "api"
+  },
+  "runtime": {
+    "status": "available",
+    "main_container": "running",
+    "egress_sidecar": "running",
+    "workspace_volume": "present",
+    "runtime_directory": "present",
+    "security_profile": "match",
+    "safe_spec_hash": "b20b6f7fc65e9af3dbf497337c21003a0e65f3a5b206a0b10247f2958ab1fb2e",
+    "spec_hash_match": "match"
+  },
+  "runner": {
+    "status": "available",
+    "health": "degraded",
+    "last_checked_at": "2026-07-25T11:59:59.900000002Z"
+  },
+  "reconcile": {
+    "status": "available",
+    "last_code": "retry_scheduled",
+    "last_finished_at": "2026-07-25T11:59:58.500000001Z"
+  },
+  "anomaly": {
+    "status": "available",
+    "active_count": 2,
+    "classifications": [
+      "network_namespace_mismatch",
+      "duplicate_resource"
+    ],
+    "last_observed_at": "2026-07-25T11:59:57.400000003Z"
+  }
+}

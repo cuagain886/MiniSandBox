@@ -1,0 +1,8 @@
+{
+  "error": {
+    "code": "SANDBOX_NOT_FOUND",
+    "message": "Sandbox does not exist.",
+    "request_id": "req-admin-not-found-01",
+    "retryable": false
+  }
+}

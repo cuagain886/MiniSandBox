@@ -1,0 +1,32 @@
+{
+  "sandbox_id": "sbx-diagnostics-03",
+  "generated_at": "2026-07-25T12:10:00Z",
+  "store": {
+    "status": "available",
+    "desired_state": "Running",
+    "observed_state": "Creating",
+    "reason": "RECOVERING_RUNTIME",
+    "revision": 9,
+    "expires_at": "2026-07-25T13:10:00Z",
+    "retry_attempt": 0,
+    "health_failure_count": 0,
+    "origin": "api"
+  },
+  "runtime": {
+    "status": "unavailable",
+    "unavailable_code": "timeout"
+  },
+  "runner": {
+    "status": "unavailable",
+    "unavailable_code": "dependency_unavailable"
+  },
+  "reconcile": {
+    "status": "available",
+    "last_code": "not_run"
+  },
+  "anomaly": {
+    "status": "available",
+    "active_count": 0,
+    "classifications": []
+  }
+}

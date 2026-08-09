@@ -9,14 +9,14 @@ import (
 	"go.yaml.in/yaml/v3"
 )
 
-// TestOpenAPIDocumentsParse 验证两个 OpenAPI 文件至少是结构合法且版本正确的 YAML。
+// TestOpenAPIDocumentsParse 验证三个 OpenAPI 文件至少是结构合法且版本正确的 YAML。
 func TestOpenAPIDocumentsParse(t *testing.T) {
 	_, filename, _, ok := runtime.Caller(0)
 	if !ok {
 		t.Fatal("locate contract test source")
 	}
 	apiDir := filepath.Join(filepath.Dir(filename), "..", "..", "api")
-	for _, name := range []string{"lifecycle.openapi.yaml", "runner.openapi.yaml"} {
+	for _, name := range []string{"admin.openapi.yaml", "lifecycle.openapi.yaml", "runner.openapi.yaml"} {
 		t.Run(name, func(t *testing.T) {
 			content, err := os.ReadFile(filepath.Join(apiDir, name))
 			if err != nil {
