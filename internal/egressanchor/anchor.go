@@ -30,6 +30,8 @@ type Snapshot struct {
 	CapPermitted uint64
 	// CapAmbient 是 Linux CapAmb 位图。
 	CapAmbient uint64
+	// NoNewPrivileges 表示 PR_SET_NO_NEW_PRIVS 已在当前进程生效且不可撤销。
+	NoNewPrivileges bool
 }
 
 // Platform 隔离 Linux netns、credential 与 capability 系统调用，便于 fail-closed 测试。
@@ -71,30 +73,62 @@ func Activate(ctx context.Context, bootstrap egressnft.Bootstrap, options Option
 	if err := options.BootstrapInput.Close(); err != nil {
 		return errors.New("close egress bootstrap input")
 	}
-	networkNamespace, err := options.Platform.NetworkNamespace()
-	if err != nil || networkNamespace != bootstrap.NetworkNamespace {
-		return errors.New("egress network namespace identity mismatch")
-	}
-	if err := options.Platform.DropPrivileges(bootstrap.AnchorUID, bootstrap.AnchorGID); err != nil {
-		return errors.New("drop egress bootstrap privileges")
-	}
-	snapshot, err := options.Platform.Snapshot()
+	attestation, err := Prepare(bootstrap, options.Platform, now)
 	if err != nil {
-		return errors.New("read back egress anchor privileges")
-	}
-	if err := verifySnapshot(snapshot, bootstrap.AnchorUID, bootstrap.AnchorGID); err != nil {
 		return err
-	}
-	attestation := Attestation{
-		ProtocolVersion: bootstrap.Policy.ProtocolVersion, RuleSchemaVersion: bootstrap.Policy.RuleSchemaVersion,
-		PolicyHash: bootstrap.Policy.Hash, NetworkNamespace: networkNamespace,
-		ImageDigest: bootstrap.ImageDigest, CreatedAt: now().UTC(),
 	}
 	if err := WriteAttestation(path, attestation); err != nil {
 		return err
 	}
 	<-ctx.Done()
 	return nil
+}
+
+// Prepare 校验预期 netns、执行永久降权并回读权限状态，随后构造仅保存在进程内存
+// 中的 attestation。它不关闭控制流、不写文件，也不等待进程退出。
+func Prepare(bootstrap egressnft.Bootstrap, platform Platform, now func() time.Time) (Attestation, error) {
+	if platform == nil {
+		return Attestation{}, errors.New("egress anchor platform is missing")
+	}
+	if _, err := egressnft.MarshalBootstrap(bootstrap); err != nil {
+		return Attestation{}, errors.New("egress anchor bootstrap is invalid")
+	}
+	if now == nil {
+		now = time.Now
+	}
+	networkNamespace, err := platform.NetworkNamespace()
+	if err != nil || networkNamespace != bootstrap.NetworkNamespace {
+		return Attestation{}, errors.New("egress network namespace identity mismatch")
+	}
+	if err := platform.DropPrivileges(bootstrap.AnchorUID, bootstrap.AnchorGID); err != nil {
+		return Attestation{}, errors.New("drop egress bootstrap privileges")
+	}
+	attestation := Attestation{
+		ProtocolVersion: bootstrap.Policy.ProtocolVersion, RuleSchemaVersion: bootstrap.Policy.RuleSchemaVersion,
+		PolicyHash: bootstrap.Policy.Hash, NetworkNamespace: networkNamespace,
+		ImageDigest: bootstrap.ImageDigest, CreatedAt: now().UTC(),
+	}
+	if err := Verify(platform, attestation, bootstrap.AnchorUID, bootstrap.AnchorGID); err != nil {
+		return Attestation{}, err
+	}
+	return attestation, nil
+}
+
+// Verify 回读当前 netns、身份、附加组、capability 与 no_new_privs，并与初始
+// attestation 及固定 anchor 身份比较；任何漂移都阻止 inspect 响应。
+func Verify(platform Platform, attestation Attestation, uid, gid uint32) error {
+	if platform == nil || validateAttestation(attestation) != nil {
+		return errors.New("egress anchor verification input is invalid")
+	}
+	networkNamespace, err := platform.NetworkNamespace()
+	if err != nil || networkNamespace != attestation.NetworkNamespace {
+		return errors.New("egress network namespace identity mismatch")
+	}
+	snapshot, err := platform.Snapshot()
+	if err != nil {
+		return errors.New("read back egress anchor privileges")
+	}
+	return verifySnapshot(snapshot, uid, gid)
 }
 
 func verifySnapshot(snapshot Snapshot, uid, gid uint32) error {
@@ -108,6 +142,9 @@ func verifySnapshot(snapshot Snapshot, uid, gid uint32) error {
 	}
 	if snapshot.CapEffective != 0 || snapshot.CapPermitted != 0 || snapshot.CapAmbient != 0 {
 		return errors.New("egress anchor retains capabilities")
+	}
+	if !snapshot.NoNewPrivileges {
+		return errors.New("egress anchor no_new_privs is disabled")
 	}
 	return nil
 }

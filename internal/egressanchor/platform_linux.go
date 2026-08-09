@@ -97,6 +97,10 @@ func (LinuxPlatform) Snapshot() (Snapshot, error) {
 	if err != nil {
 		return Snapshot{}, err
 	}
+	noNewPrivileges, err := parseNoNewPrivileges(values["NoNewPrivs"])
+	if err != nil {
+		return Snapshot{}, err
+	}
 	groups, err := parseGroups(values["Groups"])
 	if err != nil {
 		return Snapshot{}, err
@@ -104,7 +108,19 @@ func (LinuxPlatform) Snapshot() (Snapshot, error) {
 	return Snapshot{
 		UID: uint32(os.Geteuid()), GID: uint32(os.Getegid()), SupplementaryGroups: groups,
 		CapEffective: effective, CapPermitted: permitted, CapAmbient: ambient,
+		NoNewPrivileges: noNewPrivileges,
 	}, nil
+}
+
+func parseNoNewPrivileges(value string) (bool, error) {
+	switch value {
+	case "0":
+		return false, nil
+	case "1":
+		return true, nil
+	default:
+		return false, errors.New("no_new_privs field is invalid")
+	}
 }
 
 func parseCapability(value string) (uint64, error) {

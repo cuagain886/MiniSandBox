@@ -20,7 +20,7 @@ func TestActivatePublishesReadyAfterDrop(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "attestation.json")
 	platform := &fakePlatform{
 		networkNamespace: bootstrap.NetworkNamespace,
-		snapshot:         Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID},
+		snapshot:         Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, NoNewPrivileges: true},
 	}
 	input := &fakeCloser{}
 	ctx, cancel := context.WithCancel(context.Background())
@@ -40,6 +40,30 @@ func TestActivatePublishesReadyAfterDrop(t *testing.T) {
 	}
 	if attestation.PolicyHash != bootstrap.Policy.Hash || attestation.NetworkNamespace != bootstrap.NetworkNamespace || attestation.ImageDigest != bootstrap.ImageDigest {
 		t.Fatalf("attestation mismatch: %+v", attestation)
+	}
+}
+
+// TestPrepareAndVerifyInMemory 验证新控制通道可以在不关闭 stdin、不写文件的前提下
+// 完成降权并生成内存证明，后续 inspect 会重新回读权限并拒绝漂移。
+func TestPrepareAndVerifyInMemory(t *testing.T) {
+	bootstrap := testBootstrap(t)
+	platform := validPlatform(bootstrap)
+	attestation, err := Prepare(bootstrap, platform, func() time.Time {
+		return time.Date(2026, 8, 9, 1, 2, 3, 0, time.UTC)
+	})
+	if err != nil {
+		t.Fatalf("prepare anchor: %v", err)
+	}
+	if platform.dropUID != bootstrap.AnchorUID || platform.dropGID != bootstrap.AnchorGID ||
+		attestation.PolicyHash != bootstrap.Policy.Hash {
+		t.Fatalf("unexpected in-memory attestation: platform=%+v attestation=%+v", platform, attestation)
+	}
+	if err := Verify(platform, attestation, bootstrap.AnchorUID, bootstrap.AnchorGID); err != nil {
+		t.Fatalf("verify stable anchor: %v", err)
+	}
+	platform.snapshot.CapEffective = uint64(1) << 12
+	if err := Verify(platform, attestation, bootstrap.AnchorUID, bootstrap.AnchorGID); err == nil {
+		t.Fatal("capability drift was accepted")
 	}
 }
 
@@ -63,6 +87,7 @@ func TestActivateFailClosed(t *testing.T) {
 		{name: "effective NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapEffective: netAdmin}}, closer: &fakeCloser{}},
 		{name: "permitted NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapPermitted: netAdmin}}, closer: &fakeCloser{}},
 		{name: "ambient NET_ADMIN", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, CapAmbient: netAdmin}}, closer: &fakeCloser{}},
+		{name: "no_new_privs disabled", platform: &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID}}, closer: &fakeCloser{}},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -84,11 +109,11 @@ func TestActivateFailClosed(t *testing.T) {
 func TestVerifySnapshotAllowsOnlyPrimarySupplementaryGroup(t *testing.T) {
 	const uid, gid = uint32(65532), uint32(65532)
 	for _, groups := range [][]uint32{nil, {gid}, {gid, gid}} {
-		if err := verifySnapshot(Snapshot{UID: uid, GID: gid, SupplementaryGroups: groups}, uid, gid); err != nil {
+		if err := verifySnapshot(Snapshot{UID: uid, GID: gid, SupplementaryGroups: groups, NoNewPrivileges: true}, uid, gid); err != nil {
 			t.Fatalf("equivalent primary groups rejected: groups=%v err=%v", groups, err)
 		}
 	}
-	if err := verifySnapshot(Snapshot{UID: uid, GID: gid, SupplementaryGroups: []uint32{gid, 1000}}, uid, gid); err == nil {
+	if err := verifySnapshot(Snapshot{UID: uid, GID: gid, SupplementaryGroups: []uint32{gid, 1000}, NoNewPrivileges: true}, uid, gid); err == nil {
 		t.Fatal("additional group privilege was accepted")
 	}
 }
@@ -150,7 +175,7 @@ func testBootstrap(t *testing.T) egressnft.Bootstrap {
 
 func validPlatform(bootstrap egressnft.Bootstrap) *fakePlatform {
 	return &fakePlatform{networkNamespace: bootstrap.NetworkNamespace, snapshot: Snapshot{
-		UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, SupplementaryGroups: []uint32{bootstrap.AnchorGID},
+		UID: bootstrap.AnchorUID, GID: bootstrap.AnchorGID, SupplementaryGroups: []uint32{bootstrap.AnchorGID}, NoNewPrivileges: true,
 	}}
 }
 
