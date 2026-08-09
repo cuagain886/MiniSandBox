@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "platform": "linux/amd64",
+  "go_toolchain": "1.26",
+  "go_builder": "golang:1.26-bookworm@sha256:6c5605ab3a9a9fb3c4eafe5b3d63cdbf3881caf113262b67862547b54a9db599",
+  "runtime_base": "debian:bookworm-slim@sha256:abd67ffcfa541b485a3dff59865ab629aa048a6c613e639d36e7456b0b229241",
+  "debian_snapshot": "20260803T000000Z",
+  "nftables_version": "1.0.6-2+deb12u2",
+  "egress_protocol_version": 1,
+  "rule_schema_version": 1,
+  "entrypoint": ["/usr/local/bin/egressd", "bootstrap"],
+  "user": "65532:65532",
+  "attestation_path": "/run/minisandbox-egress/attestation.json",
+  "release_outputs": ["image_digest", "binary_digest", "spdx_sbom_digest", "provenance_digest", "source_revision"]
+}
