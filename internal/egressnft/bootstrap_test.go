@@ -13,12 +13,25 @@ import (
 // TestReadBootstrap 验证唯一合法输入是完整、有界、版本匹配且 hash 正确的一帧。
 func TestReadBootstrap(t *testing.T) {
 	policy := testPolicy(t)
-	got, err := ReadBootstrap(bytes.NewReader(framePolicy(t, policy)))
+	bootstrap := egressnftBootstrap(policy)
+	encoded, err := EncodeBootstrap(bootstrap)
+	if err != nil {
+		t.Fatalf("encode bootstrap: %v", err)
+	}
+	got, err := ReadBootstrap(bytes.NewReader(encoded))
 	if err != nil {
 		t.Fatalf("read bootstrap: %v", err)
 	}
 	if got.Policy.Hash != policy.Hash || len(got.Policy.IPv4) != len(policy.IPv4) || len(got.Policy.IPv6) != len(policy.IPv6) {
 		t.Fatalf("decoded policy mismatch: %+v", got)
+	}
+}
+
+func egressnftBootstrap(policy egresspolicy.Policy) Bootstrap {
+	return Bootstrap{
+		Policy: policy, NetworkNamespace: "linux-netns:4:4026533000",
+		ImageDigest: "registry.example/egressd@sha256:" + strings.Repeat("a", 64),
+		AnchorUID:   65532, AnchorGID: 65532,
 	}
 }
 

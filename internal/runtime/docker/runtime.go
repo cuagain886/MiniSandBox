@@ -129,6 +129,7 @@ func (e *RuntimeUnavailableError) FailureReason() string {
 // Runtime 是 runtime 端口的 Docker Engine 实现。
 type Runtime struct {
 	engine        Engine
+	netNSResolver NetNSResolver
 	dataDirectory string
 	artifacts     ArtifactProvider
 	createTimeout time.Duration
@@ -184,7 +185,7 @@ func newRuntime(ctx context.Context, engine Engine) (*Runtime, error) {
 		_ = engine.Close()
 		return nil, &RuntimeUnavailableError{cause: err}
 	}
-	return &Runtime{engine: engine}, nil
+	return &Runtime{engine: engine, netNSResolver: procNetNSResolver{}}, nil
 }
 
 // validateRuntimeOptions 在连接 Docker 前拒绝不完整的 Ensure 依赖。

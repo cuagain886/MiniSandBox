@@ -86,6 +86,14 @@ func ReadAttestation(path string) (Attestation, error) {
 	if err != nil {
 		return Attestation{}, errors.New("read egress attestation")
 	}
+	return ParseAttestation(content)
+}
+
+// ParseAttestation 验证 adapter 从 Docker archive 只读取得的有界 attestation JSON。
+func ParseAttestation(content []byte) (Attestation, error) {
+	if len(content) == 0 || len(content) > MaxAttestationBytes {
+		return Attestation{}, errors.New("egress attestation content size is invalid")
+	}
 	decoder := json.NewDecoder(bytes.NewReader(content))
 	decoder.DisallowUnknownFields()
 	var attestation Attestation

@@ -43,6 +43,16 @@ type fakeEngine struct {
 		context.Context,
 		mobyclient.ContainerCreateOptions,
 	) (mobyclient.ContainerCreateResult, error)
+	containerAttachFunc func(
+		context.Context,
+		string,
+		mobyclient.ContainerAttachOptions,
+	) (mobyclient.ContainerAttachResult, error)
+	copyFromContainerFunc func(
+		context.Context,
+		string,
+		mobyclient.CopyFromContainerOptions,
+	) (mobyclient.CopyFromContainerResult, error)
 	copyToContainerFunc func(
 		context.Context,
 		string,
@@ -77,6 +87,48 @@ type fakeEngine struct {
 		string,
 		mobyclient.VolumeRemoveOptions,
 	) (mobyclient.VolumeRemoveResult, error)
+	networkInspectFunc func(
+		context.Context,
+		string,
+		mobyclient.NetworkInspectOptions,
+	) (mobyclient.NetworkInspectResult, error)
+	networkCreateFunc func(
+		context.Context,
+		string,
+		mobyclient.NetworkCreateOptions,
+	) (mobyclient.NetworkCreateResult, error)
+}
+
+// ContainerAttach 调用测试注入函数；未配置时返回零值结果。
+func (f *fakeEngine) ContainerAttach(ctx context.Context, id string, options mobyclient.ContainerAttachOptions) (mobyclient.ContainerAttachResult, error) {
+	if f.containerAttachFunc == nil {
+		return mobyclient.ContainerAttachResult{}, nil
+	}
+	return f.containerAttachFunc(ctx, id, options)
+}
+
+// CopyFromContainer 调用测试注入函数；未配置时返回零值结果。
+func (f *fakeEngine) CopyFromContainer(ctx context.Context, id string, options mobyclient.CopyFromContainerOptions) (mobyclient.CopyFromContainerResult, error) {
+	if f.copyFromContainerFunc == nil {
+		return mobyclient.CopyFromContainerResult{}, nil
+	}
+	return f.copyFromContainerFunc(ctx, id, options)
+}
+
+// NetworkInspect 调用测试注入函数；未配置时返回零值结果。
+func (f *fakeEngine) NetworkInspect(ctx context.Context, id string, options mobyclient.NetworkInspectOptions) (mobyclient.NetworkInspectResult, error) {
+	if f.networkInspectFunc == nil {
+		return mobyclient.NetworkInspectResult{}, nil
+	}
+	return f.networkInspectFunc(ctx, id, options)
+}
+
+// NetworkCreate 调用测试注入函数；未配置时返回零值结果。
+func (f *fakeEngine) NetworkCreate(ctx context.Context, name string, options mobyclient.NetworkCreateOptions) (mobyclient.NetworkCreateResult, error) {
+	if f.networkCreateFunc == nil {
+		return mobyclient.NetworkCreateResult{}, nil
+	}
+	return f.networkCreateFunc(ctx, name, options)
 }
 
 // Ping 记录版本协商选项并返回预设结果。

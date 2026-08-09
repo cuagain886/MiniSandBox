@@ -17,6 +17,38 @@ import (
 	"minisandbox/internal/egresspolicy"
 )
 
+// EncodeBootstrap 把可信配置编码为唯一一帧有界 bootstrap 数据；调用方必须把它
+// 完整写入 Docker attach stdin 并立即关闭写端。
+func EncodeBootstrap(bootstrap Bootstrap) ([]byte, error) {
+	if err := egresspolicy.Verify(bootstrap.Policy); err != nil ||
+		!ValidNetworkNamespace(bootstrap.NetworkNamespace) || !ValidImageDigest(bootstrap.ImageDigest) ||
+		bootstrap.AnchorUID == 0 || bootstrap.AnchorGID == 0 {
+		return nil, errors.New("egress bootstrap is invalid")
+	}
+	wire := bootstrapWire{
+		ProtocolVersion: bootstrap.Policy.ProtocolVersion, RuleSchemaVersion: bootstrap.Policy.RuleSchemaVersion,
+		PolicyHash: bootstrap.Policy.Hash, IPv4Denied: prefixStrings(bootstrap.Policy.IPv4),
+		IPv6Denied: prefixStrings(bootstrap.Policy.IPv6), NetworkNamespace: bootstrap.NetworkNamespace,
+		ImageDigest: bootstrap.ImageDigest, AnchorUID: bootstrap.AnchorUID, AnchorGID: bootstrap.AnchorGID,
+	}
+	payload, err := json.Marshal(wire)
+	if err != nil || len(payload) == 0 || len(payload) > MaxBootstrapBytes {
+		return nil, errors.New("encode egress bootstrap")
+	}
+	framed := make([]byte, 4+len(payload))
+	binary.BigEndian.PutUint32(framed, uint32(len(payload)))
+	copy(framed[4:], payload)
+	return framed, nil
+}
+
+func prefixStrings(prefixes []netip.Prefix) []string {
+	result := make([]string, len(prefixes))
+	for index, prefix := range prefixes {
+		result[index] = prefix.String()
+	}
+	return result
+}
+
 const (
 	// MaxBootstrapBytes 是 bootstrap JSON 帧允许的最大字节数。
 	MaxBootstrapBytes = 65536
