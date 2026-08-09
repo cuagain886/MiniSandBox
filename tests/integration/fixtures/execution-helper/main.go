@@ -47,6 +47,8 @@ func main() {
 		writeMarker(os.Args[2:])
 	case "output-limit":
 		writeOutputLimit(os.Args[2:])
+	case "log-pages":
+		writeLogPages(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -240,5 +242,27 @@ func writeOutputLimit(arguments []string) {
 	}
 	if err := os.WriteFile(arguments[2], []byte("output-complete"), 0o600); err != nil {
 		os.Exit(exitProbeFailure)
+	}
+}
+
+func writeLogPages(arguments []string) {
+	if len(arguments) != 1 {
+		os.Exit(exitProbeFailure)
+	}
+	count, err := strconv.Atoi(arguments[0])
+	if err != nil || count < 1 || count > 64 {
+		os.Exit(exitProbeFailure)
+	}
+	for index := 0; index < count; index++ {
+		file := os.Stdout
+		prefix := "stdout"
+		if index%2 != 0 {
+			file = os.Stderr
+			prefix = "stderr"
+		}
+		if _, err := fmt.Fprintf(file, "%s-%02d\n", prefix, index); err != nil {
+			os.Exit(exitProbeFailure)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 }
