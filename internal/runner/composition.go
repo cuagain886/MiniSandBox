@@ -35,6 +35,13 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	if err != nil {
 		return err
 	}
+	gc, err := NewCompletedExecutionGCFromDirectory(manager, executionDirectory, bootstrap.Limits.CompletedRetentionNanoseconds, bootstrap.Limits.MaxRetainedExecutions)
+	if err != nil {
+		return err
+	}
+	go func() {
+		_ = RunCompletedExecutionGC(ctx, gc, completedExecutionGCInterval)
+	}()
 	readiness := NewServerReadiness()
 	status, err := NewExecutionStatusHandler(manager)
 	if err != nil {

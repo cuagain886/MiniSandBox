@@ -1,12 +1,17 @@
 package runner
 
 import (
+	"context"
 	"errors"
 	"os"
+	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 )
+
+const completedExecutionGCInterval = 250 * time.Millisecond
 
 // ErrCompletedExecutionCleanup 表示至少一个已驱逐 execution 的日志尚未安全删除，可在下一轮重试。
 var ErrCompletedExecutionCleanup = errors.New("completed execution cleanup is pending")
@@ -37,6 +42,49 @@ func NewCompletedExecutionGC(
 	maxRetained int,
 ) (*CompletedExecutionGC, error) {
 	return newCompletedExecutionGC(manager, directory, retention, maxRetained, removeCompletedExecutionLog)
+}
+
+// NewCompletedExecutionGCFromDirectory 使用降权前打开的受信目录句柄创建 collector。
+// 调用方必须保证句柄在 collector 停止前保持打开，避免重新穿越权限受限的 runtime 目录。
+func NewCompletedExecutionGCFromDirectory(
+	manager *Manager,
+	directory *os.File,
+	retention time.Duration,
+	maxRetained int,
+) (*CompletedExecutionGC, error) {
+	if directory == nil {
+		return nil, errors.New("completed execution GC directory is not configured")
+	}
+	info, err := directory.Stat()
+	if err != nil || !info.IsDir() {
+		return nil, errors.New("completed execution GC directory is invalid")
+	}
+	path := "/proc/self/fd/" + strconv.FormatUint(uint64(directory.Fd()), 10)
+	if manager == nil || retention <= 0 || maxRetained <= 0 {
+		return nil, errors.New("completed execution GC is not configured")
+	}
+	return &CompletedExecutionGC{
+		manager: manager, directory: path, retention: retention,
+		maxRetained: maxRetained, removeLog: removeCompletedExecutionLogFromDirectoryFD,
+		pending: make(map[ExecutionID]time.Time),
+	}, nil
+}
+
+// RunCompletedExecutionGC 周期执行 retention 与数量驱逐；单次日志删除失败留待下一轮重试。
+func RunCompletedExecutionGC(ctx context.Context, gc *CompletedExecutionGC, interval time.Duration) error {
+	if ctx == nil || gc == nil || interval <= 0 {
+		return errors.New("completed execution GC loop is not configured")
+	}
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return nil
+		case now := <-ticker.C:
+			_ = gc.Run(now)
+		}
+	}
 }
 
 func newCompletedExecutionGC(
@@ -134,6 +182,17 @@ func removeCompletedExecutionLog(directory string, id ExecutionID) error {
 	if err != nil {
 		return ErrCompletedExecutionCleanup
 	}
+	return removeCompletedExecutionLogPath(path)
+}
+
+func removeCompletedExecutionLogFromDirectoryFD(directory string, id ExecutionID) error {
+	if !validStoredExecutionID(id) {
+		return ErrCompletedExecutionCleanup
+	}
+	return removeCompletedExecutionLogPath(filepath.Join(directory, string(id)+backgroundLogFileSuffix))
+}
+
+func removeCompletedExecutionLogPath(path string) error {
 	info, err := os.Lstat(path)
 	if os.IsNotExist(err) {
 		return nil

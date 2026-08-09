@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strconv"
 	"sync"
 	"sync/atomic"
@@ -87,6 +88,33 @@ func TestCompletedExecutionGCRetriesDeletionAfterManagerEviction(t *testing.T) {
 	}
 	if err := gc.Run(time.Now()); err != nil || calls.Load() != 2 {
 		t.Fatalf("retry: err=%v calls=%d", err, calls.Load())
+	}
+}
+
+// TestCompletedExecutionGCUsesTrustedDirectoryHandle 验证降权组合根可经受信 FD 删除日志而不重新穿越父目录。
+func TestCompletedExecutionGCUsesTrustedDirectoryHandle(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("trusted /proc/self/fd directory requires Linux")
+	}
+	directory := t.TempDir()
+	manager := gcManager(t, 1)
+	id := ExecutionID("exec_gc_trusted_fd")
+	gcAddCompleted(t, manager, directory, id, time.Now().Add(-time.Hour))
+	handle, err := os.Open(directory)
+	if err != nil {
+		t.Fatalf("open execution directory: %v", err)
+	}
+	defer handle.Close()
+	gc, err := NewCompletedExecutionGCFromDirectory(manager, handle, time.Millisecond, 1)
+	if err != nil {
+		t.Fatalf("new trusted FD GC: %v", err)
+	}
+	if err := gc.Run(time.Now()); err != nil {
+		t.Fatalf("run trusted FD GC: %v", err)
+	}
+	path, _ := BackgroundLogPath(directory, id)
+	if _, err := os.Lstat(path); !os.IsNotExist(err) {
+		t.Fatalf("trusted FD log remains: %v", err)
 	}
 }
 
