@@ -688,6 +688,7 @@ var initBinary []byte
 type Runtime interface {
     Ensure(ctx context.Context, sandbox domain.Sandbox) (RuntimeSandbox, error)
     Inspect(ctx context.Context, sandboxID string) (RuntimeSandbox, error)
+    ReplaceCompute(ctx context.Context, sandbox domain.Sandbox) (RuntimeSandbox, error)
     Delete(ctx context.Context, sandboxID string) error
     ListManaged(ctx context.Context) ([]RuntimeSandbox, error)
 }
@@ -700,6 +701,8 @@ type Runtime interface {
 -已存在但 spec hash 不同则返回明确 drift/conflict；
 -中途失败留下的容器可被下一次 reconcile 接管或删除。
 
+`ReplaceCompute` 只用于 Running 自动恢复：验证资源身份后保留 workspace volume 与 `lease.json`，替换主容器、可选 egress sidecar、socket/bootstrap/execution 临时状态。`Delete` 是显式 delete/expire/cleanup 的完整销毁操作，会清理 compute、volume 和 runtime directory；自动恢复不得调用它。
+
 ### 10.2 Docker labels
 
 每个容器至少包含：
@@ -707,11 +710,14 @@ type Runtime interface {
 ```text
 minisandbox.io/managed=true
 minisandbox.io/id=<sandbox-id>
-minisandbox.io/schema-version=1
+minisandbox.io/schema-version=1 | 2
 minisandbox.io/spec-hash=<sha256>
 minisandbox.io/expires-at=<RFC3339 or empty>
 minisandbox.io/workspace=<volume-name>
+minisandbox.io/resource-role=main | egress
 ```
+
+Phase 1/2 已存在资源保持 schema v1 语义。Phase 3 新资源写 schema v2，以明确 lease projection 与 resource bundle 恢复规则；所有 reader 双读 v1/v2，禁止为了升级而原地改写旧资源 labels。
 
 不允许写入 labels：
 
@@ -863,18 +869,24 @@ clear schedule
 Store 保存：
 
 ```text
-tenant + idempotency-key
-request-hash
-sandbox-id
-response
-expires-at
+scope_id = local:v1
+idempotency_key
+request_hash
+sandbox_id
+首次 202 status/location/response
+created_at
 ```
 
 规则：
 
--相同 key + 相同 request hash：返回同一 sandbox。
--相同 key + 不同 request hash：返回 `409 IDEMPOTENCY_CONFLICT`。
--没有 key：每次请求都创建新 sandbox。
+- key 长度 1～128，只允许 `[A-Za-z0-9._:-]`；单租户版本 scope 固定为 `local:v1`；
+- request hash 使用 presence-aware canonical model 和带 `minisandbox:create:v1` 域分离前缀的 SHA-256。受服务端默认影响的缺失字段编码 absent sentinel，不把当前默认值代入；
+- 只有已接受并提交的 `202` 与 sandbox record 在同一个 `BEGIN IMMEDIATE` 事务中保存；
+- 相同 scope/key/hash 精确重放首次 status、Location 和 response body，但使用本次请求的新 request ID，不重新执行 quota 或 Wake；
+- 相同 scope/key、不同 request hash 返回 `409 IDEMPOTENCY_CONFLICT`，且不泄露旧请求；
+- 没有 key 时每次请求都创建新 sandbox，不制造伪 key；
+- raw key、request/hash body 不进入响应、日志和指标；
+- sandbox 非 Terminated 时 record 永不 GC；Terminated 后至少保留 24 小时，只有终态与宽限两个条件同时满足才允许删除并复用 key。
 
 ## 12. TTL、续期与重启恢复
 
@@ -883,30 +895,38 @@ expires-at
 到期时间同时存在：
 
 - Store：权威期望记录；
-- Docker label：重建兜底；
--内存最小堆/timer：唤醒优化。
+- 受管 runtime directory 的 `lease.json`：可变恢复投影；
+- Docker label：创建时不可变快照，只作受限重建兜底；
+- 内存最小堆/timer：唤醒优化。
 
-删除判断不能只相信旧 timer。timer 触发时必须重新读取当前 record revision 和 `ExpiresAt`。
+沿用现有 `limits.default_ttl=30m` 和 `limits.maximum_ttl=24h`，新增 `limits.minimum_ttl=1m`，不增加重复的 lifecycle 配置段。create 只接受可选相对 `ttl_seconds`，服务端使用一次 UTC clock 计算绝对 `expires_at`。
+
+删除判断不能只相信旧 timer。timer 身份是 `(sandbox_id, expected_expires_at)`；触发时重新读取 Store，expiry 不同则失效，无关 observed/retry revision 变化不应使当前租约 timer 失效。到期只通过 CAS 提交 `DesiredTerminated`，随后复用普通 delete reconcile。
+
+`lease.json` 最大 1 KiB，只允许 `schema_version`、`sandbox_id`、`spec_hash`、`expires_at`、`projected_store_revision`；reader 拒绝未知字段、symlink、非 regular file、owner 不符或 mode 宽于 `0600`。writer 使用同目录 temp、file fsync、rename 和 directory fsync 原子替换。
+
+Phase 3 新资源写 label schema v2，reader 双读 v1/v2 且不改写 v1。v1 orphan 缺少可信 lease manifest 时无法证明当前 expiry，只能进入 anomaly。Store 存在时，manifest 或 label 永远不能反向覆盖 Store。
 
 ### 12.2 续期
 
 续期事务：
 
-1. 校验新时间在允许范围内。
-2. Store 使用乐观锁更新 `ExpiresAt` 和 revision。
-3. 唤醒 reconciler。
-4. reconciler 更新 Docker label。
-5.重建内存 schedule。
+1. 读取最新 Store record，要求 desired 仍为 Running 且 `now < expires_at`；已经过期但 scanner 尚未运行也不能续期。
+2. 绝对 RFC3339 UTC 新值等于当前值时返回 `200` 幂等 no-op，不修改 revision、heap 或 manifest。
+3. 新值早于当前值返回 `409 LEASE_CONFLICT`；更晚值必须位于 `now+minimum_ttl` 与 `now+maximum_ttl` 闭区间。
+4. Store 使用乐观锁更新 `ExpiresAt` 和 revision；delete/expire intent 优先且不能被续期复活。
+5. 唤醒 reconciler，upsert 仅绑定新 expiry 的内存 schedule。
+6. reconciler 原子更新 `lease.json`，不尝试修改不可变 Docker label。
 
-旧 timer 带有旧 revision，触发后发现 revision 不匹配即失效。
+并发 renew 的 CAS 冲突必须重读：竞争者已写入相同值时按幂等成功返回，已写入更晚值时当前较早请求返回 lease conflict。
 
 ### 12.3 启动恢复
 
 `sandboxd` 启动时：
 
-1. 打开并迁移 Store。
+1. 打开 Store；旧 schema 升级前先用 `VACUUM INTO` 创建一致性备份，备份失败则保持 not ready。
 2. 连接 Docker。
-3. 扫描 `minisandbox.io/managed=true` 容器。
+3. 幂等 Ensure/验证服务级 `minisandbox-egress`，再扫描 `minisandbox.io/managed=true` 的主容器、egress sidecar、volume 和 runtime directory/manifest。
 4. 与 Store 记录对账。
 5. 恢复缺失的 runtime ID 和 observed state。
 6. 标记 Store 中存在但 Docker 不存在的记录。
@@ -915,11 +935,29 @@ expires-at
 9. 启动周期 reconciler。
 10. 设置 `/readyz` 为 ready。
 
-默认 orphan 策略：
+在“一个 Docker daemon 只由一个 sandboxd 管理”的不变量下，默认 orphan 策略：
 
-- labels 完整且 schema 可识别：导入为托管记录。
-- labels 不完整：隔离并告警，不立即删除。
--明确过期：删除。
+- 名称、labels/schema、spec hash、安全 profile、workspace/runtime directory、lease 和 outbound main/sidecar/netns 关系全部可验证且未过期：导入为 `origin=recovered_orphan`、保守 observed Creating，再走普通 reconcile；
+- 同样完整可信且明确过期：导入为 `DesiredTerminated`，再走普通 delete reconcile，不在 inventory loop 直接删除；
+- v1 无可信 manifest、未知 schema、hash/profile/netns drift、重复或 partial resource bundle：只写持久化 anomaly，不导入、不停止、不删除；
+- anomaly 只有在一次覆盖全部相关资源类型且没有 partial error 的完整 inventory 明确确认资源消失后才能 resolved；
+- 服务级 `minisandbox-egress` 网络不属于 per-sandbox orphan bundle。
+
+### 12.4 SQLite migration、backfill 与回滚
+
+Phase 2 schema v1 依次升级为 v2 sandbox lease/retry/origin、v3 idempotency table 和 v4 anomaly table；每版职责单一、version 单调。migration 使用 `BEGIN IMMEDIATE` 单事务并在提交前后验证 schema/version/关键索引，失败后旧库仍可重试。
+
+v1 backfill 使用一次注入的 `migration_time`：`DesiredRunning` 的 expiry 为 `migration_time + limits.default_ttl`，`DesiredTerminated` 为 `migration_time`，已 observed Terminated 使用原 `last_transition_at`；retry/health 清零，origin 为 `api`。
+
+不提供 down migration。只有 Phase 3 尚未产生 runtime/Store 副作用时，才允许停止服务、恢复升级前备份并用 Phase 2 二进制启动；之后只能 forward-fix 或受控 drain，旧二进制不得打开新库。
+
+### 12.5 Retry、Cleanup 与 Running 恢复
+
+retryable create/runtime/runner error 使用持久化 capped exponential backoff + full jitter，默认 1 秒起步、1 分钟封顶；选中的 next time 跨重启保持。CAS conflict 立即重读且不计 attempt，新用户 intent 抢占旧 backoff。delete、expire 和 `CLEANUP_PENDING` 对身份完整可信的受管资源无限有界重试；未知或 drift 资源只进入 anomaly。Docker 全局 outage 降低 readiness，并通过共享 dependency gate 避免每 sandbox 重建风暴。
+
+Running 自动恢复不得调用当前会删除 workspace volume/runtime directory 的完整 `Runtime.Delete`。runtime 必须提供独立 `ReplaceCompute`/`RecreateRuntime`：保留已验证 workspace volume 与 `lease.json`，只替换主容器、可选 egress sidecar、socket/bootstrap/execution 临时状态。显式 delete/expire/cleanup 才使用完整 Delete。
+
+`outbound=false` 的 missing/stopped 主容器复用 Ensure/Start；runner 连续 3 次 probe 失败后先关闭新 admission、有界 shutdown，再 ReplaceCompute。`outbound=true` 任一 main/sidecar/attestation/protocol/policy/netns 失败时先关闭 admission、有界取消 execution，再按 main → sidecar 移除、sidecar → main 重建；stopped sidecar 绝不单独 Start。spec/security drift 保持 `SPEC_DRIFT`，不自动覆盖或删除。
 
 ## 13. Runner 执行引擎
 
@@ -1058,8 +1096,9 @@ SQLite 保存：
 - sandbox spec；
 - desired/observed state；
 - runtime ID；
-- timestamps、revision；
--幂等键；
+- expiry、retry/health/origin、timestamps 和 revision；
+- 幂等键与首次安全 `202` 响应；
+- runtime anomaly 的安全 classification/fingerprint；
 -最后一次错误；
 -安全的用户 metadata。
 
@@ -1069,7 +1108,10 @@ SQLite 不保存：
 -镜像 registry 密码；
 -API Key 明文；
 -runner token；
+- Idempotency-Key 原始请求体、Docker raw inspect/logs；
 -无限期历史事件。
+
+SQLite 当前连接池上限为 1。metrics scrape 不得直接查询 Store；Store-backed gauge 由带短 timeout 的后台采样器生成不可变原子 snapshot。
 
 ### 14.3 Secret 与环境变量
 
@@ -1107,6 +1149,10 @@ SQLite 不保存：
 | `FORBIDDEN` | 403 | false |
 | `SANDBOX_NOT_FOUND` | 404 | false |
 | `SANDBOX_NOT_RUNNING` | 409 | true |
+| `INVALID_TTL` | 400 | false |
+| `INVALID_EXPIRATION` | 400 | false |
+| `LEASE_CONFLICT` | 409 | false |
+| `SANDBOX_EXPIRING` | 409 | false |
 | `IDEMPOTENCY_CONFLICT` | 409 | false |
 | `RESOURCE_LIMIT_EXCEEDED` | 422 | false |
 | `SANDBOX_IMAGE_PULL_FAILED` | 502 | true/false |
@@ -1242,20 +1288,28 @@ error_code
 
 ### 18.2 指标
 
-至少提供：
+Phase 3 使用官方 `github.com/prometheus/client_golang`，通过依赖注入的 `prometheus.NewRegistry` 建立私有 registry；不使用 default registry，也不默认注册 Go/process collectors。至少提供：
 
 ```text
-sandbox_create_total{result}
-sandbox_create_duration_seconds
-sandbox_state_count{state}
-sandbox_reconcile_total{result}
-sandbox_cleanup_pending
-sandbox_expired_total
-execution_total{result}
-execution_duration_seconds
-execution_output_bytes{stream}
-runtime_docker_errors_total{operation}
+minisandbox_sandbox_create_requests_total{result}
+minisandbox_sandbox_create_duration_seconds
+minisandbox_sandbox_state_count{state}
+minisandbox_reconcile_total{operation,result}
+minisandbox_reconcile_duration_seconds{operation}
+minisandbox_retry_scheduled_total{operation,error_code}
+minisandbox_cleanup_pending
+minisandbox_lease_expired_total
+minisandbox_orphan_observations_total{classification}
+minisandbox_runtime_docker_operations_total{operation,result}
+minisandbox_execution_requests_total{mode,result}
+minisandbox_execution_foreground_terminal_observed_total{result}
+minisandbox_runner_probe_total{result}
+minisandbox_metrics_snapshot_age_seconds
 ```
+
+labels 只能取 contract 固定的低 cardinality enum，禁止 sandbox/execution ID、image、URL、message、idempotency key 或用户 metadata。Store gauge 来自周期原子 snapshot，scrape 不占用 SQLite 连接。
+
+execution 指标只描述 sandboxd 可证明的控制面请求和前台 proxy 观察到的 terminal。在没有 durable runner event/ledger 前，不提供含后台任务、跨 runner 重启的权威全局 `execution_total`、execution duration 或 output bytes。
 
 ### 18.3 诊断接口
 
@@ -1272,7 +1326,13 @@ GET /v1/admin/sandboxes/{id}/diagnostics
 -最近 reconcile 错误；
 - runner health；
 -资源限制；
--容器最近日志。
+- anomaly classification。
+
+不返回 Docker raw inspect/logs、命令、输出、env、token、socket path、data dir 或内部堆栈。
+
+`/metrics` 与 `/v1/admin/**` 共用现有 loopback-only server listener，不新增端口。`admin.enabled=false` 时不读取 token file、不注册路由，对外自然 404。启用时 `token_file` 必填且启动失败即 fail closed：文件必须是绝对路径、owner 为服务 euid、regular non-symlink、mode 不宽于 `0600`，内容为至少 256 bit 的 base64url token。只接受一个 Bearer header，对 token digest 做 constant-time compare；token 不进入日志、错误或 config dump。token 启动时读取一次，轮换通过重启完成。
+
+不提供 `allow_non_loopback`。未来远程 admin 必须单独设计 listener、mTLS 和威胁模型，不能用一个布尔开关放宽当前监听边界。
 
 ## 19. 配置
 
@@ -1280,44 +1340,96 @@ GET /v1/admin/sandboxes/{id}/diagnostics
 
 ```yaml
 server:
-  listen: "127.0.0.1:8080"
-  apiKeyFile: "/etc/minisandbox/api-key"
-  requestTimeout: "30s"
+  listen_address: "127.0.0.1:8080"
+  shutdown_timeout: "10s"
+
+data:
+  directory: "/var/lib/minisandbox"
+  sqlite_path: "/var/lib/minisandbox/sandboxd.db"
 
 runtime:
   type: "docker"
-  dockerHost: "unix:///var/run/docker.sock"
-  networkName: "minisandbox"
-  dataDir: "/var/lib/minisandbox"
-  createTimeout: "10m"
-  runnerReadyTimeout: "30s"
-
-limits:
-  maxSandboxes: 100
-  maxConcurrentCreates: 4
-  maxConcurrentImagePulls: 2
-  maxExecutionsPerSandbox: 8
-  maxCPUPerSandboxMillis: 4000
-  maxMemoryPerSandboxMiB: 8192
-  maxPIDsPerSandbox: 1024
-  maxTimeout: "24h"
-  maxExecutionTimeout: "1h"
-  maxExecutionOutputBytes: 10485760
-
-security:
-  defaultUser: "1000:1000"
-  allowRootProfile: false
-  imageAllowlist:
-    - "docker.io/library/*"
-    - "ghcr.io/my-org/*"
+  docker_host: "unix:///var/run/docker.sock"
+  default_image: "debian:bookworm-slim"
+  runner_socket_directory: "/var/lib/minisandbox/run"
+  workspace_directory: "/var/lib/minisandbox/workspaces"
+  network_mode: "none"
+  workspace_persistent: false
+  platform:
+    os: "linux"
+    arch: "amd64"
 
 reconcile:
-  interval: "10s"
-  retryMin: "1s"
-  retryMax: "1m"
+  interval: "2s"
+  runner_ready_timeout: "30s"
+  deletion_timeout: "30s"
+  scan_interval: "10s"
+  scan_jitter: "2s"
+  operation_timeout: "2m"
+  page_size: 100
+  max_concurrent: 8
+  retry_min: "1s"
+  retry_max: "1m"
+  running_check_interval: "30s"
+  runner_unhealthy_threshold: 3
+  docker_freshness: "30s"
+
+limits:
+  default_ttl: "30m"
+  minimum_ttl: "1m"
+  maximum_ttl: "24h"
+  max_sandboxes: 100
+  max_concurrent_creates: 4
+  max_concurrent_image_pulls: 2
+  max_concurrent_deletes: 4
+  default_resources:
+    cpu_quota_millis: 500
+    memory_mib: 512
+    pids: 128
+  max_resources:
+    cpu_quota_millis: 4000
+    memory_mib: 8192
+    pids: 1024
+
+runner:
+  execution_uid: 1000
+  execution_gid: 1000
+  default_cwd: "/workspace"
+  default_timeout: "10m"
+  max_timeout: "1h"
+  termination_grace: "2s"
+  max_concurrent_executions: 8
+  max_request_bytes: 1048576
+  max_output_bytes: 10485760
+  completed_retention: "1h"
+
+idempotency:
+  max_key_bytes: 128
+  terminal_retention: "24h"
+  gc_interval: "10m"
+
+security:
+  runner_master_key_file: "/etc/minisandbox/runner-master-key"
+  allow_outbound: false
+
+egress:
+  image: ""
+  protocol_version: 1
+  ready_timeout: "30s"
+  egress_denied_cidrs: []
+  anchor_uid: 65532
+  anchor_gid: 65532
+
+recovery:
+  import_trusted_orphans: true
+  record_ambiguous_anomalies: true
+
+admin:
+  enabled: false
+  token_file: ""
 ```
 
-配置启动时一次性验证。无效安全配置必须阻止服务启动，不能静默退回宽松模式。
+配置启动时一次性验证。无效安全配置必须阻止服务启动，不能静默退回宽松模式。`admin.enabled=false` 时不读取空 token path；enabled 时 token file 必须通过第 18.3 节校验。server 继续强制 loopback-only，不提供 admin 网络放宽开关。
 
 ## 20. 测试策略
 
@@ -1330,7 +1442,7 @@ reconcile:
 -错误映射；
 -idempotency key；
 -revision 乐观锁；
--TTL 旧 revision 失效；
+-TTL 旧 expiry timer 失效且无关 revision 不影响当前租约；
 -cwd 和 symlink 路径校验；
 -env 过滤；
 -SSE 序列与唯一终止事件；
