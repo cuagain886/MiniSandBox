@@ -125,6 +125,34 @@ func TestBackgroundExecutionHandlerMapsApplicationFailures(t *testing.T) {
 	}
 }
 
+func TestBackgroundExecutionResponseWriteFailureDoesNotCancelAcceptedWork(t *testing.T) {
+	continued := make(chan struct{})
+	service := &apiExecutionServiceFake{
+		result: application.ExecutionResult{Descriptor: &application.ExecutionDescriptor{ID: "exec_write_failure", State: protocol.ExecutionStateRunning}},
+		executeHook: func(_ context.Context, command application.Execute) {
+			if !command.Background {
+				t.Fatal("response failure fixture was not background")
+			}
+			go func() {
+				time.Sleep(10 * time.Millisecond)
+				close(continued)
+			}()
+		},
+	}
+	request := httptest.NewRequest(http.MethodPost, "/v1/sandboxes/"+executionHandlerSandboxID+"/executions", strings.NewReader(`{"argv":["true"],"background":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	writer := &apiFailingResponseWriter{header: make(http.Header)}
+	NewRouter(BuildInfo{}, RouterDependencies{Execution: service}).ServeHTTP(writer, request)
+	if writer.status != http.StatusAccepted {
+		t.Fatalf("background response status: %d", writer.status)
+	}
+	select {
+	case <-continued:
+	case <-time.After(time.Second):
+		t.Fatal("accepted background work inherited response write failure")
+	}
+}
+
 func TestExecutionStatusHandlerMapsBoundQuery(t *testing.T) {
 	duration, truncated, exitCode := int64(4), false, 0
 	terminal := protocol.ExecutionEvent{ExecutionID: "exec_test", Sequence: 2, Timestamp: time.Now().UTC(), Type: protocol.EventExited, ExitCode: &exitCode, DurationMS: &duration, OutputTruncated: &truncated}
@@ -281,6 +309,7 @@ type apiExecutionServiceFake struct {
 	logPage           application.ExecutionLogPage
 	logErr            error
 	logCalls          []apiLogCall
+	executeHook       func(context.Context, application.Execute)
 }
 
 func (s *apiExecutionServiceFake) Status(_ context.Context, sandboxID, executionID string) (application.ExecutionStatus, error) {
@@ -305,8 +334,11 @@ type apiLogCall struct {
 	limit       int
 }
 
-func (s *apiExecutionServiceFake) Execute(_ context.Context, command application.Execute) (application.ExecutionResult, error) {
+func (s *apiExecutionServiceFake) Execute(ctx context.Context, command application.Execute) (application.ExecutionResult, error) {
 	s.commands = append(s.commands, command)
+	if s.executeHook != nil {
+		s.executeHook(ctx, command)
+	}
 	return s.result, s.err
 }
 
@@ -315,6 +347,15 @@ type apiExecutionStreamFake struct {
 	err    error
 	closed bool
 }
+
+type apiFailingResponseWriter struct {
+	header http.Header
+	status int
+}
+
+func (w *apiFailingResponseWriter) Header() http.Header     { return w.header }
+func (w *apiFailingResponseWriter) WriteHeader(status int)  { w.status = status }
+func (*apiFailingResponseWriter) Write([]byte) (int, error) { return 0, io.ErrClosedPipe }
 
 func (s *apiExecutionStreamFake) Consume(consume func(protocol.ExecutionEvent) error) error {
 	for _, event := range s.events {

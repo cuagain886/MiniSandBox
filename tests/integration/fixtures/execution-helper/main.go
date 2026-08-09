@@ -43,6 +43,8 @@ func main() {
 		runTreeChild(os.Args[2:])
 	case "tree-grandchild":
 		runTreeGrandchild(os.Args[2:])
+	case "marker":
+		writeMarker(os.Args[2:])
 	default:
 		os.Exit(exitProbeFailure)
 	}
@@ -193,4 +195,19 @@ func configureTreeSignal(mode string) {
 	if mode == "kill" {
 		signal.Ignore(syscall.SIGTERM)
 	}
+}
+
+func writeMarker(arguments []string) {
+	if len(arguments) != 2 {
+		os.Exit(exitProbeFailure)
+	}
+	delayMilliseconds, err := strconv.Atoi(arguments[1])
+	if err != nil || delayMilliseconds < 0 || delayMilliseconds > 10_000 {
+		os.Exit(exitProbeFailure)
+	}
+	time.Sleep(time.Duration(delayMilliseconds) * time.Millisecond)
+	if err := os.WriteFile(arguments[0], []byte("background-complete"), 0o600); err != nil {
+		os.Exit(exitProbeFailure)
+	}
+	_, _ = fmt.Fprint(os.Stdout, "marker-written")
 }
