@@ -106,7 +106,8 @@ func TestBuildEgressSidecarSecuritySnapshot(t *testing.T) {
 	if host.NetworkMode != mobycontainer.NetworkMode(EgressNetworkName) || host.Privileged ||
 		!reflect.DeepEqual(host.CapDrop, []string{"ALL"}) || !reflect.DeepEqual(host.CapAdd, []string{"NET_ADMIN"}) ||
 		!host.ReadonlyRootfs || host.RestartPolicy.Name != mobycontainer.RestartPolicyDisabled ||
-		host.Tmpfs[egressTmpfsPath] != egressTmpfsOptions || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
+		host.Tmpfs[egressTmpfsPath] != egressTmpfsOptions(request.AnchorUID, request.AnchorGID) ||
+		!strings.Contains(host.Tmpfs[egressTmpfsPath], "uid=65532,gid=65532") || len(host.Binds) != 0 || len(host.Mounts) != 0 ||
 		len(host.PortBindings) != 0 || len(host.Devices) != 0 || len(host.DeviceRequests) != 0 {
 		t.Fatalf("unsafe sidecar host config: %+v", host)
 	}

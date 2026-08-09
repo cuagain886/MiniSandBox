@@ -25,8 +25,11 @@ const (
 	egressSidecarNamePrefix = "minisandbox-egress-"
 	egressEntrypoint        = "/usr/local/bin/egressd"
 	egressTmpfsPath         = "/run/minisandbox-egress"
-	egressTmpfsOptions      = "rw,noexec,nosuid,nodev,size=64k,mode=0700"
 )
+
+func egressTmpfsOptions(uid, gid uint32) string {
+	return fmt.Sprintf("rw,noexec,nosuid,nodev,size=64k,mode=0700,uid=%d,gid=%d", uid, gid)
+}
 
 type egressSidecar struct {
 	id    string
@@ -65,7 +68,9 @@ func buildEgressSidecarOptions(request runtimeport.EgressRequest, policy egressp
 			CapDrop: []string{"ALL"}, CapAdd: []string{"NET_ADMIN"},
 			SecurityOpt: []string{noNewPrivilegesSecurity}, ReadonlyRootfs: true,
 			RestartPolicy: mobycontainer.RestartPolicy{Name: mobycontainer.RestartPolicyDisabled},
-			Resources:     resources, Tmpfs: map[string]string{egressTmpfsPath: egressTmpfsOptions},
+			Resources:     resources, Tmpfs: map[string]string{
+				egressTmpfsPath: egressTmpfsOptions(request.AnchorUID, request.AnchorGID),
+			},
 		},
 		NetworkingConfig: &mobynetwork.NetworkingConfig{EndpointsConfig: map[string]*mobynetwork.EndpointSettings{
 			EgressNetworkName: {},
