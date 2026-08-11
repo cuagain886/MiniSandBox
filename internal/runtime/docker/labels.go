@@ -25,7 +25,8 @@ const (
 	LabelRunnerProtocolVersion = "minisandbox.io/runner-protocol-version"
 
 	labelManagedValue       = "true"
-	labelSchemaVersionValue = "1"
+	labelSchemaVersionV1    = "1"
+	labelSchemaVersionValue = "2"
 	maxLabelValueLength     = 256
 	maxWorkspaceNameLength  = 128
 )
@@ -45,6 +46,8 @@ var managedLabelKeys = [...]string{
 // schema、managed 和 expires-at 在 Phase 1 由 codec 固定，调用方不能注入；
 // 本类型故意不包含 token、命令、环境变量、镜像凭据或宿主机路径。
 type ManagedLabels struct {
+	// SchemaVersion 是解析到的恢复协议版本；编码新资源时零值写当前 v2。
+	SchemaVersion int
 	// SandboxID 是控制面生成的规范 UUID v4。
 	SandboxID string
 	// SpecHash 是 resolved spec 的 64 位小写十六进制 SHA-256。
@@ -91,7 +94,7 @@ func ParseLabels(labels map[string]string) (ManagedLabels, error) {
 	if labels[LabelManaged] != labelManagedValue {
 		return ManagedLabels{}, labelError(LabelManaged, "must identify a managed resource")
 	}
-	if labels[LabelSchemaVersion] != labelSchemaVersionValue {
+	if labels[LabelSchemaVersion] != labelSchemaVersionV1 && labels[LabelSchemaVersion] != labelSchemaVersionValue {
 		return ManagedLabels{}, labelError(LabelSchemaVersion, "is not supported")
 	}
 	if labels[LabelExpiresAt] != "" {
@@ -106,6 +109,7 @@ func ParseLabels(labels map[string]string) (ManagedLabels, error) {
 	}
 
 	metadata := ManagedLabels{
+		SchemaVersion:         int(labels[LabelSchemaVersion][0] - '0'),
 		SandboxID:             labels[LabelSandboxID],
 		SpecHash:              labels[LabelSpecHash],
 		Workspace:             labels[LabelWorkspace],
@@ -119,6 +123,9 @@ func ParseLabels(labels map[string]string) (ManagedLabels, error) {
 
 // validateManagedLabels 校验所有可变恢复字段，不接触 Docker。
 func validateManagedLabels(metadata ManagedLabels) error {
+	if metadata.SchemaVersion != 0 && metadata.SchemaVersion != 1 && metadata.SchemaVersion != 2 {
+		return labelError(LabelSchemaVersion, "is not supported")
+	}
 	if metadata.RunnerProtocolVersion != 0 && metadata.RunnerProtocolVersion != runnerbootstrap.CurrentProtocolVersion {
 		return labelError(LabelRunnerProtocolVersion, "is not supported")
 	}
@@ -135,6 +142,11 @@ func validateManagedLabels(metadata ManagedLabels) error {
 		return labelError(LabelWorkspace, "does not match the sandbox ID")
 	}
 	return nil
+}
+
+func managedLabelIdentityEqual(left, right ManagedLabels) bool {
+	return left.SandboxID == right.SandboxID && left.SpecHash == right.SpecHash &&
+		left.Workspace == right.Workspace && left.RunnerProtocolVersion == right.RunnerProtocolVersion
 }
 
 // validSandboxID 只接受控制面生成的规范小写 UUID v4。

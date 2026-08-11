@@ -17,6 +17,7 @@ const (
 // TestLabelsRoundTrip 验证固定恢复与 runner 版本契约可以无损编解码。
 func TestLabelsRoundTrip(t *testing.T) {
 	metadata := ManagedLabels{
+		SchemaVersion:         2,
 		SandboxID:             testSandboxID,
 		SpecHash:              testSpecHash,
 		Workspace:             testWorkspace,
@@ -30,7 +31,7 @@ func TestLabelsRoundTrip(t *testing.T) {
 		t.Fatalf("label count: got %d, want %d", len(labels), len(managedLabelKeys))
 	}
 	if labels[LabelManaged] != "true" ||
-		labels[LabelSchemaVersion] != "1" ||
+		labels[LabelSchemaVersion] != "2" ||
 		labels[LabelExpiresAt] != "" {
 		t.Fatalf("fixed labels: %#v", labels)
 	}
@@ -42,6 +43,22 @@ func TestLabelsRoundTrip(t *testing.T) {
 	}
 	if !reflect.DeepEqual(parsed, metadata) {
 		t.Fatalf("round trip: got %#v, want %#v", parsed, metadata)
+	}
+}
+
+// TestParseLabelsAcceptsLegacyV1WithoutRewrite 验证双版本 reader 只解析旧资源而不修改输入。
+func TestParseLabelsAcceptsLegacyV1WithoutRewrite(t *testing.T) {
+	labels, err := EncodeLabels(ManagedLabels{
+		SandboxID: testSandboxID, SpecHash: testSpecHash, Workspace: testWorkspace,
+		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
+	})
+	if err != nil {
+		t.Fatalf("encode labels: %v", err)
+	}
+	labels[LabelSchemaVersion] = labelSchemaVersionV1
+	parsed, err := ParseLabels(labels)
+	if err != nil || parsed.SchemaVersion != 1 || labels[LabelSchemaVersion] != labelSchemaVersionV1 {
+		t.Fatalf("legacy parse: %#v/%v labels=%#v", parsed, err, labels)
 	}
 }
 
@@ -67,7 +84,7 @@ func TestParseLabelsRejectsUnsupportedAndInvalidValues(t *testing.T) {
 		value string
 	}{
 		{name: "not managed", key: LabelManaged, value: "false"},
-		{name: "unknown schema", key: LabelSchemaVersion, value: "2"},
+		{name: "unknown schema", key: LabelSchemaVersion, value: "3"},
 		{name: "old runner protocol", key: LabelRunnerProtocolVersion, value: "0"},
 		{name: "future runner protocol", key: LabelRunnerProtocolVersion, value: "2"},
 		{name: "non-integer runner protocol", key: LabelRunnerProtocolVersion, value: "v1"},

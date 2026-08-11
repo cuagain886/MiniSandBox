@@ -130,7 +130,7 @@ func TestRuntimeListManagedReportsUnknownSchema(t *testing.T) {
 		"container-unknown",
 		mobycontainer.StateRunning,
 	)
-	summary.Labels[LabelSchemaVersion] = "2"
+	summary.Labels[LabelSchemaVersion] = "3"
 	engine := &fakeEngine{
 		containerListFunc: func(
 			context.Context,

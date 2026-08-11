@@ -74,6 +74,9 @@ func validateEgressNetwork(network mobynetwork.Inspect) (egressNetwork, error) {
 		return egressNetwork{}, containerIdentityConflict()
 	}
 	for key, expected := range egressNetworkLabels {
+		if key == LabelSchemaVersion && (network.Labels[key] == labelSchemaVersionV1 || network.Labels[key] == labelSchemaVersionValue) {
+			continue
+		}
 		if network.Labels[key] != expected {
 			return egressNetwork{}, containerIdentityConflict()
 		}

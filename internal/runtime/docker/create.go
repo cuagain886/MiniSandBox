@@ -225,7 +225,7 @@ func validateManagedContainer(
 		return containerIdentityConflict()
 	}
 	actual, err := ParseLabels(container.Config.Labels)
-	if err != nil || actual != expected {
+	if err != nil || !managedLabelIdentityEqual(actual, expected) {
 		return containerIdentityConflict()
 	}
 	return nil

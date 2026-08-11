@@ -53,7 +53,7 @@ func mapManagedSummary(
 	if validSandboxID(container.Labels[LabelSandboxID]) {
 		item.ID = container.Labels[LabelSandboxID]
 	}
-	if container.Labels[LabelSchemaVersion] != labelSchemaVersionValue {
+	if container.Labels[LabelSchemaVersion] != labelSchemaVersionV1 && container.Labels[LabelSchemaVersion] != labelSchemaVersionValue {
 		item.DiscoveryIssue = runtimeport.DiscoverySchemaUnsupported
 		return item
 	}

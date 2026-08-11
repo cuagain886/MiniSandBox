@@ -140,7 +140,7 @@ func validateWorkspaceVolume(
 		return workspaceVolumeConflict()
 	}
 	actual, err := ParseLabels(volume.Labels)
-	if err != nil || actual != expected {
+	if err != nil || !managedLabelIdentityEqual(actual, expected) {
 		return workspaceVolumeConflict()
 	}
 	return nil

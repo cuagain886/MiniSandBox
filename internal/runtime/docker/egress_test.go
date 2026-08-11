@@ -72,7 +72,7 @@ func TestValidateEgressNetworkDrift(t *testing.T) {
 	}{
 		{name: "external labels", mutate: func(n *mobynetwork.Inspect) { n.Labels = map[string]string{} }},
 		{name: "driver drift", mutate: func(n *mobynetwork.Inspect) { n.Driver = "overlay" }},
-		{name: "schema drift", mutate: func(n *mobynetwork.Inspect) { n.Labels[LabelSchemaVersion] = "2" }},
+		{name: "schema drift", mutate: func(n *mobynetwork.Inspect) { n.Labels[LabelSchemaVersion] = "3" }},
 		{name: "internal network", mutate: func(n *mobynetwork.Inspect) { n.Internal = true }},
 		{name: "IPv6 disabled", mutate: func(n *mobynetwork.Inspect) { n.EnableIPv6 = false }},
 		{name: "IPAM missing", mutate: func(n *mobynetwork.Inspect) { n.IPAM.Config = nil }},
