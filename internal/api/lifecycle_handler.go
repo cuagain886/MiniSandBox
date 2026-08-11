@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"mime"
 	"net/http"
 	"strings"
 
@@ -17,6 +18,9 @@ import (
 // 当前创建请求只有最长 512 字节的 image 和一个布尔网络对象，16 KiB 足以
 // 容纳合法请求，同时在 JSON 解码前限制恶意输入占用的内存和读取时间。
 const maxCreateSandboxBodyBytes int64 = 16 << 10
+
+// maxRenewSandboxBodyBytes 限制仅含 expires_at 的续期 JSON 请求。
+const maxRenewSandboxBodyBytes int64 = 4 << 10
 
 func registerLifecycleRoutes(mux *http.ServeMux, service LifecycleService) {
 	//创建沙盒
@@ -47,7 +51,60 @@ func registerLifecycleRoutes(mux *http.ServeMux, service LifecycleService) {
 		)
 	}
 	//续期沙盒
-	mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/renew", notImplemented("sandbox renewal"))
+	if service == nil {
+		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/renew", notImplemented("sandbox renewal"))
+	} else {
+		mux.HandleFunc("POST /v1/sandboxes/{sandbox_id}/renew", renewSandboxHandler(service))
+	}
+}
+
+// renewSandboxHandler 严格解析绝对 expiry，并把全部租约决策委托给 application。
+func renewSandboxHandler(service LifecycleService) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("sandbox_id")
+		if !validSandboxID(id) || r.URL.RawQuery != "" {
+			writeError(w, r, domain.ErrInvalidExpiration)
+			return
+		}
+		request, err := decodeRenewSandboxRequest(w, r)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		sandbox, err := service.Renew(r.Context(), application.RenewSandbox{
+			SandboxID: id, ExpiresAt: request.ExpiresAt,
+		})
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		response, err := mapSandboxResponse(sandbox)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, response)
+	}
+}
+
+func decodeRenewSandboxRequest(w http.ResponseWriter, r *http.Request) (protocol.RenewSandboxRequest, error) {
+	mediaType, _, err := mime.ParseMediaType(r.Header.Get("Content-Type"))
+	if err != nil || !strings.EqualFold(mediaType, "application/json") {
+		return protocol.RenewSandboxRequest{}, domain.ErrInvalidExpiration
+	}
+	reader := http.MaxBytesReader(w, r.Body, maxRenewSandboxBodyBytes)
+	defer reader.Close()
+	decoder := json.NewDecoder(reader)
+	decoder.DisallowUnknownFields()
+	var request protocol.RenewSandboxRequest
+	if err := decoder.Decode(&request); err != nil || request.ExpiresAt.IsZero() {
+		return protocol.RenewSandboxRequest{}, domain.ErrInvalidExpiration
+	}
+	var trailing json.RawMessage
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		return protocol.RenewSandboxRequest{}, domain.ErrInvalidExpiration
+	}
+	return request, nil
 }
 
 // deleteSandboxHandler 校验公共 ID 并幂等提交 sandbox 终止意图。

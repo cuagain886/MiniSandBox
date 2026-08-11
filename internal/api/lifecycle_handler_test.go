@@ -29,6 +29,10 @@ type fakeLifecycleService struct {
 	deleteResult domain.Sandbox
 	deleteErr    error
 	deleteCalls  []application.DeleteSandbox
+
+	renewResult domain.Sandbox
+	renewErr    error
+	renewCalls  []application.RenewSandbox
 }
 
 // CreateAccepted 记录创建命令并返回测试预设的精确响应。
@@ -70,6 +74,12 @@ func (f *fakeLifecycleService) Delete(
 ) (domain.Sandbox, error) {
 	f.deleteCalls = append(f.deleteCalls, command)
 	return f.deleteResult, f.deleteErr
+}
+
+// Renew 记录续期命令并返回测试预设结果。
+func (f *fakeLifecycleService) Renew(_ context.Context, command application.RenewSandbox) (domain.Sandbox, error) {
+	f.renewCalls = append(f.renewCalls, command)
+	return f.renewResult, f.renewErr
 }
 
 // TestDeleteSandboxHandler 验证首次、处理中、已终止和不存在四类响应。

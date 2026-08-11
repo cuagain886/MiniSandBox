@@ -37,6 +37,8 @@ type LifecycleService interface {
 		ctx context.Context,
 		command application.DeleteSandbox,
 	) (domain.Sandbox, error)
+	// Renew 延长有效租约并返回更新后或幂等 no-op 的 sandbox。
+	Renew(ctx context.Context, command application.RenewSandbox) (domain.Sandbox, error)
 }
 
 // RouterDependencies 保存 HTTP 适配层使用的应用服务。
