@@ -17,6 +17,8 @@ type CreateSandbox struct {
 	Image string
 	// Outbound 表示用户是否请求受管公网出站能力；缺失公共字段时为 false。
 	Outbound bool
+	// Idempotency 是可选、已校验且已作用域化的创建重放身份。
+	Idempotency *IdempotencyKey
 }
 
 // DeleteSandbox 表示将指定 sandbox 的期望状态设置为 Terminated。

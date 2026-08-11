@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strings"
 
 	"minisandbox/internal/application"
 	"minisandbox/internal/domain"
@@ -140,6 +141,11 @@ func isLowerHex(value byte) bool {
 // handler 返回 202 只表示期望状态已经持久化，不等待 Docker 创建容器。
 func createSandboxHandler(service LifecycleService) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		idempotency, err := mapIdempotencyKey(r.Header)
+		if err != nil {
+			writeError(w, r, err)
+			return
+		}
 		var request protocol.CreateSandboxRequest
 		if err := decodeCreateSandboxRequest(w, r, &request); err != nil {
 			writeError(w, r, err)
@@ -153,8 +159,9 @@ func createSandboxHandler(service LifecycleService) http.HandlerFunc {
 		sandbox, err := service.Create(
 			r.Context(),
 			application.CreateSandbox{
-				Image:    request.Image,
-				Outbound: outbound,
+				Image:       request.Image,
+				Outbound:    outbound,
+				Idempotency: idempotency,
 			},
 		)
 		if err != nil {
@@ -173,6 +180,25 @@ func createSandboxHandler(service LifecycleService) http.HandlerFunc {
 		)
 		writeJSON(w, http.StatusAccepted, response)
 	}
+}
+
+// mapIdempotencyKey 把可选 HTTP header 转为当前单租户 scope 的安全值对象。
+//
+// Header.Values 保留重复 field-line；单个值中的逗号也拒绝，避免代理合并后把
+// 多个 key 误解释成一个。错误只返回统一 ErrInvalid，绝不回显 raw value。
+func mapIdempotencyKey(header http.Header) (*application.IdempotencyKey, error) {
+	values := header.Values("Idempotency-Key")
+	if len(values) == 0 {
+		return nil, nil
+	}
+	if len(values) != 1 || strings.Contains(values[0], ",") {
+		return nil, domain.ErrInvalid
+	}
+	key, err := application.NewLocalIdempotencyKey(values[0])
+	if err != nil {
+		return nil, domain.ErrInvalid
+	}
+	return &key, nil
 }
 
 // decodeCreateSandboxRequest 限制 body 并只接受一个字段集合固定的 JSON 对象。
