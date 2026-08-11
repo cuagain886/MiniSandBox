@@ -33,15 +33,25 @@ const (
 
 // Reconciler 将单个 sandbox 的期望状态幂等收敛到 runtime 实际状态。
 type Reconciler struct {
-	store    store.Store
-	runtime  runtimeport.Runtime
-	probe    RunnerProbe
-	shutdown RunnerShutdown
-	locks    *KeyedLock
-	clock    Clock
-	random   Random
-	retryMin time.Duration
-	retryMax time.Duration
+	store         store.Store
+	runtime       runtimeport.Runtime
+	probe         RunnerProbe
+	shutdown      RunnerShutdown
+	locks         *KeyedLock
+	clock         Clock
+	random        Random
+	retryMin      time.Duration
+	retryMax      time.Duration
+	createLimiter runtimeport.Limiter
+	deleteLimiter runtimeport.Limiter
+}
+
+// OperationLimits 是 reconciler 共享 runtime 操作的固定并发上限。
+type OperationLimits struct {
+	// MaxConcurrentCreates 限制同时进入 Runtime.Ensure 的 sandbox 数量。
+	MaxConcurrentCreates int
+	// MaxConcurrentDeletes 限制同时进入 Runtime.Delete 的 sandbox 数量。
+	MaxConcurrentDeletes int
 }
 
 // NewWithShutdown 创建带 runner cancel-all 前置步骤的状态收敛器。
@@ -83,6 +93,23 @@ func NewWithShutdownAndRetry(s store.Store, r runtimeport.Runtime, probe RunnerP
 		return nil, err
 	}
 	reconciler.shutdown = shutdown
+	return reconciler, nil
+}
+
+// NewWithShutdownRetryAndLimits 创建生产用收敛器并装配独立 create/delete 门禁。
+func NewWithShutdownRetryAndLimits(s store.Store, r runtimeport.Runtime, probe RunnerProbe, shutdown RunnerShutdown, clock Clock, random Random, retryMin, retryMax time.Duration, limits OperationLimits) (*Reconciler, error) {
+	reconciler, err := NewWithShutdownAndRetry(s, r, probe, shutdown, clock, random, retryMin, retryMax)
+	if err != nil {
+		return nil, err
+	}
+	reconciler.createLimiter, err = runtimeport.NewLimiter(limits.MaxConcurrentCreates)
+	if err != nil {
+		return nil, fmt.Errorf("configure create limiter: %w", err)
+	}
+	reconciler.deleteLimiter, err = runtimeport.NewLimiter(limits.MaxConcurrentDeletes)
+	if err != nil {
+		return nil, fmt.Errorf("configure delete limiter: %w", err)
+	}
 	return reconciler, nil
 }
 
@@ -160,8 +187,12 @@ func (r *Reconciler) reconcileRunning(
 		return fmt.Errorf("mark sandbox runtime creating: %w", err)
 	}
 
-	actual, err := r.runtime.Ensure(ctx, creating)
+	actual, err := r.ensureRuntime(ctx, creating)
 	if err != nil {
+		var waitErr *operationLimitWaitError
+		if errors.As(err, &waitErr) {
+			return err
+		}
 		return r.failRunning(ctx, creating, err, RetryOperationCreate)
 	}
 	waiting, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
@@ -203,6 +234,26 @@ func (r *Reconciler) reconcileRunning(
 	}
 	return nil
 }
+
+// ensureRuntime 在 keyed lock 内等待全局 create 配额；未取得配额时直接返回
+// context 错误，不进入失败记账。defer 保证 Runtime panic 也会释放配额。
+func (r *Reconciler) ensureRuntime(ctx context.Context, sandbox domain.Sandbox) (runtimeport.ActualSandbox, error) {
+	if r.createLimiter == nil {
+		return r.runtime.Ensure(ctx, sandbox)
+	}
+	release, err := r.createLimiter.Acquire(ctx)
+	if err != nil {
+		return runtimeport.ActualSandbox{}, &operationLimitWaitError{cause: err}
+	}
+	defer release()
+	return r.runtime.Ensure(ctx, sandbox)
+}
+
+// operationLimitWaitError 区分尚未开始 runtime 操作的等待取消，防止增加 retry attempt。
+type operationLimitWaitError struct{ cause error }
+
+func (e *operationLimitWaitError) Error() string { return "runtime operation limit wait canceled" }
+func (e *operationLimitWaitError) Unwrap() error { return e.cause }
 
 // reconcileTerminated 把任意非 Terminated 记录先推进到 Stopping 再清理。
 func (r *Reconciler) reconcileTerminated(
