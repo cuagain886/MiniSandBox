@@ -22,7 +22,7 @@ func (s *SandboxService) CreateAccepted(ctx context.Context, command CreateSandb
 		s.createPolicy.MaximumTTL < s.createPolicy.MinimumTTL || s.createPolicy.MaxSandboxes < 1 {
 		return IdempotentCreateOutcome{}, fmt.Errorf("create service is not configured: %w", domain.ErrInvalid)
 	}
-	ttl, err := s.resolveCreateTTL(command.TTLSeconds)
+	lease, err := s.resolveCreateLease(command.TTLSeconds)
 	if err != nil {
 		return IdempotentCreateOutcome{}, err
 	}
@@ -31,7 +31,7 @@ func (s *SandboxService) CreateAccepted(ctx context.Context, command CreateSandb
 		return IdempotentCreateOutcome{}, err
 	}
 	canonical, err := CanonicalizeCreateRequest(CanonicalCreateRequest{
-		Image: command.Image, TTLSeconds: command.TTLSeconds, Outbound: command.Outbound,
+		Image: command.Image, TTLSeconds: lease.CanonicalTTLSeconds, Outbound: command.Outbound,
 	})
 	if err != nil {
 		return IdempotentCreateOutcome{}, err
@@ -44,8 +44,8 @@ func (s *SandboxService) CreateAccepted(ctx context.Context, command CreateSandb
 	if err != nil {
 		return IdempotentCreateOutcome{}, fmt.Errorf("generate sandbox ID: %w", err)
 	}
-	now := s.clock.Now().UTC()
-	expiresAt := now.Add(ttl)
+	now := lease.Now
+	expiresAt := lease.ExpiresAt
 	sandbox := domain.Sandbox{
 		ID: id, Spec: spec, DesiredState: domain.DesiredRunning, ObservedState: domain.StatePending,
 		Reason: createAcceptedReason, Message: createAcceptedMessage, SpecHash: spec.Hash(),
@@ -65,18 +65,41 @@ func (s *SandboxService) CreateAccepted(ctx context.Context, command CreateSandb
 	})
 }
 
-func (s *SandboxService) resolveCreateTTL(seconds *int64) (time.Duration, error) {
+// resolvedCreateLease 保存一次 create 使用的相对租期、唯一时钟读数和绝对到期时间。
+// CanonicalTTLSeconds 保留请求字段 presence，避免默认值调整改变既有幂等身份。
+type resolvedCreateLease struct {
+	TTL                 time.Duration
+	CanonicalTTLSeconds *int64
+	Now                 time.Time
+	ExpiresAt           time.Time
+}
+
+// resolveCreateLease 校验相对 TTL，并用同一次 UTC 时钟读数计算绝对到期时间。
+func (s *SandboxService) resolveCreateLease(seconds *int64) (resolvedCreateLease, error) {
 	ttl := s.createPolicy.DefaultTTL
+	var canonicalTTLSeconds *int64
 	if seconds != nil {
-		if *seconds <= 0 || *seconds > int64(s.createPolicy.MaximumTTL/time.Second) {
-			return 0, domain.ErrInvalidTTL
+		if *seconds <= 0 || *seconds > int64((time.Duration(1<<63-1))/time.Second) {
+			return resolvedCreateLease{}, domain.ErrInvalidTTL
 		}
 		ttl = time.Duration(*seconds) * time.Second
+		value := *seconds
+		canonicalTTLSeconds = &value
 	}
 	if ttl < s.createPolicy.MinimumTTL || ttl > s.createPolicy.MaximumTTL || ttl%time.Second != 0 {
-		return 0, domain.ErrInvalidTTL
+		return resolvedCreateLease{}, domain.ErrInvalidTTL
 	}
-	return ttl, nil
+	now := s.clock.Now().UTC()
+	expiresAt := now.Add(ttl)
+	// 公共协议使用 RFC3339；year 超出四位范围时编码会失败，因此在任何
+	// Store 或 hash 副作用之前显式拒绝，而不是依赖后续 JSON marshal 报错。
+	if !expiresAt.After(now) || expiresAt.Year() < 0 || expiresAt.Year() > 9999 {
+		return resolvedCreateLease{}, domain.ErrInvalidTTL
+	}
+	return resolvedCreateLease{
+		TTL: ttl, CanonicalTTLSeconds: canonicalTTLSeconds,
+		Now: now, ExpiresAt: expiresAt.UTC(),
+	}, nil
 }
 
 func createAcceptedResponse(sandbox domain.Sandbox) (storeport.IdempotentResponse, error) {
