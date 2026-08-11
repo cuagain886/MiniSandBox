@@ -136,6 +136,7 @@ func (s *RecoveryService) Run(ctx context.Context) error {
 			})
 		}
 		if runtime.RuntimeID != sandbox.RuntimeID {
+			reconcileAt := now
 			updated, err := s.store.UpdateObserved(
 				ctx,
 				store.ObservedUpdate{
@@ -145,6 +146,7 @@ func (s *RecoveryService) Run(ctx context.Context) error {
 					Reason:           sandbox.Reason,
 					Message:          sandbox.Message,
 					RuntimeID:        runtime.RuntimeID,
+					ReconcileAt:      &reconcileAt,
 				},
 			)
 			if err != nil {

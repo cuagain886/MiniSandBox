@@ -33,7 +33,7 @@ func prepareDesiredUpdateStore(t *testing.T) (*Store, domain.Sandbox) {
 	return store, sandbox
 }
 
-// TestUpdateDesiredTerminatedCAS 验证首次提交只更新期望状态、revision 和 updated time。
+// TestUpdateDesiredTerminatedCAS 验证首次提交同时更新期望状态、revision 和调度时间。
 func TestUpdateDesiredTerminatedCAS(t *testing.T) {
 	store, original := prepareDesiredUpdateStore(t)
 
@@ -51,6 +51,8 @@ func TestUpdateDesiredTerminatedCAS(t *testing.T) {
 	want.DesiredState = domain.DesiredTerminated
 	want.Revision++
 	want.UpdatedAt = desiredUpdateTime()
+	next := desiredUpdateTime()
+	want.NextReconcileAt = &next
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("updated sandbox mismatch:\n got: %#v\nwant: %#v", got, want)
 	}
@@ -104,6 +106,27 @@ func TestUpdateDesiredTerminatedRetryIsNoOp(t *testing.T) {
 	}
 	if !reflect.DeepEqual(retried, first) {
 		t.Fatalf("retry was not a no-op:\n got: %#v\nwant: %#v", retried, first)
+	}
+}
+
+// TestUpdateDesiredAlreadyTerminatedAdvancesFutureRetry 验证重复删除会用同一 CAS
+// 抢占旧 backoff，而不会改变 observed 状态。
+func TestUpdateDesiredAlreadyTerminatedAdvancesFutureRetry(t *testing.T) {
+	store, original := prepareDesiredUpdateStore(t)
+	first, err := store.UpdateDesired(context.Background(), original.ID, domain.DesiredTerminated, original.Revision)
+	if err != nil {
+		t.Fatalf("first desired update: %v", err)
+	}
+	future := desiredUpdateTime().Add(time.Hour)
+	if _, err := store.db.ExecContext(context.Background(), `UPDATE sandboxes SET next_reconcile_at = ? WHERE id = ?`, future.Format(time.RFC3339Nano), original.ID); err != nil {
+		t.Fatalf("seed future retry: %v", err)
+	}
+	advanced, err := store.UpdateDesired(context.Background(), original.ID, domain.DesiredTerminated, first.Revision)
+	if err != nil {
+		t.Fatalf("advance repeated delete: %v", err)
+	}
+	if advanced.Revision != first.Revision+1 || advanced.NextReconcileAt == nil || !advanced.NextReconcileAt.Equal(desiredUpdateTime()) || advanced.ObservedState != first.ObservedState {
+		t.Fatalf("advanced delete: %#v", advanced)
 	}
 }
 

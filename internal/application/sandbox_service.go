@@ -152,8 +152,8 @@ func (s *SandboxService) Get(ctx context.Context, id string) (domain.Sandbox, er
 // Delete 幂等提交 DesiredTerminated，并唤醒后台删除收敛。
 //
 // 已经观测为 Terminated 时直接返回且不再唤醒；其他已提交终止意图的记录
-// 仍会 Wake，允许调用方显式重试 cleanup pending。首次 CAS 冲突只重读一次
-// 并最多再更新一次，本方法绝不直接调用 Runtime.Delete 或修改 observed state。
+// 仍通过 Store 原子抢占旧 backoff 后 Wake。首次 CAS 冲突只重读一次并最多
+// 再更新一次，本方法绝不直接调用 Runtime.Delete 或修改 observed state。
 func (s *SandboxService) Delete(
 	ctx context.Context,
 	command DeleteSandbox,
@@ -167,11 +167,6 @@ func (s *SandboxService) Delete(
 		if current.ObservedState == domain.StateTerminated {
 			return current, nil
 		}
-		if current.DesiredState == domain.DesiredTerminated {
-			s.waker.Wake(current.ID)
-			return current, nil
-		}
-
 		updated, err := s.store.UpdateDesired(
 			ctx,
 			current.ID,

@@ -126,6 +126,7 @@ func TestSandboxServiceDeleteAlreadyDesiredWakesAgain(t *testing.T) {
 		Revision:      8,
 	}
 	storeFake.SetGetResult(current, nil)
+	storeFake.SetUpdateDesiredResult(current, nil)
 	service := NewSandboxService(storeFake, idGenerator, clock, builder, waker)
 
 	got, err := service.Delete(
@@ -138,8 +139,8 @@ func TestSandboxServiceDeleteAlreadyDesiredWakesAgain(t *testing.T) {
 	if !reflect.DeepEqual(got, current) {
 		t.Fatalf("repeat delete result: got %#v, want %#v", got, current)
 	}
-	if len(storeFake.UpdateDesiredCalls()) != 0 {
-		t.Fatalf("repeat delete updated Store: %#v", storeFake.UpdateDesiredCalls())
+	if calls := storeFake.UpdateDesiredCalls(); len(calls) != 1 || calls[0].ExpectedRevision != current.Revision {
+		t.Fatalf("repeat delete did not advance reconcile atomically: %#v", calls)
 	}
 	if calls := waker.WakeCalls(); !reflect.DeepEqual(calls, []string{current.ID}) {
 		t.Fatalf("repeat delete Wake calls: %v", calls)

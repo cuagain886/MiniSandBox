@@ -725,10 +725,9 @@ func (s *Store) Get(ctx context.Context, id string) (domain.Sandbox, error) {
 // UpdateDesired 幂等提交 DesiredTerminated 并返回完整的新记录。
 //
 // Running 到 Terminated 的实际转换要求 expectedRevision 匹配，成功时 revision
-// 加一并更新 updated time，但绝不直接修改 observed state 或 transition time。
-// 已经 DesiredTerminated 时返回当前记录作为 no-op，即使调用方因响应丢失仍
-// 携带旧 revision；不存在返回 domain.ErrNotFound，旧 revision 返回
-// domain.ErrConflict。
+// 加一并把 next reconcile 提前到当前时间，但绝不直接修改 observed state。
+// 已经 DesiredTerminated 且旧调度尚未 due 时也以当前 revision 原子提前；已 due
+// 时返回当前记录作为 no-op。不存在返回 domain.ErrNotFound，旧 revision 返回冲突。
 func (s *Store) UpdateDesired(
 	ctx context.Context,
 	id string,
@@ -753,23 +752,31 @@ func (s *Store) UpdateDesired(
 	// 更新可能让 no-op、NotFound 与 Conflict 的判断基于不同快照。
 	defer func() { _ = tx.Rollback() }()
 
-	now := s.now().UTC().Format(time.RFC3339Nano)
+	nowTime := s.now().UTC()
+	now := nowTime.Format(time.RFC3339Nano)
 	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE sandboxes
 		SET
 			desired_state = ?,
+			next_reconcile_at = ?,
 			revision = revision + 1,
 			updated_at = ?
 		WHERE
 			id = ? AND
 			revision = ? AND
-			desired_state = ?`,
+			(desired_state = ? OR (
+				desired_state = ? AND
+				(next_reconcile_at IS NULL OR next_reconcile_at > ?)
+			))`,
 		desired,
+		now,
 		now,
 		id,
 		expectedRevision,
 		domain.DesiredRunning,
+		domain.DesiredTerminated,
+		now,
 	)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf(
@@ -805,8 +812,11 @@ func (s *Store) UpdateDesired(
 			err,
 		)
 	}
-	if affected == 0 && current.DesiredState != desired {
-		return domain.Sandbox{}, domain.ErrConflict
+	if affected == 0 {
+		needsAdvance := current.NextReconcileAt == nil || current.NextReconcileAt.After(nowTime)
+		if current.DesiredState != desired || needsAdvance {
+			return domain.Sandbox{}, domain.ErrConflict
+		}
 	}
 
 	if err := tx.Commit(); err != nil {
@@ -833,6 +843,13 @@ func (s *Store) UpdateObserved(
 			domain.ErrInvalid,
 		)
 	}
+	var reconcileAt any
+	if update.ReconcileAt != nil {
+		if update.ReconcileAt.IsZero() {
+			return domain.Sandbox{}, fmt.Errorf("update observed state: %w", domain.ErrInvalid)
+		}
+		reconcileAt = update.ReconcileAt.UTC().Format(time.RFC3339Nano)
+	}
 
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -854,6 +871,7 @@ func (s *Store) UpdateObserved(
 			reason = ?,
 			message = ?,
 			runtime_id = ?,
+			next_reconcile_at = CASE WHEN ? IS NULL THEN next_reconcile_at ELSE ? END,
 			revision = revision + 1,
 			updated_at = ?,
 			last_transition_at = CASE
@@ -865,6 +883,8 @@ func (s *Store) UpdateObserved(
 		update.Reason,
 		update.Message,
 		update.RuntimeID,
+		reconcileAt,
+		reconcileAt,
 		now,
 		update.State,
 		now,

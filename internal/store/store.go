@@ -67,6 +67,8 @@ type ObservedUpdate struct {
 	Message string
 	// RuntimeID 是 runtime adapter 返回的内部资源标识，可为空。
 	RuntimeID string
+	// ReconcileAt 非空时把旧 backoff 提前到该 UTC 时刻；仅供 recovery 等修正写入使用。
+	ReconcileAt *time.Time
 }
 
 // RenewUpdate 描述一次只能延长有效 Running 租约的 CAS 更新。
@@ -195,8 +197,8 @@ type Store interface {
 	Get(ctx context.Context, id string) (domain.Sandbox, error)
 	// UpdateDesired 以 CAS 方式提交 DesiredTerminated 并返回更新后的记录。
 	//
-	// 已经处于 DesiredTerminated 时返回当前记录作为幂等 no-op，不递增
-	// revision；只有实际状态转换才要求 expectedRevision 匹配。
+	// 已经处于 DesiredTerminated 时，若旧 backoff 仍在未来或为空，会用同一 CAS
+	// 把 next_reconcile_at 提前到当前 Store 时间；已经 due 时保持幂等 no-op。
 	UpdateDesired(
 		ctx context.Context,
 		id string,

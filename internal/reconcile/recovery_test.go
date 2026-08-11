@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
@@ -15,6 +16,8 @@ import (
 // TestRecoveryAssociatesStoredAndDockerRuntime 验证匹配资源恢复 runtime ID 并入队。
 func TestRecoveryAssociatesStoredAndDockerRuntime(t *testing.T) {
 	sandbox := recoverySandbox("sandbox-a", domain.DesiredRunning)
+	future := time.Now().UTC().Add(time.Hour)
+	sandbox.NextReconcileAt = &future
 	sandboxStore := newRecoveryStore(sandbox)
 	runtime := &recoveryRuntime{managed: []runtimeport.ActualSandbox{
 		recoveryActual(sandbox, "container-a"),
@@ -35,6 +38,9 @@ func TestRecoveryAssociatesStoredAndDockerRuntime(t *testing.T) {
 	}
 	if got := sandboxStore.records[0].RuntimeID; got != "container-a" {
 		t.Fatalf("runtime ID: got %q, want container-a", got)
+	}
+	if got := sandboxStore.records[0].NextReconcileAt; got == nil || !got.Before(future) {
+		t.Fatalf("recovery correction did not advance retry: %#v", got)
 	}
 	if sandboxStore.candidateCalls != 1 {
 		t.Fatalf("candidate scans: got %d, want 1", sandboxStore.candidateCalls)
@@ -337,6 +343,10 @@ func (s *recoveryStore) UpdateObserved(
 			return domain.Sandbox{}, domain.ErrConflict
 		}
 		s.records[index].RuntimeID = update.RuntimeID
+		if update.ReconcileAt != nil {
+			reconcileAt := update.ReconcileAt.UTC()
+			s.records[index].NextReconcileAt = &reconcileAt
+		}
 		s.records[index].Revision++
 		return s.records[index], nil
 	}
