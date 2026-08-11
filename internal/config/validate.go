@@ -13,24 +13,31 @@ import (
 )
 
 const (
-	maxRunnerTimeout                    = 24 * time.Hour
-	maxRunnerTerminationGrace           = time.Minute
-	maxRunnerConcurrentExecutions       = 256
-	maxRunnerRequestBytes         int64 = 16 << 20
-	maxRunnerOutputBytes          int64 = 1 << 30
-	maxRunnerEnvVars                    = 4096
-	maxRunnerEnvKeyBytes                = 1024
-	maxRunnerEnvValueBytes              = 1 << 20
-	maxRunnerEnvTotalBytes        int64 = 16 << 20
-	maxRunnerLogPageEvents              = 4096
-	maxRunnerLogPageBytes         int64 = 64 << 20
-	maxRunnerRetention                  = 7 * 24 * time.Hour
-	maxRunnerRetainedExecutions         = 10_000
-	maxRunnerSSEWriteTimeout            = time.Minute
-	maxEgressReadyTimeout               = 2 * time.Minute
-	maxEgressCPUQuotaMillis       int64 = 1000
-	maxEgressMemoryMiB            int64 = 512
-	maxEgressPIDs                 int64 = 64
+	maxRunnerTimeout                       = 24 * time.Hour
+	maxRunnerTerminationGrace              = time.Minute
+	maxRunnerConcurrentExecutions          = 256
+	maxRunnerRequestBytes            int64 = 16 << 20
+	maxRunnerOutputBytes             int64 = 1 << 30
+	maxRunnerEnvVars                       = 4096
+	maxRunnerEnvKeyBytes                   = 1024
+	maxRunnerEnvValueBytes                 = 1 << 20
+	maxRunnerEnvTotalBytes           int64 = 16 << 20
+	maxRunnerLogPageEvents                 = 4096
+	maxRunnerLogPageBytes            int64 = 64 << 20
+	maxRunnerRetention                     = 7 * 24 * time.Hour
+	maxRunnerRetainedExecutions            = 10_000
+	maxRunnerSSEWriteTimeout               = time.Minute
+	maxEgressReadyTimeout                  = 2 * time.Minute
+	maxEgressCPUQuotaMillis          int64 = 1000
+	maxEgressMemoryMiB               int64 = 512
+	maxEgressPIDs                    int64 = 64
+	maxSandboxes                           = 10_000
+	maxLifecycleOperationConcurrency       = 256
+	maxReconcilePageSize                   = 10_000
+	maxReconcileWorkers                    = 256
+	maxRunnerUnhealthyThreshold            = 100
+	maxIdempotencyKeyBytes                 = 128
+	maxIdempotencyTerminalRetention        = 30 * 24 * time.Hour
 )
 
 var egressImageDigestPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9._:/-]*@sha256:[0-9a-f]{64}$`)
@@ -55,7 +62,7 @@ func (e *FieldError) Error() string {
 //
 // 本方法拒绝:非 loopback 监听、非 linux/amd64 平台、非 none 网络、
 // 持久 workspace、超限或非正资源、非绝对宿主机路径,以及互相矛盾的
-// TTL、runner 身份、路径和无界 execution limit。无效配置必须使启动失败，
+// TTL、reconcile/retry、runner 身份、路径和无界 operation limit。无效配置必须使启动失败，
 // 不得静默降级为宽松取值。
 // 本方法只做判定,不监听端口、不访问文件系统。
 func (c Config) Validate() error {
@@ -140,6 +147,12 @@ func (c Config) Validate() error {
 		}
 	}
 
+	if c.Limits.MinimumTTL <= 0 {
+		return &FieldError{
+			Field:   "limits.minimum_ttl",
+			Message: "must be a positive duration",
+		}
+	}
 	if c.Limits.DefaultTTL <= 0 {
 		return &FieldError{
 			Field:   "limits.default_ttl",
@@ -152,11 +165,29 @@ func (c Config) Validate() error {
 			Message: "must be a positive duration",
 		}
 	}
+	if c.Limits.MinimumTTL > c.Limits.DefaultTTL {
+		return &FieldError{
+			Field:   "limits.minimum_ttl",
+			Message: "must not exceed limits.default_ttl",
+		}
+	}
 	if c.Limits.DefaultTTL > c.Limits.MaximumTTL {
 		return &FieldError{
 			Field:   "limits.default_ttl",
 			Message: "must not exceed limits.maximum_ttl",
 		}
+	}
+	if err := validateConfigIntRange("limits.max_sandboxes", c.Limits.MaxSandboxes, maxSandboxes); err != nil {
+		return err
+	}
+	if err := validateConfigIntRange("limits.max_concurrent_creates", c.Limits.MaxConcurrentCreates, maxLifecycleOperationConcurrency); err != nil {
+		return err
+	}
+	if err := validateConfigIntRange("limits.max_concurrent_image_pulls", c.Limits.MaxConcurrentImagePulls, maxLifecycleOperationConcurrency); err != nil {
+		return err
+	}
+	if err := validateConfigIntRange("limits.max_concurrent_deletes", c.Limits.MaxConcurrentDeletes, maxLifecycleOperationConcurrency); err != nil {
+		return err
 	}
 	if err := validateResourceRange(
 		"limits.max_resources.cpu_quota_millis",
@@ -214,25 +245,75 @@ func (c Config) Validate() error {
 		return err
 	}
 
-	if c.Reconcile.Interval <= 0 {
-		return &FieldError{
-			Field:   "reconcile.interval",
-			Message: "must be a positive duration",
-		}
+	if err := validateReconcile(c.Reconcile); err != nil {
+		return err
 	}
-	if c.Reconcile.RunnerReadyTimeout <= 0 {
-		return &FieldError{
-			Field:   "reconcile.runner_ready_timeout",
-			Message: "must be a positive duration",
-		}
+	if err := validateIdempotency(c.Idempotency); err != nil {
+		return err
 	}
-	if c.Reconcile.DeletionTimeout <= 0 {
-		return &FieldError{
-			Field:   "reconcile.deletion_timeout",
-			Message: "must be a positive duration",
+	if c.Admin.Enabled {
+		if err := validateAbsolutePath("admin.token_file", c.Admin.TokenFile); err != nil {
+			return err
 		}
 	}
 
+	return nil
+}
+
+// validateReconcile 校验 scanner、retry、health 和 worker 配置有界且自洽。
+func validateReconcile(r ReconcileConfig) error {
+	positiveDurations := []struct {
+		field string
+		value time.Duration
+	}{
+		{"reconcile.interval", r.Interval},
+		{"reconcile.timeout", r.Timeout},
+		{"reconcile.retry_min", r.RetryMin},
+		{"reconcile.retry_max", r.RetryMax},
+		{"reconcile.running_check_interval", r.RunningCheckInterval},
+		{"reconcile.docker_freshness", r.DockerFreshness},
+		{"reconcile.runner_ready_timeout", r.RunnerReadyTimeout},
+		{"reconcile.deletion_timeout", r.DeletionTimeout},
+	}
+	for _, item := range positiveDurations {
+		if item.value <= 0 {
+			return &FieldError{Field: item.field, Message: "must be a positive duration"}
+		}
+	}
+	if r.Jitter < 0 || r.Jitter > r.Interval {
+		return &FieldError{Field: "reconcile.jitter", Message: "must be non-negative and not exceed reconcile.interval"}
+	}
+	if r.RetryMin > r.RetryMax {
+		return &FieldError{Field: "reconcile.retry_min", Message: "must not exceed reconcile.retry_max"}
+	}
+	if err := validateConfigIntRange("reconcile.page_size", r.PageSize, maxReconcilePageSize); err != nil {
+		return err
+	}
+	if err := validateConfigIntRange("reconcile.max_concurrent", r.MaxConcurrent, maxReconcileWorkers); err != nil {
+		return err
+	}
+	return validateConfigIntRange("reconcile.runner_unhealthy_threshold", r.RunnerUnhealthyThreshold, maxRunnerUnhealthyThreshold)
+}
+
+// validateIdempotency 校验 key 和 GC retention 均有界，且 GC 周期不会超过保留期。
+func validateIdempotency(i IdempotencyConfig) error {
+	if err := validateConfigIntRange("idempotency.max_key_bytes", i.MaxKeyBytes, maxIdempotencyKeyBytes); err != nil {
+		return err
+	}
+	if i.TerminalRetention <= 0 || i.TerminalRetention > maxIdempotencyTerminalRetention {
+		return &FieldError{Field: "idempotency.terminal_retention", Message: "must be within the safe duration bounds"}
+	}
+	if i.GCInterval <= 0 || i.GCInterval > i.TerminalRetention {
+		return &FieldError{Field: "idempotency.gc_interval", Message: "must be positive and not exceed idempotency.terminal_retention"}
+	}
+	return nil
+}
+
+// validateConfigIntRange 要求服务级 count 大于零且不超过固定安全上限。
+func validateConfigIntRange(field string, value, maximum int) error {
+	if value < 1 || value > maximum {
+		return &FieldError{Field: field, Message: "must be within the safe integer bounds"}
+	}
 	return nil
 }
 

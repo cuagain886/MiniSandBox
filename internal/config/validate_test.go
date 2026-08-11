@@ -218,6 +218,99 @@ func TestValidateRejections(t *testing.T) {
 	}
 }
 
+// TestValidatePhase3Rejections 逐条锁定 lease、scanner、retry、operation
+// semaphore、idempotency retention 与 admin 的启动前 fail-closed 规则。
+func TestValidatePhase3Rejections(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+		field  string
+	}{
+		{"minimum ttl zero", func(c *Config) { c.Limits.MinimumTTL = 0 }, "limits.minimum_ttl"},
+		{"minimum ttl exceeds default", func(c *Config) { c.Limits.MinimumTTL = c.Limits.DefaultTTL + time.Second }, "limits.minimum_ttl"},
+		{"max sandboxes zero", func(c *Config) { c.Limits.MaxSandboxes = 0 }, "limits.max_sandboxes"},
+		{"max sandboxes unbounded", func(c *Config) { c.Limits.MaxSandboxes = maxSandboxes + 1 }, "limits.max_sandboxes"},
+		{"create semaphore zero", func(c *Config) { c.Limits.MaxConcurrentCreates = 0 }, "limits.max_concurrent_creates"},
+		{"create semaphore unbounded", func(c *Config) { c.Limits.MaxConcurrentCreates = maxLifecycleOperationConcurrency + 1 }, "limits.max_concurrent_creates"},
+		{"pull semaphore zero", func(c *Config) { c.Limits.MaxConcurrentImagePulls = 0 }, "limits.max_concurrent_image_pulls"},
+		{"pull semaphore unbounded", func(c *Config) { c.Limits.MaxConcurrentImagePulls = maxLifecycleOperationConcurrency + 1 }, "limits.max_concurrent_image_pulls"},
+		{"delete semaphore zero", func(c *Config) { c.Limits.MaxConcurrentDeletes = 0 }, "limits.max_concurrent_deletes"},
+		{"delete semaphore unbounded", func(c *Config) { c.Limits.MaxConcurrentDeletes = maxLifecycleOperationConcurrency + 1 }, "limits.max_concurrent_deletes"},
+		{"jitter negative", func(c *Config) { c.Reconcile.Jitter = -time.Nanosecond }, "reconcile.jitter"},
+		{"jitter exceeds interval", func(c *Config) { c.Reconcile.Jitter = c.Reconcile.Interval + time.Nanosecond }, "reconcile.jitter"},
+		{"attempt timeout zero", func(c *Config) { c.Reconcile.Timeout = 0 }, "reconcile.timeout"},
+		{"page size zero", func(c *Config) { c.Reconcile.PageSize = 0 }, "reconcile.page_size"},
+		{"page size unbounded", func(c *Config) { c.Reconcile.PageSize = maxReconcilePageSize + 1 }, "reconcile.page_size"},
+		{"worker count zero", func(c *Config) { c.Reconcile.MaxConcurrent = 0 }, "reconcile.max_concurrent"},
+		{"worker count unbounded", func(c *Config) { c.Reconcile.MaxConcurrent = maxReconcileWorkers + 1 }, "reconcile.max_concurrent"},
+		{"retry min zero", func(c *Config) { c.Reconcile.RetryMin = 0 }, "reconcile.retry_min"},
+		{"retry max zero", func(c *Config) { c.Reconcile.RetryMax = 0 }, "reconcile.retry_max"},
+		{"retry min exceeds max", func(c *Config) { c.Reconcile.RetryMin = c.Reconcile.RetryMax + time.Nanosecond }, "reconcile.retry_min"},
+		{"running check zero", func(c *Config) { c.Reconcile.RunningCheckInterval = 0 }, "reconcile.running_check_interval"},
+		{"unhealthy threshold zero", func(c *Config) { c.Reconcile.RunnerUnhealthyThreshold = 0 }, "reconcile.runner_unhealthy_threshold"},
+		{"unhealthy threshold unbounded", func(c *Config) { c.Reconcile.RunnerUnhealthyThreshold = maxRunnerUnhealthyThreshold + 1 }, "reconcile.runner_unhealthy_threshold"},
+		{"docker freshness zero", func(c *Config) { c.Reconcile.DockerFreshness = 0 }, "reconcile.docker_freshness"},
+		{"idempotency key zero", func(c *Config) { c.Idempotency.MaxKeyBytes = 0 }, "idempotency.max_key_bytes"},
+		{"idempotency key unbounded", func(c *Config) { c.Idempotency.MaxKeyBytes = maxIdempotencyKeyBytes + 1 }, "idempotency.max_key_bytes"},
+		{"terminal retention zero", func(c *Config) { c.Idempotency.TerminalRetention = 0 }, "idempotency.terminal_retention"},
+		{"terminal retention unbounded", func(c *Config) { c.Idempotency.TerminalRetention = maxIdempotencyTerminalRetention + time.Nanosecond }, "idempotency.terminal_retention"},
+		{"idempotency gc zero", func(c *Config) { c.Idempotency.GCInterval = 0 }, "idempotency.gc_interval"},
+		{"idempotency gc exceeds retention", func(c *Config) { c.Idempotency.GCInterval = c.Idempotency.TerminalRetention + time.Nanosecond }, "idempotency.gc_interval"},
+		{"enabled admin token empty", func(c *Config) { c.Admin.Enabled = true }, "admin.token_file"},
+		{"enabled admin token relative", func(c *Config) { c.Admin.Enabled = true; c.Admin.TokenFile = "admin-token" }, "admin.token_file"},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			test.mutate(&cfg)
+			var fieldErr *FieldError
+			if err := cfg.Validate(); !errors.As(err, &fieldErr) {
+				t.Fatalf("expected FieldError, got %v", err)
+			}
+			if fieldErr.Field != test.field {
+				t.Fatalf("unexpected field: got %s, want %s", fieldErr.Field, test.field)
+			}
+		})
+	}
+}
+
+// TestValidatePhase3Boundaries 验证闭区间边界以及 admin 关闭时完全忽略
+// token path；enabled 的绝对路径也只做纯配置校验，不访问文件系统。
+func TestValidatePhase3Boundaries(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{"minimum equals default and maximum", func(c *Config) { c.Limits.MinimumTTL = c.Limits.MaximumTTL; c.Limits.DefaultTTL = c.Limits.MaximumTTL }},
+		{"jitter equals interval", func(c *Config) { c.Reconcile.Jitter = c.Reconcile.Interval }},
+		{"retry min equals max", func(c *Config) { c.Reconcile.RetryMin = c.Reconcile.RetryMax }},
+		{"bounded integer maxima", func(c *Config) {
+			c.Limits.MaxSandboxes = maxSandboxes
+			c.Limits.MaxConcurrentCreates = maxLifecycleOperationConcurrency
+			c.Limits.MaxConcurrentImagePulls = maxLifecycleOperationConcurrency
+			c.Limits.MaxConcurrentDeletes = maxLifecycleOperationConcurrency
+			c.Reconcile.PageSize = maxReconcilePageSize
+			c.Reconcile.MaxConcurrent = maxReconcileWorkers
+			c.Reconcile.RunnerUnhealthyThreshold = maxRunnerUnhealthyThreshold
+			c.Idempotency.MaxKeyBytes = maxIdempotencyKeyBytes
+		}},
+		{"gc equals retention", func(c *Config) { c.Idempotency.GCInterval = c.Idempotency.TerminalRetention }},
+		{"admin disabled ignores token path", func(c *Config) { c.Admin.TokenFile = "relative-and-not-readable" }},
+		{"admin enabled accepts nonexistent absolute path", func(c *Config) { c.Admin.Enabled = true; c.Admin.TokenFile = "/path/need/not/exist/during-validation" }},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			cfg := Default()
+			test.mutate(&cfg)
+			if err := cfg.Validate(); err != nil {
+				t.Fatalf("valid boundary rejected: %v", err)
+			}
+		})
+	}
+}
+
 // TestValidateRunnerRejections 逐项锁定 runner 身份、路径和有界限制的
 // fail-closed 规则，避免零值或过大配置绕过启动校验。
 func TestValidateRunnerRejections(t *testing.T) {
