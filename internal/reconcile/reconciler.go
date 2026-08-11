@@ -33,18 +33,25 @@ const (
 
 // Reconciler 将单个 sandbox 的期望状态幂等收敛到 runtime 实际状态。
 type Reconciler struct {
-	store         store.Store
-	runtime       runtimeport.Runtime
-	probe         RunnerProbe
-	shutdown      RunnerShutdown
-	locks         *KeyedLock
-	clock         Clock
-	random        Random
-	retryMin      time.Duration
-	retryMax      time.Duration
-	createLimiter runtimeport.Limiter
-	deleteLimiter runtimeport.Limiter
-	availability  runtimeport.OperationAvailability
+	store          store.Store
+	runtime        runtimeport.Runtime
+	probe          RunnerProbe
+	shutdown       RunnerShutdown
+	locks          *KeyedLock
+	clock          Clock
+	random         Random
+	retryMin       time.Duration
+	retryMax       time.Duration
+	createLimiter  runtimeport.Limiter
+	deleteLimiter  runtimeport.Limiter
+	availability   runtimeport.OperationAvailability
+	leaseProjector LeaseProjector
+}
+
+// LeaseProjector 把 Store 当前租约幂等投影到受管 runtime directory。
+type LeaseProjector interface {
+	// Write 原子替换固定 lease.json；不得改变 Docker label 或 Store。
+	Write(runtimeport.LeaseManifest) error
 }
 
 // OperationLimits 是 reconciler 共享 runtime 操作的固定并发上限。
@@ -76,6 +83,11 @@ func New(s store.Store, r runtimeport.Runtime, probe RunnerProbe) *Reconciler {
 	}
 	reconciler.availability, _ = r.(runtimeport.OperationAvailability)
 	return reconciler
+}
+
+// SetLeaseProjector 为 reconciler 装配可选租约投影器；必须在 worker 启动前调用。
+func (r *Reconciler) SetLeaseProjector(projector LeaseProjector) {
+	r.leaseProjector = projector
 }
 
 // NewWithRetry 创建使用显式时间、随机源和退避边界的状态收敛器。
@@ -197,6 +209,9 @@ func (r *Reconciler) reconcileRunning(
 	sandbox domain.Sandbox,
 ) error {
 	if sandbox.ObservedState == domain.StateRunning {
+		if err := r.projectLease(sandbox); err != nil {
+			return r.recordFailure(ctx, sandbox, err, sandbox.RuntimeID, RetryOperationRecover)
+		}
 		return r.resetSettledRetry(ctx, sandbox, domain.StateRunning, reasonRunning, messageRunning, sandbox.RuntimeID)
 	}
 	creating, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
@@ -246,7 +261,7 @@ func (r *Reconciler) reconcileRunning(
 	} else if err := r.probe.Probe(ctx, waiting.ID, actual.RunnerProtocolVersion); err != nil {
 		return r.failRunning(ctx, waiting, err, RetryOperationStart)
 	}
-	_, err = r.store.ResetRetry(ctx, store.RetryResetUpdate{
+	running, err := r.store.ResetRetry(ctx, store.RetryResetUpdate{
 		Observed: store.ObservedUpdate{
 			ID: waiting.ID, ExpectedRevision: waiting.Revision, State: domain.StateRunning,
 			Reason: reasonRunning, Message: messageRunning, RuntimeID: actual.RuntimeID,
@@ -256,7 +271,25 @@ func (r *Reconciler) reconcileRunning(
 	if err != nil {
 		return fmt.Errorf("mark sandbox running: %w", err)
 	}
+	if err := r.projectLease(running); err != nil {
+		return r.recordFailure(ctx, running, err, running.RuntimeID, RetryOperationRecover)
+	}
 	return nil
+}
+
+func (r *Reconciler) projectLease(sandbox domain.Sandbox) error {
+	if r.leaseProjector == nil || sandbox.DesiredState != domain.DesiredRunning ||
+		sandbox.ObservedState != domain.StateRunning {
+		return nil
+	}
+	if sandbox.ExpiresAt == nil || sandbox.Revision == 0 {
+		return fmt.Errorf("project sandbox lease: %w", store.ErrCorrupt)
+	}
+	return r.leaseProjector.Write(runtimeport.LeaseManifest{
+		SchemaVersion: runtimeport.LeaseManifestSchemaVersion,
+		SandboxID:     sandbox.ID, SpecHash: sandbox.SpecHash, ExpiresAt: sandbox.ExpiresAt.UTC(),
+		ProjectedStoreRevision: sandbox.Revision,
+	})
 }
 
 // ensureRuntime 在 keyed lock 内等待全局 create 配额；未取得配额时直接返回

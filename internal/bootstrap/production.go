@@ -208,6 +208,12 @@ func startProductionWorker(
 		factory.Close()
 		return nil, err
 	}
+	leaseWriter, err := runtimeport.NewLeaseManifestWriter(paths.RunRoot)
+	if err != nil {
+		factory.Close()
+		return nil, err
+	}
+	reconciler.SetLeaseProjector(leaseWriter)
 	worker, err := reconcile.NewWorkerPool(
 		queue,
 		cfg.Reconcile.MaxConcurrent,
