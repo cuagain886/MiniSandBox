@@ -86,4 +86,11 @@ func (v *TTLDueValidator) Validate(ctx context.Context, entry TTLHeapEntry) (res
 	return ValidatedTTLDue{Sandbox: current, CheckedAt: now}, true, nil
 }
 
+// sandboxLeaseDue 是 timer 与周期 scanner 共享的权威到期判定。
+func sandboxLeaseDue(sandbox domain.Sandbox, now time.Time) bool {
+	return sandbox.DesiredState == domain.DesiredRunning &&
+		sandbox.ObservedState != domain.StateTerminated && sandbox.ExpiresAt != nil &&
+		!now.Before(*sandbox.ExpiresAt)
+}
+
 var _ TTLDueStore = (storeport.Store)(nil)

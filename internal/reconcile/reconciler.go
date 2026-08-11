@@ -131,6 +131,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
 	if err != nil {
 		return fmt.Errorf("read sandbox for reconcile: %w", err)
 	}
+	sandbox, err = r.expireLeaseIfDue(ctx, sandbox)
+	if err != nil {
+		return err
+	}
 	switch sandbox.DesiredState {
 	case domain.DesiredRunning:
 		return r.reconcileRunning(ctx, sandbox)
@@ -139,6 +143,23 @@ func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
 	default:
 		return fmt.Errorf("sandbox desired state is invalid: %w", domain.ErrInvalid)
 	}
+}
+
+// expireLeaseIfDue 让周期 scanner 在 keyed lock 内复用 Store 的 TTL CAS。
+// 成功后直接返回 DesiredTerminated snapshot，继续进入既有删除收敛路径。
+func (r *Reconciler) expireLeaseIfDue(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {
+	now := r.clock.Now().UTC()
+	if !sandboxLeaseDue(sandbox, now) {
+		return sandbox, nil
+	}
+	updated, err := r.store.ExpireIntent(ctx, store.ExpireIntentUpdate{
+		ID: sandbox.ID, ExpectedRevision: sandbox.Revision,
+		ExpectedExpiresAt: sandbox.ExpiresAt.UTC(), Now: now,
+	})
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("submit scanned TTL expiry: %w", err)
+	}
+	return updated, nil
 }
 
 // FailEgress 以 CAS 记录已确认的 outbound 隔离漂移，并永久关闭当前 runner 准入。

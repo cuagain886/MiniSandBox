@@ -559,14 +559,16 @@ func TestReconcileTerminatedRecordIsNoOp(t *testing.T) {
 
 // reconcileStore 是维护 revision CAS 的最小状态化 Store fake。
 type reconcileStore struct {
-	mu         sync.Mutex
-	record     domain.Sandbox
-	events     *[]string
-	updates    []store.ObservedUpdate
-	failReason string
-	failErr    error
-	retryCalls []store.RetryUpdate
-	resetCalls []store.RetryResetUpdate
+	mu          sync.Mutex
+	record      domain.Sandbox
+	events      *[]string
+	updates     []store.ObservedUpdate
+	failReason  string
+	failErr     error
+	retryCalls  []store.RetryUpdate
+	resetCalls  []store.RetryResetUpdate
+	expireCalls []store.ExpireIntentUpdate
+	expireErr   error
 }
 
 // newReconcileStore 创建包含单条记录的状态化 Store fake。
@@ -657,8 +659,24 @@ func (s *reconcileStore) Renew(context.Context, store.RenewUpdate) (domain.Sandb
 }
 
 // ExpireIntent 未被当前 reconciler 测试使用。
-func (s *reconcileStore) ExpireIntent(context.Context, store.ExpireIntentUpdate) (domain.Sandbox, error) {
-	return domain.Sandbox{}, errors.New("unexpected ExpireIntent")
+func (s *reconcileStore) ExpireIntent(_ context.Context, update store.ExpireIntentUpdate) (domain.Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.expireCalls = append(s.expireCalls, update)
+	if s.expireErr != nil {
+		return domain.Sandbox{}, s.expireErr
+	}
+	if update.ID != s.record.ID || update.ExpectedRevision != s.record.Revision ||
+		s.record.ExpiresAt == nil || !s.record.ExpiresAt.Equal(update.ExpectedExpiresAt) {
+		return domain.Sandbox{}, domain.ErrConflict
+	}
+	*s.events = append(*s.events, "store-expire-intent")
+	s.record.DesiredState = domain.DesiredTerminated
+	s.record.ObservedState = domain.StateStopping
+	s.record.Reason = domain.SandboxReasonTTLExpired
+	s.record.Message = "Sandbox lease has expired."
+	s.record.Revision++
+	return s.record, nil
 }
 
 // ScheduleRetry 模拟失败状态、attempt 和绝对 next time 的同一 CAS 更新。
