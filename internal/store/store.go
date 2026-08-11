@@ -25,6 +25,28 @@ type ReconcileCandidateQuery struct {
 	Limit int
 }
 
+// IdempotencyGCQuery 描述一次有界的终态幂等记录回收事务。
+type IdempotencyGCQuery struct {
+	// Now 是 Store 判断终态保留期的权威 UTC 时间。
+	Now time.Time
+	// TerminalRetention 是 Terminated 后的最短保留期，不得小于 24 小时。
+	TerminalRetention time.Duration
+	// AfterScopeID 和 AfterKey 组成上一批最后一个稳定 key；均为空表示首批。
+	AfterScopeID string
+	AfterKey     string
+	// Limit 是本批最多删除的记录数，必须为正数。
+	Limit int
+}
+
+// IdempotencyGCBatch 描述一次原子回收的结果和下一页游标。
+type IdempotencyGCBatch struct {
+	// Deleted 是本事务实际删除的幂等记录数。
+	Deleted int
+	// LastScopeID 和 LastKey 是本批最后处理的稳定 key；空批保持为空。
+	LastScopeID string
+	LastKey     string
+}
+
 // ErrCorrupt 表示持久化记录无法安全还原为领域对象。
 //
 // 调用方应把它视为需要运维介入的数据完整性故障，不能按 NotFound 或 CAS

@@ -33,6 +33,8 @@ const idempotencyResponseSchemaVersion uint32 = 1
 
 const maxIdempotencyResponseBytes = 65_536
 
+const minimumIdempotencyTerminalRetention = 24 * time.Hour
+
 // cleanupPendingReason 标识仍有受管资源需要重试清理的失败记录。
 const cleanupPendingReason = "CLEANUP_PENDING"
 
@@ -396,6 +398,85 @@ func (s *Store) CreateIdempotent(
 	committed = true
 	response.Body = append([]byte(nil), response.Body...)
 	return storeport.IdempotentCreateResult{Sandbox: created, Response: response}, nil
+}
+
+// DeleteExpiredIdempotencyRecords 原子删除一批已超过终态保留期的幂等记录。
+//
+// 查询与删除共用 BEGIN IMMEDIATE，因此 create/replay 要么先完成并得到原记录，
+// 要么在 GC 提交后按新请求处理；任何时候都不会删除 sandbox record。
+func (s *Store) DeleteExpiredIdempotencyRecords(
+	ctx context.Context,
+	query storeport.IdempotencyGCQuery,
+) (storeport.IdempotencyGCBatch, error) {
+	if query.Now.IsZero() || query.TerminalRetention < minimumIdempotencyTerminalRetention ||
+		query.Limit < 1 || query.Limit > 10_000 ||
+		(query.AfterScopeID == "") != (query.AfterKey == "") {
+		return storeport.IdempotencyGCBatch{}, fmt.Errorf("validate idempotency GC query: %w", domain.ErrInvalid)
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return storeport.IdempotencyGCBatch{}, fmt.Errorf("acquire idempotency GC connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return storeport.IdempotencyGCBatch{}, fmt.Errorf("begin idempotency GC: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	cutoff := query.Now.UTC().Add(-query.TerminalRetention).Format(time.RFC3339Nano)
+	rows, err := conn.QueryContext(ctx, `SELECT i.scope_id, i.idempotency_key
+		FROM idempotency_records AS i
+		JOIN sandboxes AS s ON s.id = i.sandbox_id
+		WHERE s.observed_state = ? AND s.last_transition_at <= ?
+		  AND (i.scope_id > ? OR (i.scope_id = ? AND i.idempotency_key > ?))
+		ORDER BY i.scope_id ASC, i.idempotency_key ASC
+		LIMIT ?`, domain.StateTerminated, cutoff, query.AfterScopeID, query.AfterScopeID, query.AfterKey, query.Limit)
+	if err != nil {
+		return storeport.IdempotencyGCBatch{}, fmt.Errorf("select expired idempotency records: %w", err)
+	}
+	type recordKey struct{ scopeID, key string }
+	keys := make([]recordKey, 0, query.Limit)
+	for rows.Next() {
+		var key recordKey
+		if err := rows.Scan(&key.scopeID, &key.key); err != nil {
+			_ = rows.Close()
+			return storeport.IdempotencyGCBatch{}, fmt.Errorf("scan expired idempotency key: %w", err)
+		}
+		keys = append(keys, key)
+	}
+	if err := rows.Close(); err != nil {
+		return storeport.IdempotencyGCBatch{}, fmt.Errorf("close expired idempotency rows: %w", err)
+	}
+	if err := rows.Err(); err != nil {
+		return storeport.IdempotencyGCBatch{}, fmt.Errorf("iterate expired idempotency records: %w", err)
+	}
+	for _, key := range keys {
+		result, err := conn.ExecContext(ctx,
+			"DELETE FROM idempotency_records WHERE scope_id = ? AND idempotency_key = ?",
+			key.scopeID, key.key,
+		)
+		if err != nil {
+			return storeport.IdempotencyGCBatch{}, fmt.Errorf("delete expired idempotency record: %w", err)
+		}
+		if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+			return storeport.IdempotencyGCBatch{}, fmt.Errorf("delete expired idempotency result: affected=%d error=%v", affected, err)
+		}
+	}
+	if err := s.commitImmediate(ctx, conn); err != nil {
+		return storeport.IdempotencyGCBatch{}, fmt.Errorf("commit idempotency GC: %w", err)
+	}
+	committed = true
+	batch := storeport.IdempotencyGCBatch{Deleted: len(keys)}
+	if len(keys) > 0 {
+		batch.LastScopeID = keys[len(keys)-1].scopeID
+		batch.LastKey = keys[len(keys)-1].key
+	}
+	return batch, nil
 }
 
 // insertAtomicSandbox 是有 key 与无 key 创建共享的唯一 sandbox INSERT。
