@@ -489,6 +489,245 @@ func (s *Store) UpdateObserved(
 	return updated, nil
 }
 
+// Renew 只允许在租约尚未到期时延长 DesiredRunning 的非终态记录。
+func (s *Store) Renew(
+	ctx context.Context,
+	update storeport.RenewUpdate,
+) (domain.Sandbox, error) {
+	if update.Now.IsZero() || update.ExpiresAt.IsZero() || !update.ExpiresAt.After(update.Now) {
+		return domain.Sandbox{}, fmt.Errorf("renew sandbox lease: %w", domain.ErrInvalid)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("begin renew transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := update.Now.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE sandboxes
+		SET expires_at = ?, next_reconcile_at = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND revision = ? AND desired_state = ? AND observed_state <> ?
+			AND expires_at > ? AND expires_at < ?`,
+		update.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		now,
+		now,
+		update.ID,
+		update.ExpectedRevision,
+		domain.DesiredRunning,
+		domain.StateTerminated,
+		now,
+		update.ExpiresAt.UTC().Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("renew sandbox lease: %w", err)
+	}
+	return completeSandboxMutation(ctx, tx, update.ID, result, "renew sandbox lease")
+}
+
+// ExpireIntent 只允许匹配当前 expiry 的已到期 Running 租约提交删除意图。
+func (s *Store) ExpireIntent(
+	ctx context.Context,
+	update storeport.ExpireIntentUpdate,
+) (domain.Sandbox, error) {
+	if update.Now.IsZero() || update.ExpectedExpiresAt.IsZero() || update.Now.Before(update.ExpectedExpiresAt) {
+		return domain.Sandbox{}, fmt.Errorf("expire sandbox lease: %w", domain.ErrInvalid)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("begin expire transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	now := update.Now.UTC().Format(time.RFC3339Nano)
+	expectedExpiry := update.ExpectedExpiresAt.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE sandboxes
+		SET desired_state = ?, next_reconcile_at = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND revision = ? AND desired_state = ?
+			AND observed_state <> ? AND expires_at = ? AND expires_at <= ?`,
+		domain.DesiredTerminated,
+		now,
+		now,
+		update.ID,
+		update.ExpectedRevision,
+		domain.DesiredRunning,
+		domain.StateTerminated,
+		expectedExpiry,
+		now,
+	)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("expire sandbox lease: %w", err)
+	}
+	return completeSandboxMutation(ctx, tx, update.ID, result, "expire sandbox lease")
+}
+
+// ScheduleRetry 原子写入失败观测、自增 attempt 并持久化实际选定的 backoff 时间。
+func (s *Store) ScheduleRetry(
+	ctx context.Context,
+	update storeport.RetryUpdate,
+) (domain.Sandbox, error) {
+	if update.AttemptedAt.IsZero() || update.NextReconcileAt.IsZero() ||
+		!update.NextReconcileAt.After(update.AttemptedAt) || strings.TrimSpace(update.Reason) == "" {
+		return domain.Sandbox{}, fmt.Errorf("schedule sandbox retry: %w", domain.ErrInvalid)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("begin retry transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	attemptedAt := update.AttemptedAt.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE sandboxes
+		SET observed_state = ?, reason = ?, message = ?,
+			retry_attempt = retry_attempt + 1, next_reconcile_at = ?, last_reconcile_at = ?,
+			revision = revision + 1, updated_at = ?,
+			last_transition_at = CASE WHEN observed_state <> ? THEN ? ELSE last_transition_at END
+		WHERE id = ? AND revision = ? AND observed_state <> ? AND retry_attempt < 4294967295`,
+		domain.StateFailed,
+		update.Reason,
+		update.Message,
+		update.NextReconcileAt.UTC().Format(time.RFC3339Nano),
+		attemptedAt,
+		attemptedAt,
+		domain.StateFailed,
+		attemptedAt,
+		update.ID,
+		update.ExpectedRevision,
+		domain.StateTerminated,
+	)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("schedule sandbox retry: %w", err)
+	}
+	return completeSandboxMutation(ctx, tx, update.ID, result, "schedule sandbox retry")
+}
+
+// ResetRetry 原子持久化成功观测，并清除会造成重复唤醒的旧 retry metadata。
+func (s *Store) ResetRetry(
+	ctx context.Context,
+	update storeport.RetryResetUpdate,
+) (domain.Sandbox, error) {
+	if update.ReconciledAt.IsZero() {
+		return domain.Sandbox{}, fmt.Errorf("reset sandbox retry: %w", domain.ErrInvalid)
+	}
+	if _, err := parseObservedState(string(update.Observed.State)); err != nil {
+		return domain.Sandbox{}, fmt.Errorf("reset sandbox retry: %w", domain.ErrInvalid)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("begin retry reset transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	reconciledAt := update.ReconciledAt.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE sandboxes
+		SET observed_state = ?, reason = ?, message = ?, runtime_id = ?,
+			retry_attempt = 0, next_reconcile_at = NULL, last_reconcile_at = ?,
+			revision = revision + 1, updated_at = ?,
+			last_transition_at = CASE WHEN observed_state <> ? THEN ? ELSE last_transition_at END
+		WHERE id = ? AND revision = ? AND (
+			(desired_state = ? AND ? = ?) OR
+			(desired_state = ? AND ? = ?)
+		)`,
+		update.Observed.State,
+		update.Observed.Reason,
+		update.Observed.Message,
+		update.Observed.RuntimeID,
+		reconciledAt,
+		reconciledAt,
+		update.Observed.State,
+		reconciledAt,
+		update.Observed.ID,
+		update.Observed.ExpectedRevision,
+		domain.DesiredRunning,
+		update.Observed.State,
+		domain.StateRunning,
+		domain.DesiredTerminated,
+		update.Observed.State,
+		domain.StateTerminated,
+	)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("reset sandbox retry: %w", err)
+	}
+	return completeSandboxMutation(ctx, tx, update.Observed.ID, result, "reset sandbox retry")
+}
+
+// RecordHealthResult 只允许更新仍处于 Running 的活跃记录，避免旧 probe 覆盖删除意图。
+func (s *Store) RecordHealthResult(
+	ctx context.Context,
+	update storeport.HealthResultUpdate,
+) (domain.Sandbox, error) {
+	if update.CheckedAt.IsZero() {
+		return domain.Sandbox{}, fmt.Errorf("record sandbox health result: %w", domain.ErrInvalid)
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("begin health result transaction: %w", err)
+	}
+	defer func() { _ = tx.Rollback() }()
+
+	checkedAt := update.CheckedAt.UTC().Format(time.RFC3339Nano)
+	result, err := tx.ExecContext(
+		ctx,
+		`UPDATE sandboxes
+		SET health_failure_count = CASE
+				WHEN ? THEN 0
+				WHEN health_failure_count < 4294967295 THEN health_failure_count + 1
+				ELSE health_failure_count
+			END,
+			last_reconcile_at = ?, revision = revision + 1, updated_at = ?
+		WHERE id = ? AND revision = ? AND desired_state = ? AND observed_state = ?`,
+		update.Healthy,
+		checkedAt,
+		checkedAt,
+		update.ID,
+		update.ExpectedRevision,
+		domain.DesiredRunning,
+		domain.StateRunning,
+	)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("record sandbox health result: %w", err)
+	}
+	return completeSandboxMutation(ctx, tx, update.ID, result, "record sandbox health result")
+}
+
+// completeSandboxMutation 在同一事务快照内把零影响行区分为 NotFound 或 Conflict。
+func completeSandboxMutation(
+	ctx context.Context,
+	tx *sql.Tx,
+	id string,
+	result sql.Result,
+	operation string,
+) (domain.Sandbox, error) {
+	affected, err := result.RowsAffected()
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("%s result: %w", operation, err)
+	}
+	if affected > 1 {
+		return domain.Sandbox{}, fmt.Errorf("%s: expected at most one affected row, got %d", operation, affected)
+	}
+	current, err := scanSandbox(tx.QueryRowContext(ctx, selectSandboxByIDQuery, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return domain.Sandbox{}, domain.ErrNotFound
+	}
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("read %s result: %w", operation, err)
+	}
+	if affected == 0 {
+		return domain.Sandbox{}, domain.ErrConflict
+	}
+	if err := tx.Commit(); err != nil {
+		return domain.Sandbox{}, fmt.Errorf("commit %s: %w", operation, err)
+	}
+	return current, nil
+}
+
 // ListReconcileCandidates 按 ID keyset 返回当前真正 due 的记录。
 //
 // expiry 绕过旧 retry backoff；其他状态转换、cleanup、scheduled retry 和

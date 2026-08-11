@@ -47,6 +47,66 @@ type ObservedUpdate struct {
 	RuntimeID string
 }
 
+// RenewUpdate 描述一次只能延长有效 Running 租约的 CAS 更新。
+type RenewUpdate struct {
+	// ID 是目标 sandbox 标识。
+	ID string
+	// ExpectedRevision 是读取租约时观察到的 revision。
+	ExpectedRevision uint64
+	// Now 是服务端校验旧租约仍未到期及提前 reconcile 的 UTC 时间。
+	Now time.Time
+	// ExpiresAt 是严格晚于当前值的新 UTC 到期时间。
+	ExpiresAt time.Time
+}
+
+// ExpireIntentUpdate 描述由当前租约 timer 提交的终止意图。
+type ExpireIntentUpdate struct {
+	// ID 是目标 sandbox 标识。
+	ID string
+	// ExpectedRevision 是提交终止意图时读取到的 revision。
+	ExpectedRevision uint64
+	// ExpectedExpiresAt 是 timer 携带的租约身份，必须与 Store 当前值完全相同。
+	ExpectedExpiresAt time.Time
+	// Now 是确认租约已经到期并提前 reconcile 的 UTC 时间。
+	Now time.Time
+}
+
+// RetryUpdate 描述一次失败 reconcile 的原子持久化结果。
+type RetryUpdate struct {
+	// ID 是目标 sandbox 标识。
+	ID string
+	// ExpectedRevision 是本次 reconcile 读取到的 revision。
+	ExpectedRevision uint64
+	// AttemptedAt 是本次尝试完成的 UTC 时间。
+	AttemptedAt time.Time
+	// NextReconcileAt 是策略选定且严格晚于 AttemptedAt 的下次 UTC 时间。
+	NextReconcileAt time.Time
+	// Reason 是安全、稳定且机器可读的失败原因。
+	Reason string
+	// Message 是不含秘密和底层错误文本的人类可读说明。
+	Message string
+}
+
+// RetryResetUpdate 描述一次成功收敛及 retry metadata 清零的原子结果。
+type RetryResetUpdate struct {
+	// Observed 是本次成功收敛要持久化的观测状态和 runtime identity。
+	Observed ObservedUpdate
+	// ReconciledAt 是本次尝试成功完成的 UTC 时间。
+	ReconciledAt time.Time
+}
+
+// HealthResultUpdate 描述一次 Running runner health probe 的 CAS 结果。
+type HealthResultUpdate struct {
+	// ID 是目标 sandbox 标识。
+	ID string
+	// ExpectedRevision 是 probe 开始前读取到的 revision。
+	ExpectedRevision uint64
+	// CheckedAt 是 probe 完成的 UTC 时间。
+	CheckedAt time.Time
+	// Healthy 为 true 时连续失败计数归零，否则饱和递增一。
+	Healthy bool
+}
+
 // Store 定义 sandbox 期望状态的持久化能力。
 //
 // 所有更新都基于 revision CAS：expectedRevision 与存量记录不一致时必须
@@ -72,6 +132,16 @@ type Store interface {
 		ctx context.Context,
 		update ObservedUpdate,
 	) (domain.Sandbox, error)
+	// Renew 以 CAS 延长尚未到期且 desired/observed 均未终止的租约。
+	Renew(ctx context.Context, update RenewUpdate) (domain.Sandbox, error)
+	// ExpireIntent 仅在 revision、当前 expiry 和到期时间同时匹配时提交终止意图。
+	ExpireIntent(ctx context.Context, update ExpireIntentUpdate) (domain.Sandbox, error)
+	// ScheduleRetry 原子记录失败结果、自增 attempt 并保存选定的下次时间。
+	ScheduleRetry(ctx context.Context, update RetryUpdate) (domain.Sandbox, error)
+	// ResetRetry 原子记录成功观测结果并清空旧 retry metadata。
+	ResetRetry(ctx context.Context, update RetryResetUpdate) (domain.Sandbox, error)
+	// RecordHealthResult 原子记录 Running probe 时间及连续失败计数。
+	RecordHealthResult(ctx context.Context, update HealthResultUpdate) (domain.Sandbox, error)
 	// ListReconcileCandidates 返回一页在 query 时间边界上真正 due 的记录。
 	//
 	// 结果严格按 ID 递增，不使用 OFFSET；调用方用最后一个 ID 继续下一页。

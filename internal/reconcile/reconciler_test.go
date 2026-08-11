@@ -507,6 +507,31 @@ func (s *reconcileStore) ListReconcileCandidates(
 	return nil, errors.New("unexpected ListReconcileCandidates")
 }
 
+// Renew 未被当前 reconciler 测试使用。
+func (s *reconcileStore) Renew(context.Context, store.RenewUpdate) (domain.Sandbox, error) {
+	return domain.Sandbox{}, errors.New("unexpected Renew")
+}
+
+// ExpireIntent 未被当前 reconciler 测试使用。
+func (s *reconcileStore) ExpireIntent(context.Context, store.ExpireIntentUpdate) (domain.Sandbox, error) {
+	return domain.Sandbox{}, errors.New("unexpected ExpireIntent")
+}
+
+// ScheduleRetry 未被当前 reconciler 测试使用。
+func (s *reconcileStore) ScheduleRetry(context.Context, store.RetryUpdate) (domain.Sandbox, error) {
+	return domain.Sandbox{}, errors.New("unexpected ScheduleRetry")
+}
+
+// ResetRetry 未被当前 reconciler 测试使用。
+func (s *reconcileStore) ResetRetry(context.Context, store.RetryResetUpdate) (domain.Sandbox, error) {
+	return domain.Sandbox{}, errors.New("unexpected ResetRetry")
+}
+
+// RecordHealthResult 未被当前 reconciler 测试使用。
+func (s *reconcileStore) RecordHealthResult(context.Context, store.HealthResultUpdate) (domain.Sandbox, error) {
+	return domain.Sandbox{}, errors.New("unexpected RecordHealthResult")
+}
+
 // ListAll 未被单 ID reconcile 使用。
 func (s *reconcileStore) ListAll(context.Context) ([]domain.Sandbox, error) {
 	return nil, errors.New("unexpected ListAll")

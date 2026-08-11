@@ -40,6 +40,21 @@ type FakeStore struct {
 	updateObservedResult domain.Sandbox
 	updateObservedErr    error
 	updateObservedCalls  []storeport.ObservedUpdate
+	renewResult          domain.Sandbox
+	renewErr             error
+	renewCalls           []storeport.RenewUpdate
+	expireIntentResult   domain.Sandbox
+	expireIntentErr      error
+	expireIntentCalls    []storeport.ExpireIntentUpdate
+	scheduleRetryResult  domain.Sandbox
+	scheduleRetryErr     error
+	scheduleRetryCalls   []storeport.RetryUpdate
+	resetRetryResult     domain.Sandbox
+	resetRetryErr        error
+	resetRetryCalls      []storeport.RetryResetUpdate
+	healthResult         domain.Sandbox
+	healthErr            error
+	healthCalls          []storeport.HealthResultUpdate
 
 	listCandidatesResult []domain.Sandbox
 	listCandidatesErr    error
@@ -156,6 +171,116 @@ func (f *FakeStore) UpdateObserved(
 	defer f.mu.Unlock()
 	f.updateObservedCalls = append(f.updateObservedCalls, update)
 	return f.updateObservedResult, f.updateObservedErr
+}
+
+// SetRenewResult 配置 Renew 返回的领域对象和错误。
+func (f *FakeStore) SetRenewResult(result domain.Sandbox, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renewResult, f.renewErr = result, err
+}
+
+// RenewCalls 返回 Renew 调用参数的独立快照。
+func (f *FakeStore) RenewCalls() []storeport.RenewUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]storeport.RenewUpdate(nil), f.renewCalls...)
+}
+
+// Renew 记录租约 CAS 参数并返回预先配置的结果。
+func (f *FakeStore) Renew(_ context.Context, update storeport.RenewUpdate) (domain.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.renewCalls = append(f.renewCalls, update)
+	return f.renewResult, f.renewErr
+}
+
+// SetExpireIntentResult 配置 ExpireIntent 返回的领域对象和错误。
+func (f *FakeStore) SetExpireIntentResult(result domain.Sandbox, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expireIntentResult, f.expireIntentErr = result, err
+}
+
+// ExpireIntentCalls 返回 ExpireIntent 调用参数的独立快照。
+func (f *FakeStore) ExpireIntentCalls() []storeport.ExpireIntentUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]storeport.ExpireIntentUpdate(nil), f.expireIntentCalls...)
+}
+
+// ExpireIntent 记录到期意图参数并返回预先配置的结果。
+func (f *FakeStore) ExpireIntent(_ context.Context, update storeport.ExpireIntentUpdate) (domain.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.expireIntentCalls = append(f.expireIntentCalls, update)
+	return f.expireIntentResult, f.expireIntentErr
+}
+
+// SetScheduleRetryResult 配置 ScheduleRetry 返回的领域对象和错误。
+func (f *FakeStore) SetScheduleRetryResult(result domain.Sandbox, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scheduleRetryResult, f.scheduleRetryErr = result, err
+}
+
+// ScheduleRetryCalls 返回 ScheduleRetry 调用参数的独立快照。
+func (f *FakeStore) ScheduleRetryCalls() []storeport.RetryUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]storeport.RetryUpdate(nil), f.scheduleRetryCalls...)
+}
+
+// ScheduleRetry 记录失败调度参数并返回预先配置的结果。
+func (f *FakeStore) ScheduleRetry(_ context.Context, update storeport.RetryUpdate) (domain.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.scheduleRetryCalls = append(f.scheduleRetryCalls, update)
+	return f.scheduleRetryResult, f.scheduleRetryErr
+}
+
+// SetResetRetryResult 配置 ResetRetry 返回的领域对象和错误。
+func (f *FakeStore) SetResetRetryResult(result domain.Sandbox, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resetRetryResult, f.resetRetryErr = result, err
+}
+
+// ResetRetryCalls 返回 ResetRetry 调用参数的独立快照。
+func (f *FakeStore) ResetRetryCalls() []storeport.RetryResetUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]storeport.RetryResetUpdate(nil), f.resetRetryCalls...)
+}
+
+// ResetRetry 记录成功收敛参数并返回预先配置的结果。
+func (f *FakeStore) ResetRetry(_ context.Context, update storeport.RetryResetUpdate) (domain.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.resetRetryCalls = append(f.resetRetryCalls, update)
+	return f.resetRetryResult, f.resetRetryErr
+}
+
+// SetHealthResult 配置 RecordHealthResult 返回的领域对象和错误。
+func (f *FakeStore) SetHealthResult(result domain.Sandbox, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.healthResult, f.healthErr = result, err
+}
+
+// HealthResultCalls 返回 RecordHealthResult 调用参数的独立快照。
+func (f *FakeStore) HealthResultCalls() []storeport.HealthResultUpdate {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]storeport.HealthResultUpdate(nil), f.healthCalls...)
+}
+
+// RecordHealthResult 记录 probe 结果并返回预先配置的结果。
+func (f *FakeStore) RecordHealthResult(_ context.Context, update storeport.HealthResultUpdate) (domain.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.healthCalls = append(f.healthCalls, update)
+	return f.healthResult, f.healthErr
 }
 
 // SetListReconcileCandidatesResult 配置候选查询返回的记录和错误。

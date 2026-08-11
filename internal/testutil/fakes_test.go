@@ -69,6 +69,38 @@ func TestFakeStoreRecordsCallsAndInjectsResults(t *testing.T) {
 		t.Fatalf("UpdateObserved calls: %#v", got)
 	}
 
+	now := time.Now().UTC()
+	renewCall := storeport.RenewUpdate{ID: sandbox.ID, ExpectedRevision: 1, Now: now, ExpiresAt: now.Add(time.Hour)}
+	fake.SetRenewResult(sandbox, injected)
+	_, _ = fake.Renew(ctx, renewCall)
+	if got := fake.RenewCalls(); !reflect.DeepEqual(got, []storeport.RenewUpdate{renewCall}) {
+		t.Fatalf("Renew calls: %#v", got)
+	}
+	expireCall := storeport.ExpireIntentUpdate{ID: sandbox.ID, ExpectedRevision: 1, ExpectedExpiresAt: now, Now: now}
+	fake.SetExpireIntentResult(sandbox, injected)
+	_, _ = fake.ExpireIntent(ctx, expireCall)
+	if got := fake.ExpireIntentCalls(); !reflect.DeepEqual(got, []storeport.ExpireIntentUpdate{expireCall}) {
+		t.Fatalf("ExpireIntent calls: %#v", got)
+	}
+	retryCall := storeport.RetryUpdate{ID: sandbox.ID, ExpectedRevision: 1, AttemptedAt: now, NextReconcileAt: now.Add(time.Second)}
+	fake.SetScheduleRetryResult(sandbox, injected)
+	_, _ = fake.ScheduleRetry(ctx, retryCall)
+	if got := fake.ScheduleRetryCalls(); !reflect.DeepEqual(got, []storeport.RetryUpdate{retryCall}) {
+		t.Fatalf("ScheduleRetry calls: %#v", got)
+	}
+	resetCall := storeport.RetryResetUpdate{Observed: observedCall, ReconciledAt: now}
+	fake.SetResetRetryResult(sandbox, injected)
+	_, _ = fake.ResetRetry(ctx, resetCall)
+	if got := fake.ResetRetryCalls(); !reflect.DeepEqual(got, []storeport.RetryResetUpdate{resetCall}) {
+		t.Fatalf("ResetRetry calls: %#v", got)
+	}
+	healthCall := storeport.HealthResultUpdate{ID: sandbox.ID, ExpectedRevision: 1, CheckedAt: now, Healthy: true}
+	fake.SetHealthResult(sandbox, injected)
+	_, _ = fake.RecordHealthResult(ctx, healthCall)
+	if got := fake.HealthResultCalls(); !reflect.DeepEqual(got, []storeport.HealthResultUpdate{healthCall}) {
+		t.Fatalf("RecordHealthResult calls: %#v", got)
+	}
+
 	fake.SetListReconcileCandidatesResult([]domain.Sandbox{sandbox}, injected)
 	query := storeport.ReconcileCandidateQuery{
 		Now:           time.Now(),
@@ -168,6 +200,12 @@ func TestFakesConcurrentAccess(t *testing.T) {
 				ID:    sandbox.ID,
 				State: domain.StateRunning,
 			})
+			now := time.Now()
+			_, _ = storeFake.Renew(ctx, storeport.RenewUpdate{ID: sandbox.ID, Now: now, ExpiresAt: now.Add(time.Hour)})
+			_, _ = storeFake.ExpireIntent(ctx, storeport.ExpireIntentUpdate{ID: sandbox.ID, ExpectedExpiresAt: now, Now: now})
+			_, _ = storeFake.ScheduleRetry(ctx, storeport.RetryUpdate{ID: sandbox.ID, AttemptedAt: now, NextReconcileAt: now.Add(time.Second)})
+			_, _ = storeFake.ResetRetry(ctx, storeport.RetryResetUpdate{Observed: storeport.ObservedUpdate{ID: sandbox.ID}, ReconciledAt: now})
+			_, _ = storeFake.RecordHealthResult(ctx, storeport.HealthResultUpdate{ID: sandbox.ID, CheckedAt: now})
 			_, _ = storeFake.ListReconcileCandidates(
 				ctx,
 				storeport.ReconcileCandidateQuery{
