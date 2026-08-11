@@ -116,3 +116,16 @@ func (h *TTLHeap) Len() int {
 	defer h.mu.Unlock()
 	return len(h.items)
 }
+
+// popDue 原子移除不晚于 now 的全部 entry，并保持 heap 的稳定弹出顺序。
+func (h *TTLHeap) popDue(now time.Time) []TTLHeapEntry {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	var due []TTLHeapEntry
+	for len(h.items) > 0 && !h.items[0].entry.ExpectedExpiresAt.After(now) {
+		item := heap.Pop(&h.items).(*ttlHeapItem)
+		delete(h.indexes, item.entry.SandboxID)
+		due = append(due, item.entry)
+	}
+	return due
+}
