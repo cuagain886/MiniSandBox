@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	mobyimage "github.com/moby/moby/api/types/image"
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
+	runtimeport "minisandbox/internal/runtime"
 )
 
 // TestParseImageReferenceAcceptsCommonForms 验证普通 name、tag、registry 和 digest。
@@ -121,6 +123,7 @@ func TestEnsureImageUsesExistingImage(t *testing.T) {
 		engine,
 		"alpine:3.22",
 		time.Second,
+		panicLimiter{},
 	)
 	if err != nil {
 		t.Fatalf("ensure existing image: %v", err)
@@ -132,6 +135,100 @@ func TestEnsureImageUsesExistingImage(t *testing.T) {
 			inspectCalls,
 			pullCalls,
 		)
+	}
+}
+
+// TestEnsureImagePullLimiterBoundsActualPulls 验证多个 create 可并行 inspect，
+// 但真正的 registry pull 不超过独立上限。
+func TestEnsureImagePullLimiterBoundsActualPulls(t *testing.T) {
+	limiter, _ := runtimeport.NewLimiter(2)
+	started := make(chan struct{}, 5)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	active, maximum := 0, 0
+	engine := &fakeEngine{
+		imageInspectFunc: func(context.Context, string, ...mobyclient.ImageInspectOption) (mobyclient.ImageInspectResult, error) {
+			return mobyclient.ImageInspectResult{}, cerrdefs.ErrNotFound
+		},
+		imagePullFunc: func(context.Context, string, mobyclient.ImagePullOptions) (mobyclient.ImagePullResponse, error) {
+			mu.Lock()
+			active++
+			if active > maximum {
+				maximum = active
+			}
+			mu.Unlock()
+			started <- struct{}{}
+			return &blockingPullResponse{fakePullResponse: newFakePullResponse(nil), release: release, done: func() {
+				mu.Lock()
+				active--
+				mu.Unlock()
+			}}, nil
+		},
+	}
+	var wait sync.WaitGroup
+	for index := 0; index < 5; index++ {
+		wait.Add(1)
+		go func(index int) {
+			defer wait.Done()
+			_, _ = ensureImage(context.Background(), engine, "example.com/image:"+string(rune('a'+index)), time.Second, limiter)
+		}(index)
+	}
+	waitImageSignal(t, started)
+	waitImageSignal(t, started)
+	select {
+	case <-started:
+		t.Fatal("image pull limiter admitted a third pull")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	wait.Wait()
+	mu.Lock()
+	defer mu.Unlock()
+	if maximum != 2 {
+		t.Fatalf("maximum pulls: got %d, want 2", maximum)
+	}
+}
+
+// TestEnsureImagePullLimiterReleasesOnFailure 验证 ImagePull 失败后 slot 可立即复用。
+func TestEnsureImagePullLimiterReleasesOnFailure(t *testing.T) {
+	limiter, _ := runtimeport.NewLimiter(1)
+	engine := &fakeEngine{
+		imageInspectFunc: func(context.Context, string, ...mobyclient.ImageInspectOption) (mobyclient.ImageInspectResult, error) {
+			return mobyclient.ImageInspectResult{}, cerrdefs.ErrNotFound
+		},
+		imagePullFunc: func(context.Context, string, mobyclient.ImagePullOptions) (mobyclient.ImagePullResponse, error) {
+			return nil, errors.New("pull failed")
+		},
+	}
+	for range 2 {
+		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+		_, err := ensureImage(ctx, engine, "alpine:3.22", time.Second, limiter)
+		cancel()
+		var pullErr *ImagePullFailedError
+		if !errors.As(err, &pullErr) {
+			t.Fatalf("pull failure: %v", err)
+		}
+	}
+}
+
+// TestEnsureImagePullLimiterWaitHonorsCancellation 验证等待 slot 期间不会调用 Engine。
+func TestEnsureImagePullLimiterWaitHonorsCancellation(t *testing.T) {
+	limiter, _ := runtimeport.NewLimiter(1)
+	release, _ := limiter.Acquire(context.Background())
+	defer release()
+	pullCalls := 0
+	engine := &fakeEngine{
+		imageInspectFunc: func(context.Context, string, ...mobyclient.ImageInspectOption) (mobyclient.ImageInspectResult, error) {
+			return mobyclient.ImageInspectResult{}, cerrdefs.ErrNotFound
+		},
+		imagePullFunc: func(context.Context, string, mobyclient.ImagePullOptions) (mobyclient.ImagePullResponse, error) {
+			pullCalls++
+			return nil, nil
+		},
+	}
+	_, err := ensureImage(context.Background(), engine, "alpine:3.22", 20*time.Millisecond, limiter)
+	if !errors.Is(err, context.DeadlineExceeded) || pullCalls != 0 {
+		t.Fatalf("canceled wait: calls=%d err=%v", pullCalls, err)
 	}
 }
 
@@ -174,6 +271,7 @@ func TestEnsureImagePullsMissingImage(t *testing.T) {
 		engine,
 		"alpine:3.22",
 		time.Second,
+		nil,
 	)
 	if err != nil {
 		t.Fatalf("ensure missing image: %v", err)
@@ -240,6 +338,7 @@ func TestEnsureImageClassifiesPullFailures(t *testing.T) {
 				engine,
 				"alpine:3.22",
 				time.Second,
+				nil,
 			)
 			var pullError *ImagePullFailedError
 			if !errors.As(err, &pullError) || !errors.Is(err, cause) {
@@ -273,6 +372,7 @@ func TestEnsureImageTimeoutIsRuntimeUnavailable(t *testing.T) {
 		engine,
 		"alpine:3.22",
 		10*time.Millisecond,
+		nil,
 	)
 	var unavailable *RuntimeUnavailableError
 	if !errors.As(err, &unavailable) ||
@@ -355,6 +455,7 @@ func TestEnsureImageRejectsPulledPlatformMismatch(t *testing.T) {
 		engine,
 		"alpine:3.22",
 		time.Second,
+		nil,
 	)
 	var artifactError *ArtifactInvalidError
 	if !errors.As(err, &artifactError) {
@@ -375,5 +476,41 @@ func imageInspectResponse(id string) mobyimage.InspectResponse {
 		ID:           id,
 		Os:           "linux",
 		Architecture: "amd64",
+	}
+}
+
+type panicLimiter struct{}
+
+func (panicLimiter) Acquire(context.Context) (func(), error) {
+	panic("cached image acquired pull limiter")
+}
+
+type blockingPullResponse struct {
+	*fakePullResponse
+	release <-chan struct{}
+	done    func()
+}
+
+func (r *blockingPullResponse) Wait(ctx context.Context) error {
+	select {
+	case <-r.release:
+		if r.done != nil {
+			r.done()
+		}
+		return nil
+	case <-ctx.Done():
+		if r.done != nil {
+			r.done()
+		}
+		return ctx.Err()
+	}
+}
+
+func waitImageSignal(t *testing.T, signal <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for image pull")
 	}
 }

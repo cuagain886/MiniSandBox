@@ -133,16 +133,17 @@ func (e *RuntimeUnavailableError) FailureReason() string {
 
 // Runtime 是 runtime 端口的 Docker Engine 实现。
 type Runtime struct {
-	engine          Engine
-	netNSResolver   NetNSResolver
-	dataDirectory   string
-	artifacts       ArtifactProvider
-	createTimeout   time.Duration
-	egressConfig    *EgressPlatformConfig
-	bootstrap       RunnerBootstrapProvider
-	bootstrapCloser io.Closer
-	egressLocksMu   sync.Mutex
-	egressLocks     map[string]*egressAttachLock
+	engine           Engine
+	netNSResolver    NetNSResolver
+	dataDirectory    string
+	artifacts        ArtifactProvider
+	createTimeout    time.Duration
+	egressConfig     *EgressPlatformConfig
+	bootstrap        RunnerBootstrapProvider
+	bootstrapCloser  io.Closer
+	imagePullLimiter runtimeport.Limiter
+	egressLocksMu    sync.Mutex
+	egressLocks      map[string]*egressAttachLock
 }
 
 // RunnerBootstrapProvider 为单个 sandbox 在受管 runtime 目录准备可信配置与一次性凭据。
@@ -180,6 +181,8 @@ type RuntimeOptions struct {
 	Egress *EgressPlatformConfig
 	// Bootstrap 负责在容器启动前重建 runner 可信配置和一次性 token。
 	Bootstrap RunnerBootstrapProvider
+	// ImagePullLimiter 是主容器与 egress sidecar 共享的实际拉取并发门禁；nil 表示不限制。
+	ImagePullLimiter runtimeport.Limiter
 }
 
 // New 创建 Docker client 并立即探测 daemon。
@@ -264,6 +267,7 @@ func (r *Runtime) applyOptions(options RuntimeOptions) {
 	r.createTimeout = options.CreateTimeout
 	r.egressConfig = nil
 	r.bootstrap = options.Bootstrap
+	r.imagePullLimiter = options.ImagePullLimiter
 	r.bootstrapCloser, _ = options.Bootstrap.(io.Closer)
 	if options.Egress != nil {
 		copy := *options.Egress

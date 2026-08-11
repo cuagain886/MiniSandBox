@@ -25,7 +25,7 @@ func (r *Runtime) EnsureEgress(ctx context.Context, request runtimeport.EgressRe
 	}
 	unlock := r.lockEgressAttach(request.SandboxID)
 	defer unlock()
-	if _, err := ensureImage(ctx, r.engine, request.Image, r.createTimeout); err != nil {
+	if _, err := ensureImage(ctx, r.engine, request.Image, r.createTimeout, r.imagePullLimiter); err != nil {
 		return runtimeport.EgressActual{}, err
 	}
 	network, err := ensureEgressNetwork(ctx, engine)

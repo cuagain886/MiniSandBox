@@ -111,6 +111,7 @@ func ensureImage(
 	engine Engine,
 	value string,
 	createTimeout time.Duration,
+	pullLimiter runtimeport.Limiter,
 ) (mobyclient.ImageInspectResult, error) {
 	imageReference, err := ParseImageReference(value)
 	if err != nil {
@@ -133,34 +134,8 @@ func ensureImage(
 		return mobyclient.ImageInspectResult{}, runtimeUnavailable(err)
 	}
 
-	stream, err := engine.ImagePull(
-		operationContext,
-		imageReference.Name,
-		mobyclient.ImagePullOptions{},
-	)
-	if err != nil {
-		return mobyclient.ImageInspectResult{}, classifyPullError(
-			operationContext,
-			err,
-		)
-	}
-	if stream == nil {
-		return mobyclient.ImageInspectResult{}, &ImagePullFailedError{
-			cause: errors.New("docker returned a nil pull stream"),
-		}
-	}
-	waitErr := stream.Wait(operationContext)
-	closeErr := stream.Close()
-	if waitErr != nil {
-		return mobyclient.ImageInspectResult{}, classifyPullError(
-			operationContext,
-			waitErr,
-		)
-	}
-	if closeErr != nil {
-		return mobyclient.ImageInspectResult{}, &ImagePullFailedError{
-			cause: closeErr,
-		}
+	if err := pullMissingImage(operationContext, engine, imageReference.Name, pullLimiter); err != nil {
+		return mobyclient.ImageInspectResult{}, err
 	}
 
 	inspection, err = engine.ImageInspect(operationContext, imageReference.Name)
@@ -176,6 +151,35 @@ func ensureImage(
 		return mobyclient.ImageInspectResult{}, err
 	}
 	return inspection, nil
+}
+
+// pullMissingImage 只在已确认本地缺失后占用全局 slot，并覆盖完整响应流生命周期。
+func pullMissingImage(ctx context.Context, engine Engine, image string, limiter runtimeport.Limiter) error {
+	var release func()
+	if limiter != nil {
+		var err error
+		release, err = limiter.Acquire(ctx)
+		if err != nil {
+			return classifyPullError(ctx, err)
+		}
+		defer release()
+	}
+	stream, err := engine.ImagePull(ctx, image, mobyclient.ImagePullOptions{})
+	if err != nil {
+		return classifyPullError(ctx, err)
+	}
+	if stream == nil {
+		return &ImagePullFailedError{cause: errors.New("docker returned a nil pull stream")}
+	}
+	waitErr := stream.Wait(ctx)
+	closeErr := stream.Close()
+	if waitErr != nil {
+		return classifyPullError(ctx, waitErr)
+	}
+	if closeErr != nil {
+		return &ImagePullFailedError{cause: closeErr}
+	}
+	return nil
 }
 
 // validateImagePlatform 强制镜像与唯一的 linux/amd64 artifact 集合匹配。

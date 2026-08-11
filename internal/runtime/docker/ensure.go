@@ -74,6 +74,7 @@ func (r *Runtime) Ensure(
 		r.engine,
 		sandbox.Spec.Image,
 		r.createTimeout,
+		r.imagePullLimiter,
 	); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}

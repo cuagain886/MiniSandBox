@@ -83,15 +83,20 @@ func openProductionRuntime(
 			Limits: cfg.Egress.Limits, ReadyTimeout: cfg.Egress.ReadyTimeout,
 		}
 	}
+	imagePullLimiter, err := runtimeport.NewLimiter(cfg.Limits.MaxConcurrentImagePulls)
+	if err != nil {
+		return nil, errors.Join(err, stager.Close())
+	}
 	runtime, err := dockerruntime.New(
 		ctx,
 		cfg.Runtime.DockerHost,
 		dockerruntime.RuntimeOptions{
-			DataDirectory: paths.DataDirectory,
-			Artifacts:     artifacts,
-			CreateTimeout: defaultRuntimeCreateTimeout,
-			Egress:        egress,
-			Bootstrap:     stager,
+			DataDirectory:    paths.DataDirectory,
+			Artifacts:        artifacts,
+			CreateTimeout:    defaultRuntimeCreateTimeout,
+			Egress:           egress,
+			Bootstrap:        stager,
+			ImagePullLimiter: imagePullLimiter,
 		},
 	)
 	if err != nil {
