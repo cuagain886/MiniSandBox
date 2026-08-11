@@ -165,10 +165,10 @@ func TestMigrateV3ReopenAndSchema(t *testing.T) {
 		t.Fatalf("open database: %v", err)
 	}
 	migrateToV2(t, first)
-	if err := first.Migrate(context.Background()); err != nil {
+	if err := first.migrateWith(context.Background(), migrations[:3]); err != nil {
 		t.Fatalf("migrate v2 to v3: %v", err)
 	}
-	if err := first.Migrate(context.Background()); err != nil {
+	if err := first.migrateWith(context.Background(), migrations[:3]); err != nil {
 		t.Fatalf("repeat v3 migration: %v", err)
 	}
 	if err := first.Close(); err != nil {
@@ -179,7 +179,7 @@ func TestMigrateV3ReopenAndSchema(t *testing.T) {
 		t.Fatalf("reopen v3 database: %v", err)
 	}
 	defer second.Close()
-	if err := second.Migrate(context.Background()); err != nil {
+	if err := second.migrateWith(context.Background(), migrations[:3]); err != nil {
 		t.Fatalf("migrate reopened v3 database: %v", err)
 	}
 	if got := currentVersion(t, second); got != 3 {

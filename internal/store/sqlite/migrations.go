@@ -22,11 +22,12 @@ type migration struct {
 // migrations 是全部已知迁移，追加新版本时必须保持版本严格递增。
 //
 // v1 是 Phase 2 最终 sandbox schema；v2 只增加 lease、retry、health 与
-// origin 字段；v3 只增加 idempotency records。anomaly 表留给 v4。
+// origin 字段；v3 只增加 idempotency records；v4 只增加 runtime anomalies。
 var migrations = []migration{
 	{version: 1, apply: applyMigrationV1},
 	{version: 2, apply: applyMigrationV2},
 	{version: 3, apply: applyMigrationV3},
+	{version: 4, apply: applyMigrationV4},
 }
 
 // Migrate 在可恢复备份之后，以 BEGIN IMMEDIATE 把 schema 升级到最新版本。
@@ -255,6 +256,36 @@ func applyMigrationV3(ctx context.Context, conn *sql.Conn, _ time.Time) error {
 	})
 }
 
+// applyMigrationV4 创建只保存安全分类和固定摘要的 runtime anomaly 表。
+func applyMigrationV4(ctx context.Context, conn *sql.Conn, _ time.Time) error {
+	return executeMigrationStatements(ctx, conn, []string{
+		`CREATE TABLE runtime_anomalies (
+			resource_key TEXT PRIMARY KEY
+				CHECK (length(resource_key) BETWEEN 1 AND 256 AND resource_key NOT GLOB '*[^A-Za-z0-9._:-]*'),
+			resource_type TEXT NOT NULL
+				CHECK (resource_type IN ('sandbox_bundle', 'main_container', 'egress_sidecar', 'workspace_volume', 'runtime_directory')),
+			classification TEXT NOT NULL
+				CHECK (classification IN (
+					'incomplete_bundle', 'unknown_schema', 'identity_mismatch', 'spec_hash_mismatch',
+					'security_profile_mismatch', 'network_namespace_mismatch', 'lease_untrusted', 'duplicate_resource'
+				)),
+			safe_fingerprint TEXT NOT NULL
+				CHECK (length(safe_fingerprint) = 64 AND safe_fingerprint NOT GLOB '*[^0-9a-f]*'),
+			first_seen_at TEXT NOT NULL
+				CHECK (length(first_seen_at) BETWEEN 20 AND 35 AND first_seen_at GLOB '????-??-??T??:??:??*Z'),
+			last_seen_at TEXT NOT NULL
+				CHECK (length(last_seen_at) BETWEEN 20 AND 35 AND last_seen_at GLOB '????-??-??T??:??:??*Z'),
+			observation_count INTEGER NOT NULL CHECK (observation_count BETWEEN 1 AND 4294967295),
+			resolved_at TEXT
+				CHECK (resolved_at IS NULL OR (length(resolved_at) BETWEEN 20 AND 35 AND resolved_at GLOB '????-??-??T??:??:??*Z')),
+			CHECK (last_seen_at >= first_seen_at),
+			CHECK (resolved_at IS NULL OR resolved_at >= first_seen_at)
+		)`,
+		`CREATE INDEX idx_runtime_anomalies_active
+			ON runtime_anomalies (resolved_at, classification, last_seen_at)`,
+	})
+}
+
 func executeMigrationStatements(ctx context.Context, conn *sql.Conn, statements []string) error {
 	for _, statement := range statements {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
@@ -361,6 +392,23 @@ func validateSchema(ctx context.Context, queryer schemaQueryer, version int64) e
 			if count != 1 {
 				return fmt.Errorf("required index %s is missing", indexName)
 			}
+		}
+	}
+	if version >= 4 {
+		if err := validateTableColumns(ctx, queryer, "runtime_anomalies", []string{
+			"resource_key", "resource_type", "classification", "safe_fingerprint",
+			"first_seen_at", "last_seen_at", "observation_count", "resolved_at",
+		}); err != nil {
+			return err
+		}
+		var count int
+		if err := queryer.QueryRowContext(ctx,
+			"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = 'idx_runtime_anomalies_active'",
+		).Scan(&count); err != nil {
+			return err
+		}
+		if count != 1 {
+			return errors.New("required runtime anomaly index is missing")
 		}
 	}
 	return nil
