@@ -108,6 +108,87 @@ func TestReconcileRunningRecordIsNoOp(t *testing.T) {
 	}
 }
 
+// TestReconcileSettledStatesResetRetryMetadata 验证 Running 与 Terminated 的最终成功
+// 更新会原子清零旧 retry，而已清零记录保持幂等 no-op。
+func TestReconcileSettledStatesResetRetryMetadata(t *testing.T) {
+	now := time.Date(2027, 5, 7, 8, 9, 10, 0, time.UTC)
+	for _, testCase := range []struct {
+		name     string
+		desired  domain.DesiredState
+		observed domain.SandboxState
+		reason   string
+	}{
+		{name: "running", desired: domain.DesiredRunning, observed: domain.StateRunning, reason: reasonRunning},
+		{name: "terminated", desired: domain.DesiredTerminated, observed: domain.StateTerminated, reason: reasonTerminated},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			events := make([]string, 0, 2)
+			sandbox := pendingSandbox()
+			sandbox.DesiredState, sandbox.ObservedState = testCase.desired, testCase.observed
+			sandbox.RetryAttempt = 4
+			next := now.Add(time.Hour)
+			sandbox.NextReconcileAt = &next
+			sandboxStore := newReconcileStore(&events, sandbox)
+			reconciler, err := NewWithRetry(sandboxStore, &recordingRuntime{events: &events}, &recordingProbe{events: &events}, &manualClock{now: now}, fixedRandom{}, time.Second, time.Minute)
+			if err != nil {
+				t.Fatalf("new reconciler: %v", err)
+			}
+			if err := reconciler.Reconcile(context.Background(), sandbox.ID); err != nil {
+				t.Fatalf("reconcile: %v", err)
+			}
+			if sandboxStore.record.RetryAttempt != 0 || sandboxStore.record.NextReconcileAt != nil || len(sandboxStore.resetCalls) != 1 {
+				t.Fatalf("retry metadata was not reset: %#v", sandboxStore.record)
+			}
+			if err := reconciler.Reconcile(context.Background(), sandbox.ID); err != nil {
+				t.Fatalf("idempotent reconcile: %v", err)
+			}
+			if len(sandboxStore.resetCalls) != 1 {
+				t.Fatalf("already reset record was rewritten: %#v", sandboxStore.resetCalls)
+			}
+		})
+	}
+}
+
+// TestReconcileIntermediateCreatingDoesNotResetRetry 验证尚未到达 Running 前不会提前清零。
+func TestReconcileIntermediateCreatingDoesNotResetRetry(t *testing.T) {
+	events := make([]string, 0, 3)
+	sandbox := pendingSandbox()
+	sandbox.RetryAttempt = 3
+	next := time.Now().UTC().Add(time.Hour)
+	sandbox.NextReconcileAt = &next
+	sandboxStore := newReconcileStore(&events, sandbox)
+	sandboxStore.failReason, sandboxStore.failErr = reasonWaitingRunner, errors.New("store unavailable")
+	err := New(
+		sandboxStore,
+		&recordingRuntime{events: &events, ensureResult: runtimeport.ActualSandbox{RuntimeID: "container-id"}},
+		&recordingProbe{events: &events},
+	).Reconcile(context.Background(), sandbox.ID)
+	if err == nil {
+		t.Fatal("reconcile unexpectedly succeeded")
+	}
+	if sandboxStore.record.RetryAttempt != 3 || sandboxStore.record.NextReconcileAt == nil || len(sandboxStore.resetCalls) != 0 {
+		t.Fatalf("intermediate update cleared retry: %#v", sandboxStore.record)
+	}
+}
+
+// TestReconcileFinalResetHonorsCAS 验证最终成功不能覆盖并发写入的新 revision。
+func TestReconcileFinalResetHonorsCAS(t *testing.T) {
+	events := make([]string, 0, 6)
+	sandboxStore := newReconcileStore(&events, pendingSandbox())
+	sandboxStore.failReason, sandboxStore.failErr = reasonRunning, domain.ErrConflict
+	err := New(
+		sandboxStore,
+		&recordingRuntime{events: &events, ensureResult: runtimeport.ActualSandbox{RuntimeID: "container-id"}},
+		&recordingProbe{events: &events},
+	).Reconcile(context.Background(), "sandbox-id")
+	if !errors.Is(err, domain.ErrConflict) {
+		t.Fatalf("final reset error: got %v, want conflict", err)
+	}
+	if sandboxStore.record.ObservedState != domain.StateCreating || sandboxStore.record.Reason != reasonWaitingRunner {
+		t.Fatalf("conflicting final state was written: %#v", sandboxStore.record)
+	}
+}
+
 // TestReconcileRunningRecordsRuntimeFailure 验证 Ensure 失败后清理并写入 Failed。
 func TestReconcileRunningRecordsRuntimeFailure(t *testing.T) {
 	events := make([]string, 0, 3)
@@ -485,6 +566,7 @@ type reconcileStore struct {
 	failReason string
 	failErr    error
 	retryCalls []store.RetryUpdate
+	resetCalls []store.RetryResetUpdate
 }
 
 // newReconcileStore 创建包含单条记录的状态化 Store fake。
@@ -601,9 +683,27 @@ func (s *reconcileStore) ScheduleRetry(_ context.Context, update store.RetryUpda
 	return s.record, nil
 }
 
-// ResetRetry 未被当前 reconciler 测试使用。
-func (s *reconcileStore) ResetRetry(context.Context, store.RetryResetUpdate) (domain.Sandbox, error) {
-	return domain.Sandbox{}, errors.New("unexpected ResetRetry")
+// ResetRetry 模拟最终状态和 retry metadata 的同一 CAS 写入。
+func (s *reconcileStore) ResetRetry(_ context.Context, update store.RetryResetUpdate) (domain.Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	observed := update.Observed
+	if observed.ID != s.record.ID || observed.ExpectedRevision != s.record.Revision {
+		return domain.Sandbox{}, domain.ErrConflict
+	}
+	if observed.Reason == s.failReason && s.failErr != nil {
+		return domain.Sandbox{}, s.failErr
+	}
+	s.resetCalls = append(s.resetCalls, update)
+	s.updates = append(s.updates, observed)
+	*s.events = append(*s.events, "store-update-"+string(observed.State)+"-"+observed.Reason)
+	s.record.ObservedState, s.record.Reason, s.record.Message = observed.State, observed.Reason, observed.Message
+	s.record.RuntimeID = observed.RuntimeID
+	s.record.RetryAttempt, s.record.NextReconcileAt = 0, nil
+	reconciledAt := update.ReconciledAt
+	s.record.LastReconcileAt = &reconciledAt
+	s.record.Revision++
+	return s.record, nil
 }
 
 // RecordHealthResult 未被当前 reconciler 测试使用。

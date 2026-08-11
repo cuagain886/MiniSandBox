@@ -146,7 +146,7 @@ func (r *Reconciler) reconcileRunning(
 	sandbox domain.Sandbox,
 ) error {
 	if sandbox.ObservedState == domain.StateRunning {
-		return nil
+		return r.resetSettledRetry(ctx, sandbox, domain.StateRunning, reasonRunning, messageRunning, sandbox.RuntimeID)
 	}
 	creating, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               sandbox.ID,
@@ -191,13 +191,12 @@ func (r *Reconciler) reconcileRunning(
 	} else if err := r.probe.Probe(ctx, waiting.ID, actual.RunnerProtocolVersion); err != nil {
 		return r.failRunning(ctx, waiting, err, RetryOperationStart)
 	}
-	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
-		ID:               waiting.ID,
-		ExpectedRevision: waiting.Revision,
-		State:            domain.StateRunning,
-		Reason:           reasonRunning,
-		Message:          messageRunning,
-		RuntimeID:        actual.RuntimeID,
+	_, err = r.store.ResetRetry(ctx, store.RetryResetUpdate{
+		Observed: store.ObservedUpdate{
+			ID: waiting.ID, ExpectedRevision: waiting.Revision, State: domain.StateRunning,
+			Reason: reasonRunning, Message: messageRunning, RuntimeID: actual.RuntimeID,
+		},
+		ReconciledAt: r.clock.Now().UTC(),
 	})
 	if err != nil {
 		return fmt.Errorf("mark sandbox running: %w", err)
@@ -211,7 +210,7 @@ func (r *Reconciler) reconcileTerminated(
 	sandbox domain.Sandbox,
 ) error {
 	if sandbox.ObservedState == domain.StateTerminated {
-		return nil
+		return r.resetSettledRetry(ctx, sandbox, domain.StateTerminated, reasonTerminated, messageTerminated, "")
 	}
 	stopping, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               sandbox.ID,
@@ -241,16 +240,34 @@ func (r *Reconciler) reconcileTerminated(
 			)
 		}
 	}
-	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
-		ID:               stopping.ID,
-		ExpectedRevision: stopping.Revision,
-		State:            domain.StateTerminated,
-		Reason:           reasonTerminated,
-		Message:          messageTerminated,
-		RuntimeID:        "",
+	_, err = r.store.ResetRetry(ctx, store.RetryResetUpdate{
+		Observed: store.ObservedUpdate{
+			ID: stopping.ID, ExpectedRevision: stopping.Revision, State: domain.StateTerminated,
+			Reason: reasonTerminated, Message: messageTerminated, RuntimeID: "",
+		},
+		ReconciledAt: r.clock.Now().UTC(),
 	})
 	if err != nil {
 		return fmt.Errorf("mark sandbox terminated: %w", err)
+	}
+	return nil
+}
+
+// resetSettledRetry 清理旧版本或异常恢复遗留在最终状态上的 retry 调度信息。
+// 已经清零时保持真正 no-op，避免周期健康扫描无意义地递增 revision。
+func (r *Reconciler) resetSettledRetry(ctx context.Context, sandbox domain.Sandbox, state domain.SandboxState, reason, message, runtimeID string) error {
+	if sandbox.RetryAttempt == 0 && sandbox.NextReconcileAt == nil {
+		return nil
+	}
+	_, err := r.store.ResetRetry(ctx, store.RetryResetUpdate{
+		Observed: store.ObservedUpdate{
+			ID: sandbox.ID, ExpectedRevision: sandbox.Revision, State: state,
+			Reason: reason, Message: message, RuntimeID: runtimeID,
+		},
+		ReconciledAt: r.clock.Now().UTC(),
+	})
+	if err != nil {
+		return fmt.Errorf("reset settled sandbox retry: %w", err)
 	}
 	return nil
 }
