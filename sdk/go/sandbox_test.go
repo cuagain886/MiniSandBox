@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -262,6 +264,60 @@ func TestRenewSandboxRejectsZeroExpiration(t *testing.T) {
 		RenewSandboxRequest{},
 	); err == nil {
 		t.Fatal("zero expiration must be rejected before HTTP")
+	}
+}
+
+// TestRenewSandboxDecodesPublicErrorWithoutRetry 验证 renew 只发送一次并保留公共错误详情。
+func TestRenewSandboxDecodesPublicErrorWithoutRetry(t *testing.T) {
+	var calls atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, _ *http.Request) {
+		calls.Add(1)
+		response.Header().Set("Content-Type", "application/json")
+		response.WriteHeader(http.StatusConflict)
+		_ = json.NewEncoder(response).Encode(protocol.ErrorResponse{Error: protocol.ErrorDetail{
+			Code: "LEASE_CONFLICT", Message: "Sandbox lease conflicts with the current expiration.",
+			RequestID: "renew-conflict", Retryable: false,
+		}})
+	}))
+	defer server.Close()
+	_, err := NewClient(server.URL, server.Client()).RenewSandbox(
+		context.Background(), "sbx-test", RenewSandboxRequest{ExpiresAt: time.Now().Add(time.Hour)},
+	)
+	var responseError *ResponseError
+	if !errors.As(err, &responseError) || responseError.StatusCode != http.StatusConflict ||
+		responseError.Detail.Code != "LEASE_CONFLICT" || calls.Load() != 1 {
+		t.Fatalf("renew error: %#v calls=%d", err, calls.Load())
+	}
+}
+
+// TestRenewSandboxHonorsContextCancellation 验证调用取消直接传递且不会由 SDK 自动重试。
+func TestRenewSandboxHonorsContextCancellation(t *testing.T) {
+	started := make(chan struct{})
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(response http.ResponseWriter, request *http.Request) {
+		close(started)
+		<-release
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		_, err := NewClient(server.URL, server.Client()).RenewSandbox(
+			ctx, "sbx-test", RenewSandboxRequest{ExpiresAt: time.Now().Add(time.Hour)},
+		)
+		done <- err
+	}()
+	<-started
+	cancel()
+	select {
+	case err := <-done:
+		close(release)
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("cancel error: got %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(release)
+		t.Fatal("renew did not honor context cancellation")
 	}
 }
 
