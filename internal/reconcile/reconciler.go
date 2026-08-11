@@ -61,7 +61,10 @@ func New(s store.Store, r runtimeport.Runtime, probe RunnerProbe) *Reconciler {
 // 同一 ID 先通过 keyed lock 串行化，再从 Store 重读最新 revision；内存 wake
 // 携带的旧 snapshot 从不参与状态决策。
 func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
-	unlock := r.locks.Lock(sandboxID)
+	unlock, err := r.locks.LockContext(ctx, sandboxID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 
 	sandbox, err := r.store.Get(ctx, sandboxID)
@@ -82,7 +85,10 @@ func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
 //
 // 本操作保留 DesiredRunning，等待调用方显式删除；重复观察保持稳定失败原因，不触发透明重建。
 func (r *Reconciler) FailEgress(ctx context.Context, sandboxID string) error {
-	unlock := r.locks.Lock(sandboxID)
+	unlock, err := r.locks.LockContext(ctx, sandboxID)
+	if err != nil {
+		return err
+	}
 	defer unlock()
 	sandbox, err := r.store.Get(ctx, sandboxID)
 	if err != nil {
