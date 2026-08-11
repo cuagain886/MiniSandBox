@@ -93,6 +93,12 @@ func (s *TTLScheduler) Run(ctx context.Context) {
 			stopAndDrainTTLTimer(timer)
 			timer.Reset(delay)
 		}
+		// fake clock 或 wall clock 可能在计算 delay 后、真正 arm timer 前推进。
+		// arm 后再次比较绝对 expiry，避免按已过时的相对 delay 延后到期事件。
+		if !s.clock.Now().UTC().Before(entry.ExpectedExpiresAt) {
+			stopAndDrainTTLTimer(timer)
+			continue
+		}
 		select {
 		case <-ctx.Done():
 			return
