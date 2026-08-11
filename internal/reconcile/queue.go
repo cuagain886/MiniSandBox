@@ -7,38 +7,53 @@ import (
 
 // WakeQueue 按 sandbox ID 合并尚未开始处理的 reconcile 唤醒。
 //
-// notification 只表达“队列可能非空”，容量固定为 1；真实任务保存在
-// pending 和 order 中，因此通知已满不会丢失 ID，同一 ID 高频 Wake 也只
-// 占用一个待处理条目。Phase 1 只允许单 worker 消费。
+// notification 只表达“队列可能非空”，容量固定为 1；真实任务保存在 states
+// 和 order 中，因此通知已满不会丢失 ID，同一 ID 高频 Wake 也只占一个状态项。
+// 当前显式保持单 worker processing 身份。
 type WakeQueue struct {
 	mu           sync.Mutex
-	pending      map[string]struct{}
+	states       map[string]wakeState
 	order        []string
+	processing   string
 	notification chan struct{}
 }
+
+type wakeState uint8
+
+const (
+	wakePending wakeState = iota + 1
+	wakeProcessing
+	wakeRequeue
+)
 
 // NewWakeQueue 创建空的按 ID 合并队列。
 func NewWakeQueue() *WakeQueue {
 	return &WakeQueue{
-		pending:      make(map[string]struct{}),
+		states:       make(map[string]wakeState),
 		notification: make(chan struct{}, 1),
 	}
 }
 
 // Wake 把 sandbox ID 加入待处理集合。
 //
-// 返回 true 表示新增了待处理项；空 ID 或已经 pending 的 ID 返回 false。
-// 本方法不阻塞，notification 已满时任务仍保留在内存队列中。
+// 返回 true 表示新增 pending 或把 processing 提升为 requeue；空 ID、已经
+// pending 或已经 requeue 的 ID 返回 false。本方法不阻塞。
 func (q *WakeQueue) Wake(sandboxID string) bool {
 	if q == nil || sandboxID == "" {
 		return false
 	}
 	q.mu.Lock()
-	if _, exists := q.pending[sandboxID]; exists {
+	state := q.states[sandboxID]
+	switch state {
+	case wakePending, wakeRequeue:
 		q.mu.Unlock()
 		return false
+	case wakeProcessing:
+		q.states[sandboxID] = wakeRequeue
+		q.mu.Unlock()
+		return true
 	}
-	q.pending[sandboxID] = struct{}{}
+	q.states[sandboxID] = wakePending
 	q.order = append(q.order, sandboxID)
 	q.mu.Unlock()
 	q.notify()
@@ -47,8 +62,8 @@ func (q *WakeQueue) Wake(sandboxID string) bool {
 
 // Next 等待并返回一个待处理 sandbox ID。
 //
-// ID 在返回前从 pending 删除，因此处理期间再次 Wake 会合并为一次后续
-// reconcile。context 取消时不取走新任务，并返回 context 的原始错误。
+// ID 在返回前从 pending 转为 processing；处理期间再次 Wake 只提升为一次
+// requeue。context 取消时不取走新任务，并返回 context 的原始错误。
 func (q *WakeQueue) Next(ctx context.Context) (string, error) {
 	if q == nil {
 		<-ctx.Done()
@@ -74,7 +89,8 @@ func (q *WakeQueue) Next(ctx context.Context) (string, error) {
 	sandboxID := q.order[0]
 	q.order[0] = ""
 	q.order = q.order[1:]
-	delete(q.pending, sandboxID)
+	q.states[sandboxID] = wakeProcessing
+	q.processing = sandboxID
 	return sandboxID, nil
 }
 
@@ -87,6 +103,17 @@ func (q *WakeQueue) Done() {
 		return
 	}
 	q.mu.Lock()
+	if q.processing != "" {
+		id := q.processing
+		switch q.states[id] {
+		case wakeRequeue:
+			q.states[id] = wakePending
+			q.order = append(q.order, id)
+		case wakeProcessing:
+			delete(q.states, id)
+		}
+		q.processing = ""
+	}
 	hasPending := len(q.order) > 0
 	q.mu.Unlock()
 	if hasPending {
@@ -101,7 +128,11 @@ func (q *WakeQueue) Len() int {
 	}
 	q.mu.Lock()
 	defer q.mu.Unlock()
-	return len(q.order)
+	length := len(q.order)
+	if q.processing != "" && q.states[q.processing] == wakeRequeue {
+		length++
+	}
+	return length
 }
 
 // notify 非阻塞表达队列非空；任务事实始终由 pending/order 保存。
