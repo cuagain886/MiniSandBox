@@ -9,12 +9,11 @@ import (
 //
 // notification 只表达“队列可能非空”，容量固定为 1；真实任务保存在 states
 // 和 order 中，因此通知已满不会丢失 ID，同一 ID 高频 Wake 也只占一个状态项。
-// 当前显式保持单 worker processing 身份。
+// processing 身份保存在每个 ID 的状态中，因此多个 worker 可并发取走不同 ID。
 type WakeQueue struct {
 	mu           sync.Mutex
 	states       map[string]wakeState
 	order        []string
-	processing   string
 	notification chan struct{}
 }
 
@@ -82,37 +81,39 @@ func (q *WakeQueue) Next(ctx context.Context) (string, error) {
 	}
 
 	q.mu.Lock()
-	defer q.mu.Unlock()
 	if len(q.order) == 0 {
+		q.mu.Unlock()
 		return "", nil
 	}
 	sandboxID := q.order[0]
 	q.order[0] = ""
 	q.order = q.order[1:]
 	q.states[sandboxID] = wakeProcessing
-	q.processing = sandboxID
+	hasPending := len(q.order) > 0
+	q.mu.Unlock()
+	// 单槽 notification 只唤醒一个 waiter；仍有任务时立即补回令牌，使其他
+	// pool worker 可以并发取走不同 ID。
+	if hasPending {
+		q.notify()
+	}
 	return sandboxID, nil
 }
 
-// Done 通知队列当前任务已经处理完成。
+// Done 通知队列指定任务已经处理完成。
 //
-// 若处理期间积累了其他 ID 或当前 ID 被再次 Wake，Done 会重新发出一个
-// 非阻塞通知，使单 worker 继续消费；队列为空时是幂等 no-op。
-func (q *WakeQueue) Done() {
-	if q == nil {
+// 若处理期间当前 ID 被再次 Wake，Done 会把它放回队尾；未知或已完成 ID
+// 是幂等 no-op，不能影响其他 worker 正在处理的身份。
+func (q *WakeQueue) Done(sandboxID string) {
+	if q == nil || sandboxID == "" {
 		return
 	}
 	q.mu.Lock()
-	if q.processing != "" {
-		id := q.processing
-		switch q.states[id] {
-		case wakeRequeue:
-			q.states[id] = wakePending
-			q.order = append(q.order, id)
-		case wakeProcessing:
-			delete(q.states, id)
-		}
-		q.processing = ""
+	switch q.states[sandboxID] {
+	case wakeRequeue:
+		q.states[sandboxID] = wakePending
+		q.order = append(q.order, sandboxID)
+	case wakeProcessing:
+		delete(q.states, sandboxID)
 	}
 	hasPending := len(q.order) > 0
 	q.mu.Unlock()
@@ -129,8 +130,10 @@ func (q *WakeQueue) Len() int {
 	q.mu.Lock()
 	defer q.mu.Unlock()
 	length := len(q.order)
-	if q.processing != "" && q.states[q.processing] == wakeRequeue {
-		length++
+	for _, state := range q.states {
+		if state == wakeRequeue {
+			length++
+		}
 	}
 	return length
 }

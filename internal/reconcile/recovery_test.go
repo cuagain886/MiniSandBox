@@ -74,7 +74,7 @@ func TestRecoveryQueuesStoredSandboxesWithoutDocker(t *testing.T) {
 		t.Fatalf("run recovery: %v", err)
 	}
 	got := []string{nextQueueID(t, queue)}
-	queue.Done()
+	queue.Done(got[0])
 	got = append(got, nextQueueID(t, queue))
 	if want := []string{running.ID, terminated.ID}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("queued IDs: got %v, want %v", got, want)

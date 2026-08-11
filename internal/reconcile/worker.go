@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"sync"
 	"time"
 )
 
@@ -17,20 +18,35 @@ type ReconcileFunc func(context.Context, string) error
 // reporter 应快速返回且不得阻塞 shutdown；Worker 不会把错误文本写入公共状态。
 type ErrorReporter func(error)
 
-// Worker 串行消费 WakeQueue 并为每次 reconcile 设置独立 timeout。
+// Worker 使用固定大小的池消费 WakeQueue，并为每次 reconcile 设置独立 timeout。
 type Worker struct {
 	queue     *WakeQueue
+	workers   int
 	timeout   time.Duration
 	reconcile ReconcileFunc
 	report    ErrorReporter
 }
 
-// NewWorker 创建 Phase 1 单 worker。
+// NewWorker 创建兼容旧装配的单 worker。
 //
 // queue、reconcile 必须非空，timeout 必须为正数；report 可为空，表示调用方
 // 暂不接收单次失败通知。
 func NewWorker(
 	queue *WakeQueue,
+	timeout time.Duration,
+	reconcile ReconcileFunc,
+	report ErrorReporter,
+) (*Worker, error) {
+	return NewWorkerPool(queue, 1, timeout, reconcile, report)
+}
+
+// NewWorkerPool 创建固定并发度的 reconcile worker pool。
+//
+// workers 必须为正数；所有 worker 共享按 ID 合并的 WakeQueue，同一 ID 在完成前
+// 不会被第二个 worker 取走。
+func NewWorkerPool(
+	queue *WakeQueue,
+	workers int,
 	timeout time.Duration,
 	reconcile ReconcileFunc,
 	report ErrorReporter,
@@ -41,22 +57,39 @@ func NewWorker(
 	if timeout <= 0 {
 		return nil, errors.New("reconcile timeout must be positive")
 	}
+	if workers <= 0 {
+		return nil, errors.New("reconcile worker count must be positive")
+	}
 	if reconcile == nil {
 		return nil, errors.New("reconcile function must not be nil")
 	}
 	return &Worker{
 		queue:     queue,
+		workers:   workers,
 		timeout:   timeout,
 		reconcile: reconcile,
 		report:    report,
 	}, nil
 }
 
-// Run 串行消费任务，直到 context 被取消。
+// Run 并发消费任务，直到 context 被取消且所有已开始任务都已返回。
 //
 // shutdown 后不再从队列取新 ID；正在执行的 reconcile 会收到取消信号，
 // Run 等待它返回后才退出。普通错误和 panic 都不会终止后续任务。
 func (w *Worker) Run(ctx context.Context) {
+	var wait sync.WaitGroup
+	wait.Add(w.workers)
+	for workerID := 1; workerID <= w.workers; workerID++ {
+		go func() {
+			defer wait.Done()
+			w.runOne(ctx)
+		}()
+	}
+	wait.Wait()
+}
+
+// runOne 是单个固定 worker 的消费循环；panic 只隔离当前 item。
+func (w *Worker) runOne(ctx context.Context) {
 	for {
 		sandboxID, err := w.queue.Next(ctx)
 		if err != nil {
@@ -69,7 +102,7 @@ func (w *Worker) Run(ctx context.Context) {
 		taskCtx, cancel := context.WithTimeout(ctx, w.timeout)
 		taskErr := w.invoke(taskCtx, sandboxID)
 		cancel()
-		w.queue.Done()
+		w.queue.Done(sandboxID)
 		if taskErr != nil {
 			w.reportError(taskErr)
 		}

@@ -41,7 +41,7 @@ func TestWakeQueuePreservesDifferentIDsWhenNotificationIsFull(t *testing.T) {
 		if got := nextQueueID(t, queue); got != want {
 			t.Fatalf("ID %d: got %q, want %q", index, got, want)
 		}
-		queue.Done()
+		queue.Done(want)
 	}
 	if got := queue.Len(); got != 0 {
 		t.Fatalf("length after drain: %d", got)
@@ -61,7 +61,7 @@ func TestWakeQueueAllowsOneReentryWhileProcessing(t *testing.T) {
 	if queue.Wake("sandbox-a") {
 		t.Fatal("processing reentry was not merged")
 	}
-	queue.Done()
+	queue.Done("sandbox-a")
 	if got := nextQueueID(t, queue); got != "sandbox-a" {
 		t.Fatalf("reentered ID: %q", got)
 	}
@@ -108,7 +108,7 @@ func TestWakeQueueConcurrentWakeMergesByID(t *testing.T) {
 			t.Fatalf("duplicate drained ID: %s", id)
 		}
 		seen[id] = struct{}{}
-		queue.Done()
+		queue.Done(id)
 	}
 }
 
@@ -150,11 +150,11 @@ func TestWakeQueueMergesFourConcurrentSources(t *testing.T) {
 	if acceptedCount != 1 || queue.Len() != 1 || len(queue.states) != 1 {
 		t.Fatalf("merged sources: accepted=%d len=%d states=%d", acceptedCount, queue.Len(), len(queue.states))
 	}
-	queue.Done()
+	queue.Done("sandbox-shared")
 	if got := nextQueueID(t, queue); got != "sandbox-shared" {
 		t.Fatalf("requeued ID: %s", got)
 	}
-	queue.Done()
+	queue.Done("sandbox-shared")
 	if len(queue.states) != 0 {
 		t.Fatalf("idle state entries: %d", len(queue.states))
 	}
@@ -170,14 +170,14 @@ func TestWakeQueueDoneRacePreservesLastIntent(t *testing.T) {
 		var wait sync.WaitGroup
 		wait.Add(2)
 		go func() { defer wait.Done(); <-start; queue.Wake("sandbox-race") }()
-		go func() { defer wait.Done(); <-start; queue.Done() }()
+		go func() { defer wait.Done(); <-start; queue.Done("sandbox-race") }()
 		close(start)
 		wait.Wait()
 		if queue.Len() != 1 {
 			t.Fatalf("iteration %d lost or duplicated intent: len=%d", iteration, queue.Len())
 		}
 		nextQueueID(t, queue)
-		queue.Done()
+		queue.Done("sandbox-race")
 	}
 }
 
@@ -192,9 +192,9 @@ func TestWakeQueueProcessingWakeMemoryBounded(t *testing.T) {
 	if queue.Len() != 1 || len(queue.states) != 1 || len(queue.order) != 0 {
 		t.Fatalf("unbounded processing wake: len=%d states=%d order=%d", queue.Len(), len(queue.states), len(queue.order))
 	}
-	queue.Done()
+	queue.Done("sandbox-hot")
 	nextQueueID(t, queue)
-	queue.Done()
+	queue.Done("sandbox-hot")
 }
 
 // TestWakeQueueCancelledNextKeepsPending 验证 shutdown cancel 不消费尚未处理的持久化意图。
@@ -209,7 +209,7 @@ func TestWakeQueueCancelledNextKeepsPending(t *testing.T) {
 	if queue.Len() != 1 || nextQueueID(t, queue) != "sandbox-shutdown" {
 		t.Fatal("cancelled Next lost pending ID")
 	}
-	queue.Done()
+	queue.Done("sandbox-shutdown")
 }
 
 // nextQueueID 使用短 deadline 读取测试任务，避免通知丢失时测试永久阻塞。

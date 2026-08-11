@@ -3,6 +3,7 @@ package reconcile
 import (
 	"context"
 	"errors"
+	"fmt"
 	"reflect"
 	"sync"
 	"testing"
@@ -39,6 +40,113 @@ func TestWorkerConsumesQueuedIDsSerially(t *testing.T) {
 	defer mu.Unlock()
 	if !reflect.DeepEqual(processed, []string{"sandbox-a", "sandbox-b"}) {
 		t.Fatalf("processed IDs: %v", processed)
+	}
+}
+
+// TestWorkerPoolRunsDifferentIDsUpToConfiguredLimit 验证不同 ID 并发执行，且活跃
+// reconcile 数从不超过固定 worker 数。
+func TestWorkerPoolRunsDifferentIDsUpToConfiguredLimit(t *testing.T) {
+	queue := NewWakeQueue()
+	for index := 0; index < 6; index++ {
+		queue.Wake(fmt.Sprintf("sandbox-%d", index))
+	}
+	started := make(chan struct{}, 6)
+	finished := make(chan struct{}, 6)
+	release := make(chan struct{})
+	var mu sync.Mutex
+	active, maximum := 0, 0
+	worker, err := NewWorkerPool(queue, 2, time.Second, func(context.Context, string) error {
+		mu.Lock()
+		active++
+		if active > maximum {
+			maximum = active
+		}
+		mu.Unlock()
+		started <- struct{}{}
+		<-release
+		mu.Lock()
+		active--
+		mu.Unlock()
+		finished <- struct{}{}
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("new worker pool: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runWorker(worker, ctx)
+	waitSignal(t, started)
+	waitSignal(t, started)
+	select {
+	case <-started:
+		t.Fatal("worker pool exceeded configured concurrency")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(release)
+	for range 6 {
+		waitSignal(t, finished)
+	}
+	cancel()
+	waitSignal(t, done)
+	mu.Lock()
+	defer mu.Unlock()
+	if maximum != 2 {
+		t.Fatalf("maximum concurrency: got %d, want 2", maximum)
+	}
+}
+
+// TestWorkerPoolSerializesReenteredID 验证处理中的同一 ID 只形成一次后续执行，
+// 不会被空闲 worker 并发取走。
+func TestWorkerPoolSerializesReenteredID(t *testing.T) {
+	queue := NewWakeQueue()
+	queue.Wake("sandbox-shared")
+	firstStarted := make(chan struct{})
+	secondStarted := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	var mu sync.Mutex
+	active, maximum, calls := 0, 0, 0
+	worker, err := NewWorkerPool(queue, 4, time.Second, func(context.Context, string) error {
+		mu.Lock()
+		active++
+		calls++
+		call := calls
+		if active > maximum {
+			maximum = active
+		}
+		mu.Unlock()
+		if call == 1 {
+			close(firstStarted)
+			<-releaseFirst
+		} else {
+			close(secondStarted)
+		}
+		mu.Lock()
+		active--
+		mu.Unlock()
+		return nil
+	}, nil)
+	if err != nil {
+		t.Fatalf("new worker pool: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := runWorker(worker, ctx)
+	waitSignal(t, firstStarted)
+	if !queue.Wake("sandbox-shared") || queue.Wake("sandbox-shared") {
+		t.Fatal("same-ID reentry was not merged")
+	}
+	select {
+	case <-secondStarted:
+		t.Fatal("same ID ran concurrently")
+	case <-time.After(20 * time.Millisecond):
+	}
+	close(releaseFirst)
+	waitSignal(t, secondStarted)
+	cancel()
+	waitSignal(t, done)
+	mu.Lock()
+	defer mu.Unlock()
+	if calls != 2 || maximum != 1 {
+		t.Fatalf("same-ID executions: calls=%d maximum=%d", calls, maximum)
 	}
 }
 
@@ -207,6 +315,13 @@ func TestNewWorkerRejectsInvalidConfiguration(t *testing.T) {
 				t.Fatal("invalid worker configuration was accepted")
 			}
 		})
+	}
+}
+
+// TestNewWorkerPoolRejectsInvalidCount 验证并发度必须显式为正数。
+func TestNewWorkerPoolRejectsInvalidCount(t *testing.T) {
+	if _, err := NewWorkerPool(NewWakeQueue(), 0, time.Second, func(context.Context, string) error { return nil }, nil); err == nil {
+		t.Fatal("zero worker count was accepted")
 	}
 }
 

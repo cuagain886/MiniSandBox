@@ -100,7 +100,7 @@ func openProductionRuntime(
 	return runtime, nil
 }
 
-// startProductionWorker 装配 runner probe、reconciler 和单 worker。
+// startProductionWorker 装配 runner probe、reconciler 和固定 worker pool。
 func startProductionWorker(
 	ctx context.Context,
 	cfg config.Config,
@@ -126,9 +126,10 @@ func startProductionWorker(
 		factory.Close()
 		return nil, err
 	}
-	worker, err := reconcile.NewWorker(
+	worker, err := reconcile.NewWorkerPool(
 		queue,
-		cfg.Reconcile.DeletionTimeout,
+		cfg.Reconcile.MaxConcurrent,
+		cfg.Reconcile.Timeout,
 		reconciler.Reconcile,
 		func(err error) {
 			failure := runtimeport.ClassifyError(err)
