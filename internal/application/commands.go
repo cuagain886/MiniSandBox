@@ -5,6 +5,8 @@
 package application
 
 import (
+	"time"
+
 	"minisandbox/internal/domain"
 )
 
@@ -26,6 +28,14 @@ type CreateSandbox struct {
 // DeleteSandbox 表示将指定 sandbox 的期望状态设置为 Terminated。
 type DeleteSandbox struct {
 	SandboxID string
+}
+
+// RenewSandbox 表示把现有租约延长到客户端指定的绝对时间。
+type RenewSandbox struct {
+	// SandboxID 是目标 sandbox 的稳定公共标识。
+	SandboxID string
+	// ExpiresAt 是请求的绝对到期时间；application 接受后统一转为 UTC。
+	ExpiresAt time.Time
 }
 
 // Execute 表示在指定 sandbox 内提交一次命令执行。
