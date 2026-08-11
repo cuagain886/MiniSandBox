@@ -11,11 +11,12 @@ type manualClock struct {
 	now           time.Time
 	timers        []*manualTimer
 	tickers       []*manualTicker
+	timerCreated  chan struct{}
 	tickerCreated chan struct{}
 }
 
 func newManualClock(now time.Time) *manualClock {
-	return &manualClock{now: now, tickerCreated: make(chan struct{}, 16)}
+	return &manualClock{now: now, timerCreated: make(chan struct{}, 16), tickerCreated: make(chan struct{}, 16)}
 }
 
 func (c *manualClock) Now() time.Time {
@@ -29,6 +30,7 @@ func (c *manualClock) NewTimer(duration time.Duration) Timer {
 	defer c.mu.Unlock()
 	timer := &manualTimer{clock: c, channel: make(chan time.Time, 64), due: c.now.Add(duration), active: true}
 	c.timers = append(c.timers, timer)
+	c.timerCreated <- struct{}{}
 	return timer
 }
 
