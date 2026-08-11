@@ -323,10 +323,6 @@ func (s *Store) CreateIdempotent(
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
-	if err := enforceSandboxAdmission(ctx, conn, request.MaxSandboxes); err != nil {
-		return storeport.IdempotentCreateResult{}, err
-	}
-
 	var (
 		existingHash      string
 		existingSandboxID string
@@ -363,6 +359,10 @@ func (s *Store) CreateIdempotent(
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return storeport.IdempotentCreateResult{}, fmt.Errorf("check idempotency record: %w", err)
+	}
+	// replay/conflict 必须先于 quota；系统后来满额不能改变已提交请求的身份结果。
+	if err := enforceSandboxAdmission(ctx, conn, request.MaxSandboxes); err != nil {
+		return storeport.IdempotentCreateResult{}, err
 	}
 
 	sandbox := request.Sandbox
