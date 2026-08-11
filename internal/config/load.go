@@ -17,14 +17,17 @@ import (
 // 零值";duration 先解码为字符串,再统一解析并生成带字段路径的错误。
 // 本模型只服务于文件解码,不得被 Load 之外的代码使用。
 type fileConfig struct {
-	Server    *fileServer    `yaml:"server"`
-	Data      *fileData      `yaml:"data"`
-	Runtime   *fileRuntime   `yaml:"runtime"`
-	Limits    *fileLimits    `yaml:"limits"`
-	Runner    *fileRunner    `yaml:"runner"`
-	Security  *fileSecurity  `yaml:"security"`
-	Egress    *fileEgress    `yaml:"egress"`
-	Reconcile *fileReconcile `yaml:"reconcile"`
+	Server      *fileServer      `yaml:"server"`
+	Data        *fileData        `yaml:"data"`
+	Runtime     *fileRuntime     `yaml:"runtime"`
+	Limits      *fileLimits      `yaml:"limits"`
+	Runner      *fileRunner      `yaml:"runner"`
+	Security    *fileSecurity    `yaml:"security"`
+	Egress      *fileEgress      `yaml:"egress"`
+	Reconcile   *fileReconcile   `yaml:"reconcile"`
+	Idempotency *fileIdempotency `yaml:"idempotency"`
+	Recovery    *fileRecovery    `yaml:"recovery"`
+	Admin       *fileAdmin       `yaml:"admin"`
 }
 
 // fileServer 对应 server 分组的文件字段。
@@ -60,6 +63,7 @@ type filePlatform struct {
 // fileLimits 对应 limits 分组的文件字段。
 type fileLimits struct {
 	DefaultTTL              *string        `yaml:"default_ttl"`
+	MinimumTTL              *string        `yaml:"minimum_ttl"`
 	MaximumTTL              *string        `yaml:"maximum_ttl"`
 	MaxSandboxes            *int           `yaml:"max_sandboxes"`
 	MaxConcurrentCreates    *int           `yaml:"max_concurrent_creates"`
@@ -131,6 +135,25 @@ type fileReconcile struct {
 	DockerFreshness          *string `yaml:"docker_freshness"`
 	RunnerReadyTimeout       *string `yaml:"runner_ready_timeout"`
 	DeletionTimeout          *string `yaml:"deletion_timeout"`
+}
+
+// fileIdempotency 对应 idempotency 分组的文件字段。
+type fileIdempotency struct {
+	MaxKeyBytes       *int    `yaml:"max_key_bytes"`
+	TerminalRetention *string `yaml:"terminal_retention"`
+	GCInterval        *string `yaml:"gc_interval"`
+}
+
+// fileRecovery 对应 recovery 分组的文件字段。
+type fileRecovery struct {
+	ImportTrustedOrphans     *bool `yaml:"import_trusted_orphans"`
+	RecordAmbiguousAnomalies *bool `yaml:"record_ambiguous_anomalies"`
+}
+
+// fileAdmin 对应 admin 分组；TokenFile 只接收 secret file 引用，不接收 raw token。
+type fileAdmin struct {
+	Enabled   *bool   `yaml:"enabled"`
+	TokenFile *string `yaml:"token_file"`
 }
 
 // Load 从显式路径读取 YAML 配置,并把文件中出现的字段覆盖到安全默认值上。
@@ -207,6 +230,13 @@ func (f fileConfig) apply(base Config) (Config, error) {
 			&cfg.Limits.DefaultTTL,
 			f.Limits.DefaultTTL,
 			"limits.default_ttl",
+		); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(
+			&cfg.Limits.MinimumTTL,
+			f.Limits.MinimumTTL,
+			"limits.minimum_ttl",
 		); err != nil {
 			return Config{}, err
 		}
@@ -368,6 +398,34 @@ func (f fileConfig) apply(base Config) (Config, error) {
 		); err != nil {
 			return Config{}, err
 		}
+	}
+
+	if f.Idempotency != nil {
+		override(&cfg.Idempotency.MaxKeyBytes, f.Idempotency.MaxKeyBytes)
+		if err := overrideDuration(
+			&cfg.Idempotency.TerminalRetention,
+			f.Idempotency.TerminalRetention,
+			"idempotency.terminal_retention",
+		); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(
+			&cfg.Idempotency.GCInterval,
+			f.Idempotency.GCInterval,
+			"idempotency.gc_interval",
+		); err != nil {
+			return Config{}, err
+		}
+	}
+
+	if f.Recovery != nil {
+		override(&cfg.Recovery.ImportTrustedOrphans, f.Recovery.ImportTrustedOrphans)
+		override(&cfg.Recovery.RecordAmbiguousAnomalies, f.Recovery.RecordAmbiguousAnomalies)
+	}
+
+	if f.Admin != nil {
+		override(&cfg.Admin.Enabled, f.Admin.Enabled)
+		override(&cfg.Admin.TokenFile, f.Admin.TokenFile)
 	}
 
 	return cfg, nil

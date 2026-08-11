@@ -91,6 +91,7 @@ runtime:
     arch: "arm64"
 limits:
   default_ttl: "10m"
+  minimum_ttl: "2m"
   maximum_ttl: "2h"
   max_sandboxes: 12
   max_concurrent_creates: 3
@@ -152,6 +153,16 @@ reconcile:
   docker_freshness: "12s"
   runner_ready_timeout: "20s"
   deletion_timeout: "45s"
+idempotency:
+  max_key_bytes: 64
+  terminal_retention: "12h"
+  gc_interval: "3m"
+recovery:
+  import_trusted_orphans: false
+  record_ambiguous_anomalies: false
+admin:
+  enabled: true
+  token_file: "/run/secrets/admin-token"
 `)
 
 	got, err := Load(path)
@@ -183,6 +194,7 @@ reconcile:
 		},
 		Limits: LimitsConfig{
 			DefaultTTL:              10 * time.Minute,
+			MinimumTTL:              2 * time.Minute,
 			MaximumTTL:              2 * time.Hour,
 			MaxSandboxes:            12,
 			MaxConcurrentCreates:    3,
@@ -249,6 +261,19 @@ reconcile:
 			DockerFreshness:          12 * time.Second,
 			RunnerReadyTimeout:       20 * time.Second,
 			DeletionTimeout:          45 * time.Second,
+		},
+		Idempotency: IdempotencyConfig{
+			MaxKeyBytes:       64,
+			TerminalRetention: 12 * time.Hour,
+			GCInterval:        3 * time.Minute,
+		},
+		Recovery: RecoveryConfig{
+			ImportTrustedOrphans:     false,
+			RecordAmbiguousAnomalies: false,
+		},
+		Admin: AdminConfig{
+			Enabled:   true,
+			TokenFile: "/run/secrets/admin-token",
 		},
 	}
 	if !reflect.DeepEqual(got, want) {

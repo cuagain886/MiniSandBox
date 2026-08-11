@@ -34,6 +34,7 @@ reconcile:
 
 limits:
   default_ttl: "30m"
+  minimum_ttl: "1m"
   maximum_ttl: "24h"
   max_sandboxes: 100
   max_concurrent_creates: 4
@@ -47,6 +48,23 @@ limits:
     cpu_quota_millis: 4000
     memory_mib: 8192
     pids: 1024
+
+idempotency:
+  max_key_bytes: 128
+  terminal_retention: "24h"
+  gc_interval: "10m"
+
+recovery:
+  # 只导入身份、schema、spec hash、lease 与资源 bundle 全部可信的 orphan。
+  import_trusted_orphans: true
+  # 歧义资源只记录 anomaly，不会自动删除、停止、接管或修复。
+  record_ambiguous_anomalies: true
+
+admin:
+  # 关闭时不读取 token_file，也不注册 /metrics 或 /v1/admin/** 路由。
+  enabled: false
+  # 只允许 secret file 引用，禁止在 YAML 中填写 raw token。
+  token_file: ""
 
 runner:
   # runnerd 与用户命令最终都使用该固定非 root 身份；它必须不同于宿主机 socket owner。

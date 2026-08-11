@@ -37,6 +37,12 @@ type Config struct {
 	Egress EgressConfig
 	// Reconcile 是期望状态收敛的节奏与超时配置。
 	Reconcile ReconcileConfig
+	// Idempotency 是 lifecycle 请求幂等键及终态记录保留配置。
+	Idempotency IdempotencyConfig
+	// Recovery 是启动恢复时对可信 orphan 和歧义资源的固定策略。
+	Recovery RecoveryConfig
+	// Admin 是默认关闭的本地只读管理端点访问配置。
+	Admin AdminConfig
 }
 
 // ServerConfig 描述控制面 HTTP 服务的监听与关闭行为。
@@ -81,6 +87,8 @@ type RuntimeConfig struct {
 type LimitsConfig struct {
 	// DefaultTTL 是创建请求未指定 TTL 时使用的默认存活时长。
 	DefaultTTL time.Duration
+	// MinimumTTL 是 create 或实际延长 renew 可接受的最短剩余租期。
+	MinimumTTL time.Duration
 	// MaximumTTL 是单个 sandbox 允许的最长存活时长。
 	MaximumTTL time.Duration
 	// MaxSandboxes 是服务实例允许同时存在的非 Terminated sandbox 数量上限。
@@ -196,6 +204,34 @@ type ReconcileConfig struct {
 	DeletionTimeout time.Duration
 }
 
+// IdempotencyConfig 描述 lifecycle Idempotency-Key 和终态记录回收边界。
+type IdempotencyConfig struct {
+	// MaxKeyBytes 是 UTF-8 Idempotency-Key 允许的最大字节数。
+	MaxKeyBytes int
+	// TerminalRetention 是 sandbox 终态后幂等记录至少保留的时长。
+	TerminalRetention time.Duration
+	// GCInterval 是终态幂等记录回收扫描的周期。
+	GCInterval time.Duration
+}
+
+// RecoveryConfig 描述启动 inventory 对受管 orphan 的只读分类与导入策略。
+type RecoveryConfig struct {
+	// ImportTrustedOrphans 表示是否导入通过完整身份与 spec 验证的 orphan bundle。
+	ImportTrustedOrphans bool
+	// RecordAmbiguousAnomalies 表示是否持久记录无法安全接管的歧义资源；
+	// Phase 3 固定开启，且不赋予自动删除或修复权限。
+	RecordAmbiguousAnomalies bool
+}
+
+// AdminConfig 描述复用 loopback listener 的只读管理端点开关与凭据文件引用。
+type AdminConfig struct {
+	// Enabled 表示是否注册 `/metrics` 与 `/v1/admin/**`；关闭时不读取 TokenFile。
+	Enabled bool
+	// TokenFile 是 admin bearer token 的绝对 secret file 路径；只保存引用，
+	// 不允许在配置模型中保存 raw token，普通 JSON/YAML dump 也不得输出该路径。
+	TokenFile string `json:"-" yaml:"-"`
+}
+
 // Default 返回 Phase 1 的安全默认配置。
 //
 // 默认值遵循安全边界:仅监听 loopback、网络模式为 none、workspace 非持久、
@@ -225,6 +261,7 @@ func Default() Config {
 		},
 		Limits: LimitsConfig{
 			DefaultTTL:              30 * time.Minute,
+			MinimumTTL:              time.Minute,
 			MaximumTTL:              24 * time.Hour,
 			MaxSandboxes:            100,
 			MaxConcurrentCreates:    4,
@@ -291,6 +328,19 @@ func Default() Config {
 			DockerFreshness:          30 * time.Second,
 			RunnerReadyTimeout:       30 * time.Second,
 			DeletionTimeout:          30 * time.Second,
+		},
+		Idempotency: IdempotencyConfig{
+			MaxKeyBytes:       128,
+			TerminalRetention: 24 * time.Hour,
+			GCInterval:        10 * time.Minute,
+		},
+		Recovery: RecoveryConfig{
+			ImportTrustedOrphans:     true,
+			RecordAmbiguousAnomalies: true,
+		},
+		Admin: AdminConfig{
+			Enabled:   false,
+			TokenFile: "",
 		},
 	}
 }

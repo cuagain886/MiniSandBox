@@ -1,11 +1,15 @@
 package config
 
 import (
+	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
 	"minisandbox/internal/domain"
+
+	"go.yaml.in/yaml/v3"
 )
 
 // TestDefaultSnapshot 以快照方式钉死全部默认值,任何默认值变化都必须
@@ -35,6 +39,7 @@ func TestDefaultSnapshot(t *testing.T) {
 		},
 		Limits: LimitsConfig{
 			DefaultTTL:              30 * time.Minute,
+			MinimumTTL:              time.Minute,
 			MaximumTTL:              24 * time.Hour,
 			MaxSandboxes:            100,
 			MaxConcurrentCreates:    4,
@@ -102,10 +107,45 @@ func TestDefaultSnapshot(t *testing.T) {
 			RunnerReadyTimeout:       30 * time.Second,
 			DeletionTimeout:          30 * time.Second,
 		},
+		Idempotency: IdempotencyConfig{
+			MaxKeyBytes:       128,
+			TerminalRetention: 24 * time.Hour,
+			GCInterval:        10 * time.Minute,
+		},
+		Recovery: RecoveryConfig{
+			ImportTrustedOrphans:     true,
+			RecordAmbiguousAnomalies: true,
+		},
+		Admin: AdminConfig{
+			Enabled:   false,
+			TokenFile: "",
+		},
 	}
 
 	if got := Default(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("default config snapshot mismatch:\ngot  %+v\nwant %+v", got, want)
+	}
+}
+
+// TestAdminTokenFileExcludedFromConfigDumps 验证普通结构化配置输出不会泄露
+// admin secret file 路径；实际启动加载器仍可直接读取强类型字段。
+func TestAdminTokenFileExcludedFromConfigDumps(t *testing.T) {
+	cfg := Default()
+	cfg.Admin.TokenFile = "/run/secrets/admin-token-canary"
+
+	jsonDump, err := json.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal JSON config dump: %v", err)
+	}
+	yamlDump, err := yaml.Marshal(cfg)
+	if err != nil {
+		t.Fatalf("marshal YAML config dump: %v", err)
+	}
+	for name, dump := range map[string][]byte{"json": jsonDump, "yaml": yamlDump} {
+		text := string(dump)
+		if strings.Contains(text, "admin-token-canary") || strings.Contains(text, "TokenFile") || strings.Contains(text, "token_file") {
+			t.Fatalf("%s config dump leaked admin token file reference: %s", name, dump)
+		}
 	}
 }
 
