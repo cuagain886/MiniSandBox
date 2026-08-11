@@ -1,0 +1,51 @@
+{
+  "contract_version": "phase3-v1",
+  "cases": [
+    {
+      "name": "create",
+      "positive": "../lifecycle/create-request.json",
+      "negative": "create-request-invalid-ttl.json",
+      "method": "POST",
+      "path": "/v1/sandboxes",
+      "success_status": 202
+    },
+    {
+      "name": "renew",
+      "positive": "../lifecycle/renew-request.json",
+      "negative": "../lifecycle/renew-request-invalid-time.json",
+      "method": "POST",
+      "path": "/v1/sandboxes/{sandbox_id}/renew",
+      "success_status": 200
+    },
+    {
+      "name": "idempotency",
+      "positive": "../lifecycle/create-idempotency-replay.json",
+      "negative": "../lifecycle/create-idempotency-conflict.json",
+      "method": "POST",
+      "path": "/v1/sandboxes",
+      "success_status": 202
+    },
+    {
+      "name": "diagnostics",
+      "positive": "../admin/diagnostics-full.json",
+      "negative": "../admin/diagnostics-missing-runner-section.json",
+      "method": "GET",
+      "path": "/v1/admin/sandboxes/{sandbox_id}/diagnostics",
+      "success_status": 200
+    },
+    {
+      "name": "error",
+      "positive": "../lifecycle/renew-lease-conflict.json",
+      "negative": "error-missing-retryable.json",
+      "method": "POST",
+      "path": "/v1/sandboxes/{sandbox_id}/renew",
+      "success_status": 409
+    }
+  ],
+  "migration": {
+    "fixture": "phase2-schema-v1.sql",
+    "snapshot": "phase2-domain-snapshot.json",
+    "from_version": 1,
+    "to_version": 4
+  }
+}

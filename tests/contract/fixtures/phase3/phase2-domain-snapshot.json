@@ -1,0 +1,28 @@
+{
+  "records": [
+    {
+      "id": "phase2-deleting",
+      "desired_state": "Terminated",
+      "observed_state": "Running",
+      "revision": 7,
+      "expiry_policy": "migration_time",
+      "origin": "api"
+    },
+    {
+      "id": "phase2-running",
+      "desired_state": "Running",
+      "observed_state": "Running",
+      "revision": 11,
+      "expiry_policy": "migration_time_plus_default_ttl",
+      "origin": "api"
+    },
+    {
+      "id": "phase2-terminated",
+      "desired_state": "Terminated",
+      "observed_state": "Terminated",
+      "revision": 13,
+      "expiry_policy": "last_transition_at",
+      "origin": "api"
+    }
+  ]
+}

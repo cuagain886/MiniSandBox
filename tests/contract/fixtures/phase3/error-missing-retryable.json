@@ -1,0 +1,7 @@
+{
+  "error": {
+    "code": "LEASE_CONFLICT",
+    "message": "Sandbox lease cannot be shortened.",
+    "request_id": "req-missing-field"
+  }
+}
