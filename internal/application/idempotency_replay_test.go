@@ -37,10 +37,10 @@ func TestCommitIdempotentCreatePreservesReplayResponse(t *testing.T) {
 // TestCommitIdempotentCreatePreservesStoreError 验证 typed Store 错误可由后续 mapper 识别。
 func TestCommitIdempotentCreatePreservesStoreError(t *testing.T) {
 	fake := testutil.NewFakeStore()
-	fake.SetCreateIdempotentResult(storeport.IdempotentCreateResult{}, domain.ErrConflict)
+	fake.SetCreateIdempotentResult(storeport.IdempotentCreateResult{}, domain.ErrIdempotencyConflict)
 	service := NewSandboxService(fake, nil, nil, SandboxSpecBuilder{}, nil)
 	_, err := service.CommitIdempotentCreate(context.Background(), storeport.IdempotentCreateRequest{})
-	if !errors.Is(err, domain.ErrConflict) {
-		t.Fatalf("got %v, want conflict", err)
+	if !errors.Is(err, domain.ErrIdempotencyConflict) {
+		t.Fatalf("got %v, want idempotency conflict", err)
 	}
 }

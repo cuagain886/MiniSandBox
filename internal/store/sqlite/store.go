@@ -9,6 +9,7 @@ package sqlite
 import (
 	"bytes"
 	"context"
+	"crypto/subtle"
 	"database/sql"
 	"encoding/json"
 	"errors"
@@ -305,8 +306,8 @@ func (s *Store) CreateIdempotent(
 		request.Key,
 	).Scan(&existingHash, &existingSandboxID, &existingStatus, &existingLocation, &existingBody, &existingCreatedAt)
 	if err == nil {
-		if existingHash != request.RequestHash {
-			return storeport.IdempotentCreateResult{}, domain.ErrConflict
+		if subtle.ConstantTimeCompare([]byte(existingHash), []byte(request.RequestHash)) != 1 {
+			return storeport.IdempotentCreateResult{}, domain.ErrIdempotencyConflict
 		}
 		response, err := decodeIdempotentResponse(
 			existingSandboxID,

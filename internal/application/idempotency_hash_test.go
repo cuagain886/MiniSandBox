@@ -50,3 +50,29 @@ func TestHashCanonicalCreateRequestRejectsInvalidSize(t *testing.T) {
 		t.Fatalf("maximum canonical input: %q/%v", got, err)
 	}
 }
+
+// TestHashCanonicalCreateRequestDistinguishesCreateFields 验证 image、TTL 和 outbound 差异均改变身份。
+func TestHashCanonicalCreateRequestDistinguishesCreateFields(t *testing.T) {
+	ttl60, ttl61 := int64(60), int64(61)
+	requests := []CanonicalCreateRequest{
+		{Image: "alpine", TTLSeconds: &ttl60},
+		{Image: "busybox", TTLSeconds: &ttl60},
+		{Image: "alpine", TTLSeconds: &ttl61},
+		{Image: "alpine", TTLSeconds: &ttl60, Outbound: true},
+	}
+	hashes := make(map[string]struct{}, len(requests))
+	for _, request := range requests {
+		canonical, err := CanonicalizeCreateRequest(request)
+		if err != nil {
+			t.Fatalf("canonicalize %#v: %v", request, err)
+		}
+		hash, err := HashCanonicalCreateRequest(canonical)
+		if err != nil {
+			t.Fatalf("hash %#v: %v", request, err)
+		}
+		hashes[hash] = struct{}{}
+	}
+	if len(hashes) != len(requests) {
+		t.Fatalf("field differences collapsed into %d hashes", len(hashes))
+	}
+}
