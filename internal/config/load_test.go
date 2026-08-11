@@ -92,6 +92,10 @@ runtime:
 limits:
   default_ttl: "10m"
   maximum_ttl: "2h"
+  max_sandboxes: 12
+  max_concurrent_creates: 3
+  max_concurrent_image_pulls: 5
+  max_concurrent_deletes: 7
   default_resources:
     cpu_quota_millis: 250
     memory_mib: 128
@@ -137,6 +141,15 @@ egress:
     pids: 24
 reconcile:
   interval: "5s"
+  jitter: "1s"
+  timeout: "90s"
+  page_size: 25
+  max_concurrent: 6
+  retry_min: "250ms"
+  retry_max: "20s"
+  running_check_interval: "15s"
+  runner_unhealthy_threshold: 5
+  docker_freshness: "12s"
   runner_ready_timeout: "20s"
   deletion_timeout: "45s"
 `)
@@ -169,8 +182,12 @@ reconcile:
 			},
 		},
 		Limits: LimitsConfig{
-			DefaultTTL: 10 * time.Minute,
-			MaximumTTL: 2 * time.Hour,
+			DefaultTTL:              10 * time.Minute,
+			MaximumTTL:              2 * time.Hour,
+			MaxSandboxes:            12,
+			MaxConcurrentCreates:    3,
+			MaxConcurrentImagePulls: 5,
+			MaxConcurrentDeletes:    7,
 			DefaultResources: domain.ResourceLimits{
 				CPUQuotaMillis: 250,
 				MemoryMiB:      128,
@@ -220,9 +237,18 @@ reconcile:
 			},
 		},
 		Reconcile: ReconcileConfig{
-			Interval:           5 * time.Second,
-			RunnerReadyTimeout: 20 * time.Second,
-			DeletionTimeout:    45 * time.Second,
+			Interval:                 5 * time.Second,
+			Jitter:                   time.Second,
+			Timeout:                  90 * time.Second,
+			PageSize:                 25,
+			MaxConcurrent:            6,
+			RetryMin:                 250 * time.Millisecond,
+			RetryMax:                 20 * time.Second,
+			RunningCheckInterval:     15 * time.Second,
+			RunnerUnhealthyThreshold: 5,
+			DockerFreshness:          12 * time.Second,
+			RunnerReadyTimeout:       20 * time.Second,
+			DeletionTimeout:          45 * time.Second,
 		},
 	}
 	if !reflect.DeepEqual(got, want) {

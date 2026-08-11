@@ -83,6 +83,14 @@ type LimitsConfig struct {
 	DefaultTTL time.Duration
 	// MaximumTTL 是单个 sandbox 允许的最长存活时长。
 	MaximumTTL time.Duration
+	// MaxSandboxes 是服务实例允许同时存在的非 Terminated sandbox 数量上限。
+	MaxSandboxes int
+	// MaxConcurrentCreates 是所有 sandbox 共享的 runtime create 并发上限。
+	MaxConcurrentCreates int
+	// MaxConcurrentImagePulls 是所有 sandbox 共享的镜像拉取并发上限。
+	MaxConcurrentImagePulls int
+	// MaxConcurrentDeletes 是删除、过期、清理和恢复共享的 runtime delete 并发上限。
+	MaxConcurrentDeletes int
 	// DefaultResources 是未显式申请资源时分配给 sandbox 的默认上限。
 	DefaultResources domain.ResourceLimits
 	// MaxResources 是服务端允许申请的资源上限,供 spec 校验使用。
@@ -164,6 +172,24 @@ type EgressConfig struct {
 type ReconcileConfig struct {
 	// Interval 是周期性扫描待收敛 sandbox 的间隔。
 	Interval time.Duration
+	// Jitter 是每轮扫描间隔可增加的最大随机延迟，避免固定节拍形成尖峰。
+	Jitter time.Duration
+	// Timeout 是单个 reconcile attempt 的最长执行时间。
+	Timeout time.Duration
+	// PageSize 是一次 Store keyset 查询最多读取的候选记录数。
+	PageSize int
+	// MaxConcurrent 是 reconcile worker 同时处理的 sandbox 数量上限。
+	MaxConcurrent int
+	// RetryMin 是 retryable failure 第一次 full-jitter backoff 的上限基数。
+	RetryMin time.Duration
+	// RetryMax 是持久化 retry backoff 的最大上限。
+	RetryMax time.Duration
+	// RunningCheckInterval 是 Running sandbox 再次检查 actual state 的周期。
+	RunningCheckInterval time.Duration
+	// RunnerUnhealthyThreshold 是连续 runner probe 失败后触发恢复的次数阈值。
+	RunnerUnhealthyThreshold int
+	// DockerFreshness 是最近一次成功 Docker probe 可维持 readiness 的时长。
+	DockerFreshness time.Duration
 	// RunnerReadyTimeout 是容器启动后等待 runner 就绪的最长时间。
 	RunnerReadyTimeout time.Duration
 	// DeletionTimeout 是清理受管资源的单次收敛最长时间。
@@ -198,8 +224,12 @@ func Default() Config {
 			},
 		},
 		Limits: LimitsConfig{
-			DefaultTTL: 30 * time.Minute,
-			MaximumTTL: 24 * time.Hour,
+			DefaultTTL:              30 * time.Minute,
+			MaximumTTL:              24 * time.Hour,
+			MaxSandboxes:            100,
+			MaxConcurrentCreates:    4,
+			MaxConcurrentImagePulls: 2,
+			MaxConcurrentDeletes:    4,
 			DefaultResources: domain.ResourceLimits{
 				CPUQuotaMillis: 500,
 				MemoryMiB:      512,
@@ -249,9 +279,18 @@ func Default() Config {
 			},
 		},
 		Reconcile: ReconcileConfig{
-			Interval:           2 * time.Second,
-			RunnerReadyTimeout: 30 * time.Second,
-			DeletionTimeout:    30 * time.Second,
+			Interval:                 10 * time.Second,
+			Jitter:                   2 * time.Second,
+			Timeout:                  2 * time.Minute,
+			PageSize:                 100,
+			MaxConcurrent:            8,
+			RetryMin:                 time.Second,
+			RetryMax:                 time.Minute,
+			RunningCheckInterval:     30 * time.Second,
+			RunnerUnhealthyThreshold: 3,
+			DockerFreshness:          30 * time.Second,
+			RunnerReadyTimeout:       30 * time.Second,
+			DeletionTimeout:          30 * time.Second,
 		},
 	}
 }

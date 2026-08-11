@@ -59,10 +59,14 @@ type filePlatform struct {
 
 // fileLimits 对应 limits 分组的文件字段。
 type fileLimits struct {
-	DefaultTTL       *string        `yaml:"default_ttl"`
-	MaximumTTL       *string        `yaml:"maximum_ttl"`
-	DefaultResources *fileResources `yaml:"default_resources"`
-	MaxResources     *fileResources `yaml:"max_resources"`
+	DefaultTTL              *string        `yaml:"default_ttl"`
+	MaximumTTL              *string        `yaml:"maximum_ttl"`
+	MaxSandboxes            *int           `yaml:"max_sandboxes"`
+	MaxConcurrentCreates    *int           `yaml:"max_concurrent_creates"`
+	MaxConcurrentImagePulls *int           `yaml:"max_concurrent_image_pulls"`
+	MaxConcurrentDeletes    *int           `yaml:"max_concurrent_deletes"`
+	DefaultResources        *fileResources `yaml:"default_resources"`
+	MaxResources            *fileResources `yaml:"max_resources"`
 }
 
 // fileResources 对应资源三元组的文件字段,default_resources 与
@@ -115,9 +119,18 @@ type fileEgress struct {
 
 // fileReconcile 对应 reconcile 分组的文件字段。
 type fileReconcile struct {
-	Interval           *string `yaml:"interval"`
-	RunnerReadyTimeout *string `yaml:"runner_ready_timeout"`
-	DeletionTimeout    *string `yaml:"deletion_timeout"`
+	Interval                 *string `yaml:"interval"`
+	Jitter                   *string `yaml:"jitter"`
+	Timeout                  *string `yaml:"timeout"`
+	PageSize                 *int    `yaml:"page_size"`
+	MaxConcurrent            *int    `yaml:"max_concurrent"`
+	RetryMin                 *string `yaml:"retry_min"`
+	RetryMax                 *string `yaml:"retry_max"`
+	RunningCheckInterval     *string `yaml:"running_check_interval"`
+	RunnerUnhealthyThreshold *int    `yaml:"runner_unhealthy_threshold"`
+	DockerFreshness          *string `yaml:"docker_freshness"`
+	RunnerReadyTimeout       *string `yaml:"runner_ready_timeout"`
+	DeletionTimeout          *string `yaml:"deletion_timeout"`
 }
 
 // Load 从显式路径读取 YAML 配置,并把文件中出现的字段覆盖到安全默认值上。
@@ -197,6 +210,10 @@ func (f fileConfig) apply(base Config) (Config, error) {
 		); err != nil {
 			return Config{}, err
 		}
+		override(&cfg.Limits.MaxSandboxes, f.Limits.MaxSandboxes)
+		override(&cfg.Limits.MaxConcurrentCreates, f.Limits.MaxConcurrentCreates)
+		override(&cfg.Limits.MaxConcurrentImagePulls, f.Limits.MaxConcurrentImagePulls)
+		override(&cfg.Limits.MaxConcurrentDeletes, f.Limits.MaxConcurrentDeletes)
 		if err := overrideDuration(
 			&cfg.Limits.MaximumTTL,
 			f.Limits.MaximumTTL,
@@ -314,6 +331,27 @@ func (f fileConfig) apply(base Config) (Config, error) {
 			f.Reconcile.Interval,
 			"reconcile.interval",
 		); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(&cfg.Reconcile.Jitter, f.Reconcile.Jitter, "reconcile.jitter"); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(&cfg.Reconcile.Timeout, f.Reconcile.Timeout, "reconcile.timeout"); err != nil {
+			return Config{}, err
+		}
+		override(&cfg.Reconcile.PageSize, f.Reconcile.PageSize)
+		override(&cfg.Reconcile.MaxConcurrent, f.Reconcile.MaxConcurrent)
+		if err := overrideDuration(&cfg.Reconcile.RetryMin, f.Reconcile.RetryMin, "reconcile.retry_min"); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(&cfg.Reconcile.RetryMax, f.Reconcile.RetryMax, "reconcile.retry_max"); err != nil {
+			return Config{}, err
+		}
+		if err := overrideDuration(&cfg.Reconcile.RunningCheckInterval, f.Reconcile.RunningCheckInterval, "reconcile.running_check_interval"); err != nil {
+			return Config{}, err
+		}
+		override(&cfg.Reconcile.RunnerUnhealthyThreshold, f.Reconcile.RunnerUnhealthyThreshold)
+		if err := overrideDuration(&cfg.Reconcile.DockerFreshness, f.Reconcile.DockerFreshness, "reconcile.docker_freshness"); err != nil {
 			return Config{}, err
 		}
 		if err := overrideDuration(

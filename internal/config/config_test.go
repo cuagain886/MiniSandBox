@@ -34,8 +34,12 @@ func TestDefaultSnapshot(t *testing.T) {
 			},
 		},
 		Limits: LimitsConfig{
-			DefaultTTL: 30 * time.Minute,
-			MaximumTTL: 24 * time.Hour,
+			DefaultTTL:              30 * time.Minute,
+			MaximumTTL:              24 * time.Hour,
+			MaxSandboxes:            100,
+			MaxConcurrentCreates:    4,
+			MaxConcurrentImagePulls: 2,
+			MaxConcurrentDeletes:    4,
 			DefaultResources: domain.ResourceLimits{
 				CPUQuotaMillis: 500,
 				MemoryMiB:      512,
@@ -85,9 +89,18 @@ func TestDefaultSnapshot(t *testing.T) {
 			},
 		},
 		Reconcile: ReconcileConfig{
-			Interval:           2 * time.Second,
-			RunnerReadyTimeout: 30 * time.Second,
-			DeletionTimeout:    30 * time.Second,
+			Interval:                 10 * time.Second,
+			Jitter:                   2 * time.Second,
+			Timeout:                  2 * time.Minute,
+			PageSize:                 100,
+			MaxConcurrent:            8,
+			RetryMin:                 time.Second,
+			RetryMax:                 time.Minute,
+			RunningCheckInterval:     30 * time.Second,
+			RunnerUnhealthyThreshold: 3,
+			DockerFreshness:          30 * time.Second,
+			RunnerReadyTimeout:       30 * time.Second,
+			DeletionTimeout:          30 * time.Second,
 		},
 	}
 

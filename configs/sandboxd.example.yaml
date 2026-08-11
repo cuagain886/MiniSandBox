@@ -19,13 +19,26 @@ runtime:
     arch: "amd64"
 
 reconcile:
-  interval: "2s"
+  interval: "10s"
+  jitter: "2s"
+  timeout: "2m"
+  page_size: 100
+  max_concurrent: 8
+  retry_min: "1s"
+  retry_max: "1m"
+  running_check_interval: "30s"
+  runner_unhealthy_threshold: 3
+  docker_freshness: "30s"
   runner_ready_timeout: "30s"
   deletion_timeout: "30s"
 
 limits:
   default_ttl: "30m"
   maximum_ttl: "24h"
+  max_sandboxes: 100
+  max_concurrent_creates: 4
+  max_concurrent_image_pulls: 2
+  max_concurrent_deletes: 4
   default_resources:
     cpu_quota_millis: 500
     memory_mib: 512
