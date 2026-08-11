@@ -502,7 +502,7 @@ func (s *reconcileStore) UpdateObserved(
 // ListReconcileCandidates 未被单 ID reconcile 使用。
 func (s *reconcileStore) ListReconcileCandidates(
 	context.Context,
-	int,
+	store.ReconcileCandidateQuery,
 ) ([]domain.Sandbox, error) {
 	return nil, errors.New("unexpected ListReconcileCandidates")
 }

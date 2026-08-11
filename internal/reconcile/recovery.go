@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
@@ -98,7 +99,15 @@ func (s *RecoveryService) Run(ctx context.Context) error {
 	if limit == 0 {
 		limit = 1
 	}
-	candidates, err := s.store.ListReconcileCandidates(ctx, limit)
+	now := time.Now().UTC()
+	candidates, err := s.store.ListReconcileCandidates(
+		ctx,
+		store.ReconcileCandidateQuery{
+			Now:           now,
+			RunningCutoff: now,
+			Limit:         limit,
+		},
+	)
 	if err != nil {
 		return fmt.Errorf("list reconcile candidates for recovery: %w", err)
 	}

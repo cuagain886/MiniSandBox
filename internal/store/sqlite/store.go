@@ -489,16 +489,16 @@ func (s *Store) UpdateObserved(
 	return updated, nil
 }
 
-// ListReconcileCandidates 按稳定顺序返回最多 limit 条仍需收敛的记录。
+// ListReconcileCandidates 按 ID keyset 返回当前真正 due 的记录。
 //
-// Pending、Creating 和 Stopping 始终需要继续处理；稳定的 Running/Terminated
-// 只在 desired 不一致时处理；Failed 仅在 CLEANUP_PENDING 或已提交终止意图
-// 时处理，避免普通不可重试创建失败形成忙循环。limit 必须为正数。
+// expiry 绕过旧 retry backoff；其他状态转换、cleanup、scheduled retry 和
+// Running health check 都受 next_reconcile_at 门控。普通不可重试 Failed 和
+// 稳定 Terminated 不进入候选。查询不修改 retry metadata，也不持有 cursor。
 func (s *Store) ListReconcileCandidates(
 	ctx context.Context,
-	limit int,
+	query storeport.ReconcileCandidateQuery,
 ) ([]domain.Sandbox, error) {
-	if limit < 1 {
+	if query.Now.IsZero() || query.RunningCutoff.IsZero() || query.Limit < 1 {
 		return nil, fmt.Errorf(
 			"list reconcile candidates: %w",
 			domain.ErrInvalid,
@@ -509,27 +509,48 @@ func (s *Store) ListReconcileCandidates(
 		ctx,
 		`SELECT `+sandboxSelectColumns+`
 		FROM sandboxes
-		WHERE
+		WHERE id > ? AND (
 			(
-				desired_state <> observed_state AND
-				observed_state IN (?, ?)
-			) OR
-			observed_state IN (?, ?, ?) OR
-			(
-				observed_state = ? AND
-				(desired_state = ? OR reason = ?)
+				desired_state = ? AND
+				observed_state <> ? AND
+				expires_at <= ?
+			) OR (
+				(next_reconcile_at IS NULL OR next_reconcile_at <= ?) AND (
+					observed_state IN (?, ?, ?) OR
+					(desired_state = ? AND observed_state <> ?) OR
+					(desired_state = ? AND observed_state = ?) OR
+					(
+						observed_state = ? AND
+						(desired_state = ? OR reason = ? OR next_reconcile_at IS NOT NULL)
+					) OR
+					(
+						desired_state = ? AND observed_state = ? AND
+						(last_reconcile_at IS NULL OR last_reconcile_at <= ?)
+					)
+				)
 			)
-		ORDER BY created_at ASC, id ASC
+		)
+		ORDER BY id ASC
 		LIMIT ?`,
-		domain.StateRunning,
+		query.AfterID,
+		domain.DesiredRunning,
 		domain.StateTerminated,
+		query.Now.UTC().Format(time.RFC3339Nano),
+		query.Now.UTC().Format(time.RFC3339Nano),
 		domain.StatePending,
 		domain.StateCreating,
 		domain.StateStopping,
+		domain.DesiredTerminated,
+		domain.StateTerminated,
+		domain.DesiredRunning,
+		domain.StateTerminated,
 		domain.StateFailed,
 		domain.DesiredTerminated,
 		cleanupPendingReason,
-		limit,
+		domain.DesiredRunning,
+		domain.StateRunning,
+		query.RunningCutoff.UTC().Format(time.RFC3339Nano),
+		query.Limit,
 	)
 	if err != nil {
 		return nil, fmt.Errorf(

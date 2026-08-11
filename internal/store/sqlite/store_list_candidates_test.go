@@ -8,194 +8,221 @@ import (
 	"time"
 
 	"minisandbox/internal/domain"
+	storeport "minisandbox/internal/store"
 )
 
-// candidateFixture 描述候选矩阵中的一条持久化记录。
-type candidateFixture struct {
-	id       string
-	desired  domain.DesiredState
-	observed domain.SandboxState
-	reason   string
-	minute   int
-}
+var candidateNow = time.Date(2027, 3, 4, 5, 0, 0, 0, time.UTC)
 
-// populateCandidateMatrix 插入覆盖全部 Phase 1 候选分支的乱序记录。
-func populateCandidateMatrix(t *testing.T) *Store {
+// createCandidate 插入一条默认未过期且没有调度元数据的记录。
+func createCandidate(
+	t *testing.T,
+	store *Store,
+	id string,
+	desired domain.DesiredState,
+	observed domain.SandboxState,
+	reason string,
+) {
 	t.Helper()
-
-	store := migrateTestStore(t)
-	base := time.Date(2027, 3, 4, 5, 0, 0, 0, time.UTC)
-	fixtures := []candidateFixture{
-		{
-			id:       "stable-running",
-			desired:  domain.DesiredRunning,
-			observed: domain.StateRunning,
-			reason:   "RUNNING",
-			minute:   9,
-		},
-		{
-			id:       "delete-running",
-			desired:  domain.DesiredTerminated,
-			observed: domain.StateRunning,
-			reason:   "RUNNING",
-			minute:   7,
-		},
-		{
-			id:       "cleanup-b",
-			desired:  domain.DesiredRunning,
-			observed: domain.StateFailed,
-			reason:   "CLEANUP_PENDING",
-			minute:   2,
-		},
-		{
-			id:       "ordinary-failure",
-			desired:  domain.DesiredRunning,
-			observed: domain.StateFailed,
-			reason:   "IMAGE_PULL_FAILED",
-			minute:   1,
-		},
-		{
-			id:       "pending",
-			desired:  domain.DesiredRunning,
-			observed: domain.StatePending,
-			reason:   "CREATE_ACCEPTED",
-			minute:   5,
-		},
-		{
-			id:       "stable-terminated",
-			desired:  domain.DesiredTerminated,
-			observed: domain.StateTerminated,
-			reason:   "TERMINATED",
-			minute:   0,
-		},
-		{
-			id:       "running-but-terminated",
-			desired:  domain.DesiredRunning,
-			observed: domain.StateTerminated,
-			reason:   "TERMINATED",
-			minute:   8,
-		},
-		{
-			id:       "creating",
-			desired:  domain.DesiredRunning,
-			observed: domain.StateCreating,
-			reason:   "CREATING_RUNTIME",
-			minute:   3,
-		},
-		{
-			id:       "delete-failed",
-			desired:  domain.DesiredTerminated,
-			observed: domain.StateFailed,
-			reason:   "IMAGE_PULL_FAILED",
-			minute:   6,
-		},
-		{
-			id:       "cleanup-a",
-			desired:  domain.DesiredRunning,
-			observed: domain.StateFailed,
-			reason:   "CLEANUP_PENDING",
-			minute:   2,
-		},
-		{
-			id:       "stopping",
-			desired:  domain.DesiredTerminated,
-			observed: domain.StateStopping,
-			reason:   "DELETING_RUNTIME",
-			minute:   4,
-		},
+	sandbox := createTestSandbox()
+	sandbox.ID = id
+	sandbox.DesiredState = desired
+	sandbox.ObservedState = observed
+	sandbox.Reason = reason
+	expiresAt := candidateNow.Add(time.Hour)
+	sandbox.ExpiresAt = &expiresAt
+	if err := store.Create(context.Background(), sandbox); err != nil {
+		t.Fatalf("create candidate %q: %v", id, err)
 	}
-
-	for _, fixture := range fixtures {
-		sandbox := createTestSandbox()
-		sandbox.ID = fixture.id
-		sandbox.DesiredState = fixture.desired
-		sandbox.ObservedState = fixture.observed
-		sandbox.Reason = fixture.reason
-		sandbox.CreatedAt = base.Add(time.Duration(fixture.minute) * time.Minute)
-		sandbox.UpdatedAt = sandbox.CreatedAt
-		sandbox.LastTransitionAt = sandbox.CreatedAt
-		if err := store.Create(context.Background(), sandbox); err != nil {
-			t.Fatalf("create fixture %q: %v", fixture.id, err)
-		}
-	}
-	return store
 }
 
-// TestListReconcileCandidatesStateMatrix 验证候选状态组合和稳定排序。
-func TestListReconcileCandidatesStateMatrix(t *testing.T) {
-	store := populateCandidateMatrix(t)
+// setCandidateTimes 只在 adapter 测试中构造持久化调度边界。
+func setCandidateTimes(
+	t *testing.T,
+	store *Store,
+	id string,
+	expiresAt time.Time,
+	nextReconcileAt *time.Time,
+	lastReconcileAt *time.Time,
+) {
+	t.Helper()
+	var next any
+	if nextReconcileAt != nil {
+		next = nextReconcileAt.UTC().Format(time.RFC3339Nano)
+	}
+	var last any
+	if lastReconcileAt != nil {
+		last = lastReconcileAt.UTC().Format(time.RFC3339Nano)
+	}
+	if _, err := store.db.Exec(
+		`UPDATE sandboxes
+		SET expires_at = ?, next_reconcile_at = ?, last_reconcile_at = ?
+		WHERE id = ?`,
+		expiresAt.UTC().Format(time.RFC3339Nano),
+		next,
+		last,
+		id,
+	); err != nil {
+		t.Fatalf("set candidate times %q: %v", id, err)
+	}
+}
 
-	got, err := store.ListReconcileCandidates(context.Background(), 100)
+// dueQuery 返回固定边界，避免测试依赖墙上时钟。
+func dueQuery(afterID string, limit int) storeport.ReconcileCandidateQuery {
+	return storeport.ReconcileCandidateQuery{
+		Now:           candidateNow,
+		RunningCutoff: candidateNow.Add(-30 * time.Second),
+		AfterID:       afterID,
+		Limit:         limit,
+	}
+}
+
+// TestListReconcileCandidatesDueMatrix 验证 expiry、retry、cleanup 和健康检查边界。
+func TestListReconcileCandidatesDueMatrix(t *testing.T) {
+	store := migrateTestStore(t)
+	past := candidateNow.Add(-time.Minute)
+	future := candidateNow.Add(time.Minute)
+	oldHealth := candidateNow.Add(-time.Minute)
+	newHealth := candidateNow
+
+	fixtures := []struct {
+		id       string
+		desired  domain.DesiredState
+		observed domain.SandboxState
+		reason   string
+		next     *time.Time
+		last     *time.Time
+		expires  time.Time
+	}{
+		{"cleanup-due", domain.DesiredRunning, domain.StateFailed, cleanupPendingReason, &past, nil, future},
+		{"cleanup-future", domain.DesiredRunning, domain.StateFailed, cleanupPendingReason, &future, nil, future},
+		{"creating-due", domain.DesiredRunning, domain.StateCreating, "CREATING_RUNTIME", &past, nil, future},
+		{"creating-future", domain.DesiredRunning, domain.StateCreating, "CREATING_RUNTIME", &future, nil, future},
+		{"delete-failed-due", domain.DesiredTerminated, domain.StateFailed, "DELETE_FAILED", nil, nil, future},
+		{"delete-running-due", domain.DesiredTerminated, domain.StateRunning, "RUNNING", nil, nil, future},
+		{"expired-bypasses-backoff", domain.DesiredRunning, domain.StateRunning, "RUNNING", &future, &newHealth, past},
+		{"ordinary-failed", domain.DesiredRunning, domain.StateFailed, "IMAGE_PULL_FAILED", nil, nil, future},
+		{"pending-due", domain.DesiredRunning, domain.StatePending, "CREATE_ACCEPTED", nil, nil, future},
+		{"retry-due", domain.DesiredRunning, domain.StateFailed, "RUNTIME_UNAVAILABLE", &past, nil, future},
+		{"retry-future", domain.DesiredRunning, domain.StateFailed, "RUNTIME_UNAVAILABLE", &future, nil, future},
+		{"running-health-due", domain.DesiredRunning, domain.StateRunning, "RUNNING", nil, &oldHealth, future},
+		{"running-health-future", domain.DesiredRunning, domain.StateRunning, "RUNNING", nil, &newHealth, future},
+		{"running-health-never", domain.DesiredRunning, domain.StateRunning, "RUNNING", nil, nil, future},
+		{"running-terminated-due", domain.DesiredRunning, domain.StateTerminated, "TERMINATED", nil, nil, future},
+		{"stable-terminated", domain.DesiredTerminated, domain.StateTerminated, "TERMINATED", nil, nil, future},
+		{"stopping-due", domain.DesiredTerminated, domain.StateStopping, "DELETING_RUNTIME", nil, nil, future},
+	}
+	for _, fixture := range fixtures {
+		createCandidate(t, store, fixture.id, fixture.desired, fixture.observed, fixture.reason)
+		setCandidateTimes(t, store, fixture.id, fixture.expires, fixture.next, fixture.last)
+	}
+
+	got, err := store.ListReconcileCandidates(context.Background(), dueQuery("", 100))
 	if err != nil {
 		t.Fatalf("list reconcile candidates: %v", err)
-	}
-
-	wantIDs := []string{
-		"cleanup-a",
-		"cleanup-b",
-		"creating",
-		"stopping",
-		"pending",
-		"delete-failed",
-		"delete-running",
-		"running-but-terminated",
 	}
 	gotIDs := make([]string, 0, len(got))
 	for _, sandbox := range got {
 		gotIDs = append(gotIDs, sandbox.ID)
-		if sandbox.Revision != 1 {
-			t.Fatalf("candidate %q revision: got %d, want 1", sandbox.ID, sandbox.Revision)
-		}
+	}
+	wantIDs := []string{
+		"cleanup-due",
+		"creating-due",
+		"delete-failed-due",
+		"delete-running-due",
+		"expired-bypasses-backoff",
+		"pending-due",
+		"retry-due",
+		"running-health-due",
+		"running-health-never",
+		"running-terminated-due",
+		"stopping-due",
 	}
 	if !reflect.DeepEqual(gotIDs, wantIDs) {
 		t.Fatalf("candidate IDs:\n got: %v\nwant: %v", gotIDs, wantIDs)
 	}
-}
-
-// TestListReconcileCandidatesLimit 验证 limit 截断稳定排序后的结果。
-func TestListReconcileCandidatesLimit(t *testing.T) {
-	store := populateCandidateMatrix(t)
-
-	got, err := store.ListReconcileCandidates(context.Background(), 3)
-	if err != nil {
-		t.Fatalf("list limited candidates: %v", err)
-	}
-	gotIDs := make([]string, 0, len(got))
-	for _, sandbox := range got {
-		gotIDs = append(gotIDs, sandbox.ID)
-	}
-	wantIDs := []string{"cleanup-a", "cleanup-b", "creating"}
-	if !reflect.DeepEqual(gotIDs, wantIDs) {
-		t.Fatalf("limited IDs: got %v, want %v", gotIDs, wantIDs)
+	if got[0].NextReconcileAt == nil || !got[0].NextReconcileAt.Equal(past) {
+		t.Fatalf("candidate metadata was not scanned: %#v", got[0])
 	}
 }
 
-// TestListReconcileCandidatesRejectsInvalidLimit 验证非正 limit 不执行无界查询。
-func TestListReconcileCandidatesRejectsInvalidLimit(t *testing.T) {
+// TestListReconcileCandidatesKeysetPagination 验证页面间插入和终态变化不会破坏游标语义。
+func TestListReconcileCandidatesKeysetPagination(t *testing.T) {
 	store := migrateTestStore(t)
+	for _, id := range []string{"a-due", "c-due", "e-due"} {
+		createCandidate(t, store, id, domain.DesiredRunning, domain.StatePending, "CREATE_ACCEPTED")
+	}
 
-	for _, limit := range []int{0, -1} {
-		got, err := store.ListReconcileCandidates(context.Background(), limit)
+	first, err := store.ListReconcileCandidates(context.Background(), dueQuery("", 2))
+	if err != nil {
+		t.Fatalf("list first page: %v", err)
+	}
+	if got := []string{first[0].ID, first[1].ID}; !reflect.DeepEqual(got, []string{"a-due", "c-due"}) {
+		t.Fatalf("first page IDs: %v", got)
+	}
+
+	// b 位于已消费游标之前，不能倒灌到下一页；d 位于游标之后，应被观察到。
+	createCandidate(t, store, "b-inserted", domain.DesiredRunning, domain.StatePending, "CREATE_ACCEPTED")
+	createCandidate(t, store, "d-inserted", domain.DesiredRunning, domain.StatePending, "CREATE_ACCEPTED")
+	if _, err := store.db.Exec(
+		`UPDATE sandboxes SET desired_state = ?, observed_state = ? WHERE id = ?`,
+		domain.DesiredTerminated,
+		domain.StateTerminated,
+		"e-due",
+	); err != nil {
+		t.Fatalf("terminate later candidate: %v", err)
+	}
+
+	second, err := store.ListReconcileCandidates(context.Background(), dueQuery("c-due", 2))
+	if err != nil {
+		t.Fatalf("list second page: %v", err)
+	}
+	if got := candidateIDs(second); !reflect.DeepEqual(got, []string{"d-inserted"}) {
+		t.Fatalf("second page IDs: %v", got)
+	}
+	restarted, err := store.ListReconcileCandidates(context.Background(), dueQuery("", 10))
+	if err != nil {
+		t.Fatalf("restart scan: %v", err)
+	}
+	if got := candidateIDs(restarted); !reflect.DeepEqual(got, []string{"a-due", "b-inserted", "c-due", "d-inserted"}) {
+		t.Fatalf("restarted scan IDs: %v", got)
+	}
+}
+
+// candidateIDs 提取稳定排序断言所需的 sandbox ID。
+func candidateIDs(candidates []domain.Sandbox) []string {
+	ids := make([]string, 0, len(candidates))
+	for _, candidate := range candidates {
+		ids = append(ids, candidate.ID)
+	}
+	return ids
+}
+
+// TestListReconcileCandidatesRejectsInvalidQuery 验证缺少时间边界或非正 limit 会被拒绝。
+func TestListReconcileCandidatesRejectsInvalidQuery(t *testing.T) {
+	store := migrateTestStore(t)
+	queries := []storeport.ReconcileCandidateQuery{
+		{RunningCutoff: candidateNow, Limit: 1},
+		{Now: candidateNow, Limit: 1},
+		{Now: candidateNow, RunningCutoff: candidateNow, Limit: 0},
+		{Now: candidateNow, RunningCutoff: candidateNow, Limit: -1},
+	}
+	for _, query := range queries {
+		got, err := store.ListReconcileCandidates(context.Background(), query)
 		if !errors.Is(err, domain.ErrInvalid) {
-			t.Fatalf("limit %d: got %v, want ErrInvalid", limit, err)
+			t.Fatalf("query %#v: got %v, want ErrInvalid", query, err)
 		}
 		if got != nil {
-			t.Fatalf("limit %d returned candidates: %#v", limit, got)
+			t.Fatalf("query %#v returned candidates: %#v", query, got)
 		}
 	}
 }
 
-// TestListReconcileCandidatesEmpty 验证没有候选时返回可直接迭代的空切片。
+// TestListReconcileCandidatesEmpty 验证没有 due 记录时返回非 nil 空切片。
 func TestListReconcileCandidatesEmpty(t *testing.T) {
 	store := migrateTestStore(t)
-	stable := createTestSandbox()
-	stable.ObservedState = domain.StateRunning
-	stable.Reason = "RUNNING"
-	if err := store.Create(context.Background(), stable); err != nil {
-		t.Fatalf("create stable sandbox: %v", err)
-	}
+	createCandidate(t, store, "stable", domain.DesiredTerminated, domain.StateTerminated, "TERMINATED")
 
-	got, err := store.ListReconcileCandidates(context.Background(), 10)
+	got, err := store.ListReconcileCandidates(context.Background(), dueQuery("", 10))
 	if err != nil {
 		t.Fatalf("list empty candidates: %v", err)
 	}

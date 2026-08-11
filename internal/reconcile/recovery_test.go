@@ -346,7 +346,7 @@ func (s *recoveryStore) UpdateObserved(
 // ListReconcileCandidates 返回 limit 内全部测试记录。
 func (s *recoveryStore) ListReconcileCandidates(
 	_ context.Context,
-	limit int,
+	query store.ReconcileCandidateQuery,
 ) ([]domain.Sandbox, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -354,6 +354,7 @@ func (s *recoveryStore) ListReconcileCandidates(
 	if s.candidatesErr != nil {
 		return nil, s.candidatesErr
 	}
+	limit := query.Limit
 	if limit > len(s.records) {
 		limit = len(s.records)
 	}

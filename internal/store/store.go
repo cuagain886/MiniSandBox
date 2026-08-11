@@ -8,9 +8,22 @@ package store
 import (
 	"context"
 	"errors"
+	"time"
 
 	"minisandbox/internal/domain"
 )
+
+// ReconcileCandidateQuery 描述一次有界、可续页的 due candidate 查询。
+type ReconcileCandidateQuery struct {
+	// Now 是判断 expiry 和持久化 retry 是否到期的 UTC 时间。
+	Now time.Time
+	// RunningCutoff 是 Running record 的 last_reconcile_at 截止时间。
+	RunningCutoff time.Time
+	// AfterID 是上一页最后一个 sandbox ID；空字符串表示第一页。
+	AfterID string
+	// Limit 是本页最多返回的记录数，必须为正数。
+	Limit int
+}
 
 // ErrCorrupt 表示持久化记录无法安全还原为领域对象。
 //
@@ -59,13 +72,13 @@ type Store interface {
 		ctx context.Context,
 		update ObservedUpdate,
 	) (domain.Sandbox, error)
-	// ListReconcileCandidates 返回最多 limit 条仍需收敛的记录。
+	// ListReconcileCandidates 返回一页在 query 时间边界上真正 due 的记录。
 	//
-	// limit 必须为正数；结果按创建时间和 ID 稳定排序，使重复扫描具有可预测
-	// 顺序，但返回顺序不构成调度优先级保证。
+	// 结果严格按 ID 递增，不使用 OFFSET；调用方用最后一个 ID 继续下一页。
+	// scanner cursor 不是事实源，下一轮必须从空 cursor 重新开始。
 	ListReconcileCandidates(
 		ctx context.Context,
-		limit int,
+		query ReconcileCandidateQuery,
 	) ([]domain.Sandbox, error)
 	// ListAll 返回全部持久化记录，用于启动恢复和诊断。
 	ListAll(ctx context.Context) ([]domain.Sandbox, error)

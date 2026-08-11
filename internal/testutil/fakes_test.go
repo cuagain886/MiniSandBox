@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"time"
 
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
@@ -69,12 +70,17 @@ func TestFakeStoreRecordsCallsAndInjectsResults(t *testing.T) {
 	}
 
 	fake.SetListReconcileCandidatesResult([]domain.Sandbox{sandbox}, injected)
-	listed, err := fake.ListReconcileCandidates(ctx, 25)
+	query := storeport.ReconcileCandidateQuery{
+		Now:           time.Now(),
+		RunningCutoff: time.Now(),
+		Limit:         25,
+	}
+	listed, err := fake.ListReconcileCandidates(ctx, query)
 	if !errors.Is(err, injected) || !reflect.DeepEqual(listed, []domain.Sandbox{sandbox}) {
 		t.Fatalf("ListReconcileCandidates result: %#v/%v", listed, err)
 	}
 	listed[0].ID = "mutated"
-	listedAgain, _ := fake.ListReconcileCandidates(ctx, 25)
+	listedAgain, _ := fake.ListReconcileCandidates(ctx, query)
 	if listedAgain[0].ID != sandbox.ID {
 		t.Fatal("candidate result mutation changed configured fake result")
 	}
@@ -162,7 +168,14 @@ func TestFakesConcurrentAccess(t *testing.T) {
 				ID:    sandbox.ID,
 				State: domain.StateRunning,
 			})
-			_, _ = storeFake.ListReconcileCandidates(ctx, 10)
+			_, _ = storeFake.ListReconcileCandidates(
+				ctx,
+				storeport.ReconcileCandidateQuery{
+					Now:           time.Now(),
+					RunningCutoff: time.Now(),
+					Limit:         10,
+				},
+			)
 			_, _ = storeFake.ListAll(ctx)
 
 			_, _ = runtimeFake.Ensure(ctx, sandbox)

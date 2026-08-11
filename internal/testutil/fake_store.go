@@ -43,7 +43,7 @@ type FakeStore struct {
 
 	listCandidatesResult []domain.Sandbox
 	listCandidatesErr    error
-	listCandidatesCalls  []int
+	listCandidatesCalls  []storeport.ReconcileCandidateQuery
 
 	listAllResult []domain.Sandbox
 	listAllErr    error
@@ -169,21 +169,21 @@ func (f *FakeStore) SetListReconcileCandidatesResult(
 	f.listCandidatesErr = err
 }
 
-// ListReconcileCandidatesCalls 返回每次候选查询的 limit 独立快照。
-func (f *FakeStore) ListReconcileCandidatesCalls() []int {
+// ListReconcileCandidatesCalls 返回每次候选查询参数的独立快照。
+func (f *FakeStore) ListReconcileCandidatesCalls() []storeport.ReconcileCandidateQuery {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]int(nil), f.listCandidatesCalls...)
+	return append([]storeport.ReconcileCandidateQuery(nil), f.listCandidatesCalls...)
 }
 
-// ListReconcileCandidates 记录 limit 并返回预先配置的结果副本。
+// ListReconcileCandidates 记录查询边界并返回预先配置的结果副本。
 func (f *FakeStore) ListReconcileCandidates(
 	_ context.Context,
-	limit int,
+	query storeport.ReconcileCandidateQuery,
 ) ([]domain.Sandbox, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.listCandidatesCalls = append(f.listCandidatesCalls, limit)
+	f.listCandidatesCalls = append(f.listCandidatesCalls, query)
 	return append([]domain.Sandbox(nil), f.listCandidatesResult...),
 		f.listCandidatesErr
 }
