@@ -7,11 +7,13 @@
 package sqlite
 
 import (
+	"bytes"
 	"context"
 	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 	"time"
 
@@ -75,6 +77,20 @@ type storedNetworkSpec struct {
 type storedPlatform struct {
 	OS   string `json:"os"`
 	Arch string `json:"arch"`
+}
+
+// storedIdempotencyResponseV1 是 response_schema_version=1 的严格 JSON 形状。
+//
+// 它只用于重放前完整性校验，返回给调用方的仍是数据库中的原始 bytes。
+type storedIdempotencyResponseV1 struct {
+	ID        string    `json:"id"`
+	State     string    `json:"state"`
+	Reason    string    `json:"reason"`
+	Message   string    `json:"message"`
+	Image     string    `json:"image"`
+	ExpiresAt time.Time `json:"expires_at"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
 }
 
 // Open 打开指定路径的 SQLite 数据库并验证连接可用。
@@ -274,14 +290,39 @@ func (s *Store) CreateIdempotent(
 		}
 	}()
 
-	var existing int
+	var (
+		existingHash      string
+		existingSandboxID string
+		existingStatus    int
+		existingLocation  string
+		existingBody      []byte
+		existingCreatedAt string
+	)
 	err = conn.QueryRowContext(ctx,
-		"SELECT 1 FROM idempotency_records WHERE scope_id = ? AND idempotency_key = ?",
+		`SELECT request_hash, sandbox_id, status_code, location, response_json, created_at
+		FROM idempotency_records WHERE scope_id = ? AND idempotency_key = ?`,
 		request.ScopeID,
 		request.Key,
-	).Scan(&existing)
+	).Scan(&existingHash, &existingSandboxID, &existingStatus, &existingLocation, &existingBody, &existingCreatedAt)
 	if err == nil {
-		return storeport.IdempotentCreateResult{}, domain.ErrConflict
+		if existingHash != request.RequestHash {
+			return storeport.IdempotentCreateResult{}, domain.ErrConflict
+		}
+		response, err := decodeIdempotentResponse(
+			existingSandboxID,
+			existingStatus,
+			existingLocation,
+			existingBody,
+			existingCreatedAt,
+		)
+		if err != nil {
+			return storeport.IdempotentCreateResult{}, err
+		}
+		return storeport.IdempotentCreateResult{
+			Sandbox:  domain.Sandbox{ID: existingSandboxID},
+			Response: response,
+			Replayed: true,
+		}, nil
 	}
 	if !errors.Is(err, sql.ErrNoRows) {
 		return storeport.IdempotentCreateResult{}, fmt.Errorf("check idempotency record: %w", err)
@@ -350,6 +391,47 @@ func (s *Store) CreateIdempotent(
 	return storeport.IdempotentCreateResult{Sandbox: created, Response: response}, nil
 }
 
+// decodeIdempotentResponse 在返回原始 bytes 前验证大小、schema v1 和 sandbox 关联。
+func decodeIdempotentResponse(
+	sandboxID string,
+	statusCode int,
+	location string,
+	body []byte,
+	createdAtText string,
+) (storeport.IdempotentResponse, error) {
+	if statusCode != 202 || location != "/v1/sandboxes/"+sandboxID ||
+		len(body) < 2 || len(body) > maxIdempotencyResponseBytes {
+		return storeport.IdempotentResponse{}, fmt.Errorf("decode idempotency response: %w", storeport.ErrCorrupt)
+	}
+	decoder := json.NewDecoder(bytes.NewReader(body))
+	decoder.DisallowUnknownFields()
+	var schema storedIdempotencyResponseV1
+	if err := decoder.Decode(&schema); err != nil {
+		return storeport.IdempotentResponse{}, fmt.Errorf("decode idempotency response schema: %w", storeport.ErrCorrupt)
+	}
+	if err := decoder.Decode(new(any)); !errors.Is(err, io.EOF) {
+		return storeport.IdempotentResponse{}, fmt.Errorf("decode idempotency response trailing data: %w", storeport.ErrCorrupt)
+	}
+	if schema.ID != sandboxID || schema.ID == "" || schema.State == "" || schema.Reason == "" ||
+		schema.Message == "" || schema.Image == "" || schema.ExpiresAt.IsZero() ||
+		schema.CreatedAt.IsZero() || schema.UpdatedAt.IsZero() ||
+		schema.ExpiresAt.Location() != time.UTC || schema.CreatedAt.Location() != time.UTC ||
+		schema.UpdatedAt.Location() != time.UTC {
+		return storeport.IdempotentResponse{}, fmt.Errorf("validate idempotency response schema: %w", storeport.ErrCorrupt)
+	}
+	createdAt, err := parseStoredTime("idempotency_created_at", createdAtText)
+	if err != nil {
+		return storeport.IdempotentResponse{}, err
+	}
+	return storeport.IdempotentResponse{
+		SchemaVersion: idempotencyResponseSchemaVersion,
+		StatusCode:    statusCode,
+		Location:      location,
+		Body:          append([]byte(nil), body...),
+		CreatedAt:     createdAt,
+	}, nil
+}
+
 // validateIdempotentCreateRequest 在开启写事务前拒绝不可能通过 schema 的输入。
 func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) error {
 	response := request.Response
@@ -368,6 +450,15 @@ func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) 
 	}
 	if request.Sandbox.Origin != domain.SandboxOriginAPI {
 		return fmt.Errorf("validate idempotent create origin: %w", domain.ErrInvalid)
+	}
+	if _, err := decodeIdempotentResponse(
+		request.Sandbox.ID,
+		response.StatusCode,
+		response.Location,
+		response.Body,
+		response.CreatedAt.UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return fmt.Errorf("validate idempotent response schema: %w", domain.ErrInvalid)
 	}
 	return nil
 }

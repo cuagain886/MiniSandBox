@@ -6,6 +6,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"minisandbox/internal/domain"
 	storeport "minisandbox/internal/store"
@@ -17,7 +18,7 @@ func idempotentCreateRequest(id, key string) storeport.IdempotentCreateRequest {
 	sandbox.ID = id
 	sandbox.Origin = domain.SandboxOriginAPI
 	createdAt := sandbox.CreatedAt.UTC()
-	body := []byte(`{"id":"` + id + `","state":"Pending"}`)
+	body := []byte(`{"id":"` + id + `","state":"Pending","reason":"CREATE_ACCEPTED","message":"Sandbox creation has been accepted.","image":"busybox:1.36","expires_at":"` + sandbox.ExpiresAt.UTC().Format(time.RFC3339Nano) + `","created_at":"` + createdAt.Format(time.RFC3339Nano) + `","updated_at":"` + createdAt.Format(time.RFC3339Nano) + `"}`)
 	return storeport.IdempotentCreateRequest{
 		ScopeID:     "local:v1",
 		Key:         key,
@@ -52,7 +53,7 @@ func TestCreateIdempotentCommitsBothRecords(t *testing.T) {
 	assertIdempotentCounts(t, store, 1, 1)
 }
 
-// TestCreateIdempotentChecksExistingKeyBeforeSandboxInsert 验证已有 key 不制造第二条 sandbox。
+// TestCreateIdempotentChecksExistingKeyBeforeSandboxInsert 验证已有相同请求不制造第二条 sandbox。
 func TestCreateIdempotentChecksExistingKeyBeforeSandboxInsert(t *testing.T) {
 	store := migrateTestStore(t)
 	first := idempotentCreateRequest("idem-first", "same-key")
@@ -60,8 +61,9 @@ func TestCreateIdempotentChecksExistingKeyBeforeSandboxInsert(t *testing.T) {
 		t.Fatalf("first create: %v", err)
 	}
 	second := idempotentCreateRequest("idem-second", "same-key")
-	if _, err := store.CreateIdempotent(context.Background(), second); !errors.Is(err, domain.ErrConflict) {
-		t.Fatalf("existing key: got %v, want conflict", err)
+	replayed, err := store.CreateIdempotent(context.Background(), second)
+	if err != nil || !replayed.Replayed || replayed.Sandbox.ID != first.Sandbox.ID {
+		t.Fatalf("existing key replay: %#v/%v", replayed, err)
 	}
 	assertIdempotentCounts(t, store, 1, 1)
 }
