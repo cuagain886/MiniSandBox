@@ -45,6 +45,29 @@ func TestCommitIdempotentCreatePreservesStoreError(t *testing.T) {
 	}
 }
 
+// TestCommitIdempotentCreateWakesOnlyAfterFirstCommit 验证 replay 不重复产生事件 Wake。
+func TestCommitIdempotentCreateWakesOnlyAfterFirstCommit(t *testing.T) {
+	fake := testutil.NewFakeStore()
+	waker := testutil.NewFakeWaker()
+	service := NewSandboxService(fake, nil, nil, SandboxSpecBuilder{}, waker)
+	response := storeport.IdempotentResponse{StatusCode: 202, Body: []byte(`{}`)}
+	fake.SetCreateIdempotentResult(storeport.IdempotentCreateResult{
+		Sandbox: domain.Sandbox{ID: "created"}, Response: response,
+	}, nil)
+	if _, err := service.CommitIdempotentCreate(context.Background(), storeport.IdempotentCreateRequest{}); err != nil {
+		t.Fatalf("first commit: %v", err)
+	}
+	fake.SetCreateIdempotentResult(storeport.IdempotentCreateResult{
+		Sandbox: domain.Sandbox{ID: "created"}, Response: response, Replayed: true,
+	}, nil)
+	if _, err := service.CommitIdempotentCreate(context.Background(), storeport.IdempotentCreateRequest{}); err != nil {
+		t.Fatalf("replay: %v", err)
+	}
+	if got := waker.WakeCalls(); len(got) != 1 || got[0] != "created" {
+		t.Fatalf("wake calls: %v", got)
+	}
+}
+
 // TestCommitNonIdempotentCreateUsesSameResponseShape 验证无 key 分支不制造重放记录语义。
 func TestCommitNonIdempotentCreateUsesSameResponseShape(t *testing.T) {
 	fake := testutil.NewFakeStore()

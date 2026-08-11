@@ -201,6 +201,24 @@ func mapIdempotencyKey(header http.Header) (*application.IdempotencyKey, error) 
 	return &key, nil
 }
 
+// writeCreateOutcome 写出 Store 已提交后的精确首次或 replay 响应。
+//
+// 写失败只作为 transport 结果返回，调用方不得据此回滚 Store 或重复 Wake；
+// middleware 已为本次请求独立设置 X-Request-ID，它不属于持久化 body。
+func writeCreateOutcome(w http.ResponseWriter, outcome application.IdempotentCreateOutcome) error {
+	w.Header().Set("Content-Type", "application/json")
+	w.Header().Set("Location", outcome.Location)
+	w.WriteHeader(outcome.StatusCode)
+	written, err := w.Write(outcome.Body)
+	if err != nil {
+		return err
+	}
+	if written != len(outcome.Body) {
+		return io.ErrShortWrite
+	}
+	return nil
+}
+
 // decodeCreateSandboxRequest 限制 body 并只接受一个字段集合固定的 JSON 对象。
 func decodeCreateSandboxRequest(
 	w http.ResponseWriter,

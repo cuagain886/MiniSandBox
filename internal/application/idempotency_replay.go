@@ -24,8 +24,8 @@ type IdempotentCreateOutcome struct {
 
 // CommitIdempotentCreate 提交一次已准备完成的原子创建并保留 Store replay bytes。
 //
-// 本方法不装配到公共 Create handler，也不 Wake；这些副作用在 P3-027 统一接入，
-// 以保证只有首次创建成功才唤醒 reconciler。
+// 本方法不装配到公共 Create handler；Store 已提交且不是 replay 时才 Wake，
+// 因此后续响应写失败不会撤销事实，也不会让重试重复唤醒 reconciler。
 func (s *SandboxService) CommitIdempotentCreate(
 	ctx context.Context,
 	request storeport.IdempotentCreateRequest,
@@ -33,6 +33,9 @@ func (s *SandboxService) CommitIdempotentCreate(
 	result, err := s.store.CreateIdempotent(ctx, request)
 	if err != nil {
 		return IdempotentCreateOutcome{}, fmt.Errorf("commit idempotent sandbox creation: %w", err)
+	}
+	if !result.Replayed && s.waker != nil {
+		s.waker.Wake(result.Sandbox.ID)
 	}
 	return IdempotentCreateOutcome{
 		SandboxID:  result.Sandbox.ID,
