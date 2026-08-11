@@ -108,14 +108,19 @@ func TestCreateLimiterDoesNotBlockDelete(t *testing.T) {
 }
 
 type limitRecordingRuntime struct {
-	mu          sync.Mutex
-	started     chan struct{}
-	release     chan struct{}
-	active      int
-	maxActive   int
-	calls       int
-	deleteCount int
-	panicEnsure bool
+	mu              sync.Mutex
+	started         chan struct{}
+	release         chan struct{}
+	active          int
+	maxActive       int
+	calls           int
+	deleteCount     int
+	deleteActive    int
+	deleteMaxActive int
+	deleteStarted   chan struct{}
+	deleteRelease   chan struct{}
+	panicDelete     bool
+	panicEnsure     bool
 }
 
 func (r *limitRecordingRuntime) Ensure(context.Context, domain.Sandbox) (runtimeport.ActualSandbox, error) {
@@ -149,8 +154,26 @@ func (*limitRecordingRuntime) Inspect(context.Context, string) (runtimeport.Actu
 
 func (r *limitRecordingRuntime) Delete(context.Context, string) error {
 	r.mu.Lock()
-	defer r.mu.Unlock()
 	r.deleteCount++
+	if r.panicDelete {
+		r.mu.Unlock()
+		panic("delete panic")
+	}
+	r.deleteActive++
+	if r.deleteActive > r.deleteMaxActive {
+		r.deleteMaxActive = r.deleteActive
+	}
+	started, release := r.deleteStarted, r.deleteRelease
+	r.mu.Unlock()
+	if started != nil {
+		started <- struct{}{}
+	}
+	if release != nil {
+		<-release
+	}
+	r.mu.Lock()
+	r.deleteActive--
+	r.mu.Unlock()
 	return nil
 }
 
@@ -168,6 +191,12 @@ func (r *limitRecordingRuntime) callCount() int {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.calls
+}
+
+func (r *limitRecordingRuntime) deleteMaximum() int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.deleteMaxActive
 }
 
 func waitLimiterSignal(t *testing.T, signal <-chan struct{}) {

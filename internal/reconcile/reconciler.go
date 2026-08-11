@@ -278,7 +278,11 @@ func (r *Reconciler) reconcileTerminated(
 	if r.shutdown != nil {
 		_ = r.shutdown.Shutdown(ctx, stopping.ID)
 	}
-	if err := r.runtime.Delete(ctx, stopping.ID); err != nil {
+	if err := r.deleteRuntime(ctx, stopping.ID); err != nil {
+		var waitErr *operationLimitWaitError
+		if errors.As(err, &waitErr) {
+			return err
+		}
 		if ClassifyRetryError(RetryOperationDelete, err).Successful {
 			// runtime 已不存在等价于删除目标满足，继续提交 Terminated。
 		} else {
@@ -333,7 +337,11 @@ func (r *Reconciler) failRunning(
 	operationErr error,
 	operation RetryOperation,
 ) error {
-	cleanupErr := r.runtime.Delete(ctx, sandbox.ID)
+	cleanupErr := r.deleteRuntime(ctx, sandbox.ID)
+	var waitErr *operationLimitWaitError
+	if errors.As(cleanupErr, &waitErr) {
+		return errors.Join(operationErr, cleanupErr)
+	}
 	if cleanupErr != nil && !ClassifyRetryError(RetryOperationCleanup, cleanupErr).Successful {
 		return r.recordFailure(
 			ctx,
@@ -357,6 +365,20 @@ func (r *Reconciler) failRunning(
 		failureErr = compensated.OperationError()
 	}
 	return r.recordFailure(ctx, sandbox, failureErr, "", operation)
+}
+
+// deleteRuntime 在所有删除、失败补偿及后续恢复清理路径之间共享全局 delete 配额。
+// slot 只覆盖实际 Runtime.Delete 调用，等待取消不会改写 Store intent。
+func (r *Reconciler) deleteRuntime(ctx context.Context, sandboxID string) error {
+	if r.deleteLimiter == nil {
+		return r.runtime.Delete(ctx, sandboxID)
+	}
+	release, err := r.deleteLimiter.Acquire(ctx)
+	if err != nil {
+		return &operationLimitWaitError{cause: err}
+	}
+	defer release()
+	return r.runtime.Delete(ctx, sandboxID)
 }
 
 // recordFailure 用当前 revision CAS 写入安全的 Failed 状态并保留原始 cause。
