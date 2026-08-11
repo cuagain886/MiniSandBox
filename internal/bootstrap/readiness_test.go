@@ -129,6 +129,7 @@ func TestRunStartupFailuresLeaveReadinessFalse(t *testing.T) {
 		"runtime",
 		"worker",
 		"recovery",
+		"maintenance",
 		"http",
 	} {
 		t.Run(failAt, func(t *testing.T) {

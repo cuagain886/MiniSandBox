@@ -120,6 +120,21 @@ func TestWakeQueueRejectsEmptyID(t *testing.T) {
 	}
 }
 
+// TestWakeQueueCloseRejectsIntakeAndPendingDelivery 验证 shutdown 后既不接收新
+// Wake，也不让空闲 worker 启动旧 pending；重复关闭保持幂等。
+func TestWakeQueueCloseRejectsIntakeAndPendingDelivery(t *testing.T) {
+	queue := NewWakeQueue()
+	queue.Wake("sandbox-pending")
+	queue.Close()
+	queue.Close()
+	if queue.Wake("sandbox-new") {
+		t.Fatal("closed queue accepted wake")
+	}
+	if id, err := queue.Next(context.Background()); id != "" || !errors.Is(err, ErrWakeQueueClosed) {
+		t.Fatalf("closed Next: id=%q err=%v", id, err)
+	}
+}
+
 // TestWakeQueueMergesFourConcurrentSources 验证 API/recovery/TTL/scanner 共用同一状态项。
 func TestWakeQueueMergesFourConcurrentSources(t *testing.T) {
 	queue := NewWakeQueue()

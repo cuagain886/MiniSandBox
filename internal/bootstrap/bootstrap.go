@@ -72,6 +72,12 @@ type factories struct {
 		runtimeport.Runtime,
 		*reconcile.WakeQueue,
 	) (workerHandle, error)
+	startMaintenance func(
+		context.Context,
+		config.Config,
+		store.Store,
+		*reconcile.WakeQueue,
+	) (workerHandle, error)
 	recover func(
 		context.Context,
 		store.Store,
@@ -176,6 +182,15 @@ func run(ctx context.Context, options Options, factory factories) error {
 		)
 	}
 	readiness.SetRecovery(true)
+	maintenance, err := factory.startMaintenance(ctx, cfg, sandboxStore, queue)
+	if err != nil {
+		return errors.Join(
+			fmt.Errorf("start reliability maintenance: %w", err),
+			closeWithTimeout(cfg, "reconcile worker", worker),
+			closeResource("sandbox runtime", runtime),
+			closeResource("sandbox store", sandboxStore),
+		)
+	}
 	server, err := factory.startHTTP(
 		cfg,
 		options.Build,
@@ -187,6 +202,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 	if err != nil {
 		return errors.Join(
 			fmt.Errorf("start sandbox HTTP server: %w", err),
+			closeWithTimeout(cfg, "reliability maintenance", maintenance),
 			closeWithTimeout(cfg, "reconcile worker", worker),
 			closeResource("sandbox runtime", runtime),
 			closeResource("sandbox store", sandboxStore),
@@ -201,14 +217,11 @@ func run(ctx context.Context, options Options, factory factories) error {
 			runErr = fmt.Errorf("serve sandbox HTTP API: %w", serveErr)
 		}
 	}
-	markNotReady(readiness)
-	return errors.Join(
-		runErr,
-		closeWithTimeout(cfg, "sandbox HTTP server", server),
-		closeWithTimeout(cfg, "reconcile worker", worker),
-		closeResource("sandbox runtime", runtime),
-		closeResource("sandbox store", sandboxStore),
-	)
+	coordinator := &shutdownCoordinator{
+		grace: cfg.Server.ShutdownTimeout, readiness: readiness, admission: server,
+		maintenance: maintenance, queue: queue, worker: worker, runtime: runtime, store: sandboxStore,
+	}
+	return errors.Join(runErr, coordinator.Close())
 }
 
 // markNotReady 在关闭其他资源前撤销全部启动就绪位。

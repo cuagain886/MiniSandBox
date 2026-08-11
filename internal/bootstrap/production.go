@@ -42,11 +42,60 @@ func productionFactories() factories {
 		artifacts: func() (dockerruntime.ArtifactProvider, error) {
 			return dockerruntime.NewEmbeddedArtifactProvider()
 		},
-		openRuntime: openProductionRuntime,
-		startWorker: startProductionWorker,
-		recover:     recoverProductionState,
-		startHTTP:   startProductionHTTP,
+		openRuntime:      openProductionRuntime,
+		startWorker:      startProductionWorker,
+		startMaintenance: startProductionMaintenance,
+		recover:          recoverProductionState,
+		startHTTP:        startProductionHTTP,
 	}
+}
+
+const maxCandidateScanPages = 10_000
+
+// startProductionMaintenance 启动周期 candidate scanner 与幂等记录 GC。
+func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxStore store.Store, queue *reconcile.WakeQueue) (workerHandle, error) {
+	sweeper, err := reconcile.NewCandidateSweeper(
+		sandboxStore, cfg.Reconcile.PageSize, maxCandidateScanPages,
+		cfg.Reconcile.Timeout, cfg.Reconcile.RunningCheckInterval,
+	)
+	if err != nil {
+		return nil, err
+	}
+	scanner, err := reconcile.NewCandidateScanner(sweeper, func(_ context.Context, id string) error {
+		queue.Wake(id)
+		return nil
+	})
+	if err != nil {
+		return nil, err
+	}
+	report := func(err error) {
+		if !errors.Is(err, context.Canceled) {
+			slog.Warn("reliability maintenance failed", "reason", runtimeport.ClassifyError(err).Reason)
+		}
+	}
+	loop, err := reconcile.NewScannerLoop(scanner, reconcile.SystemClock{}, reconcile.CryptoRandom{}, cfg.Reconcile.Interval, cfg.Reconcile.Jitter, report)
+	if err != nil {
+		return nil, err
+	}
+	gcStore, ok := sandboxStore.(reconcile.IdempotencyGCStore)
+	if !ok {
+		return nil, errors.New("sandbox store does not provide idempotency GC")
+	}
+	gc, err := reconcile.NewIdempotencyGC(gcStore, cfg.Idempotency.TerminalRetention, cfg.Idempotency.GCInterval, cfg.Reconcile.PageSize, report)
+	if err != nil {
+		return nil, err
+	}
+	maintenanceCtx, cancel := context.WithCancel(ctx)
+	handle := &runningMaintenance{cancel: cancel, done: make(chan struct{})}
+	go func() {
+		defer close(handle.done)
+		var wait sync.WaitGroup
+		wait.Add(2)
+		go func() { defer wait.Done(); loop.Run(maintenanceCtx) }()
+		go func() { defer wait.Done(); gc.Run(maintenanceCtx) }()
+		wait.Wait()
+	}()
+	return handle, nil
 }
 
 // openProductionStore 打开并迁移 SQLite，迁移失败时立即关闭连接。
@@ -319,6 +368,24 @@ type runningWorker struct {
 	done         chan struct{}
 	once         sync.Once
 	closeFactory func()
+}
+
+// runningMaintenance 管理 scanner 与 GC 的共同 lifetime。
+type runningMaintenance struct {
+	cancel context.CancelFunc
+	done   chan struct{}
+	once   sync.Once
+}
+
+// Close 停止产生新 Wake/GC 事务并等待两个循环退出。
+func (m *runningMaintenance) Close(ctx context.Context) error {
+	m.once.Do(m.cancel)
+	select {
+	case <-m.done:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 // Close 取消 worker 并等待当前 reconcile 退出。

@@ -2,8 +2,12 @@ package reconcile
 
 import (
 	"context"
+	"errors"
 	"sync"
 )
+
+// ErrWakeQueueClosed 表示 shutdown 已关闭新唤醒和任务领取。
+var ErrWakeQueueClosed = errors.New("wake queue is closed")
 
 // WakeQueue 按 sandbox ID 合并尚未开始处理的 reconcile 唤醒。
 //
@@ -15,6 +19,9 @@ type WakeQueue struct {
 	states       map[string]wakeState
 	order        []string
 	notification chan struct{}
+	closed       chan struct{}
+	closeOnce    sync.Once
+	isClosed     bool
 }
 
 type wakeState uint8
@@ -30,6 +37,7 @@ func NewWakeQueue() *WakeQueue {
 	return &WakeQueue{
 		states:       make(map[string]wakeState),
 		notification: make(chan struct{}, 1),
+		closed:       make(chan struct{}),
 	}
 }
 
@@ -42,6 +50,10 @@ func (q *WakeQueue) Wake(sandboxID string) bool {
 		return false
 	}
 	q.mu.Lock()
+	if q.isClosed {
+		q.mu.Unlock()
+		return false
+	}
 	state := q.states[sandboxID]
 	switch state {
 	case wakePending, wakeRequeue:
@@ -71,6 +83,8 @@ func (q *WakeQueue) Next(ctx context.Context) (string, error) {
 	select {
 	case <-ctx.Done():
 		return "", ctx.Err()
+	case <-q.closed:
+		return "", ErrWakeQueueClosed
 	case <-q.notification:
 	}
 	if err := ctx.Err(); err != nil {
@@ -81,6 +95,10 @@ func (q *WakeQueue) Next(ctx context.Context) (string, error) {
 	}
 
 	q.mu.Lock()
+	if q.isClosed {
+		q.mu.Unlock()
+		return "", ErrWakeQueueClosed
+	}
 	if len(q.order) == 0 {
 		q.mu.Unlock()
 		return "", nil
@@ -97,6 +115,20 @@ func (q *WakeQueue) Next(ctx context.Context) (string, error) {
 		q.notify()
 	}
 	return sandboxID, nil
+}
+
+// Close 永久停止接收 Wake 并阻止 worker 领取尚未开始的任务。
+// 已在处理中的 ID 由 worker context 负责取消；重复调用是幂等 no-op。
+func (q *WakeQueue) Close() {
+	if q == nil {
+		return
+	}
+	q.closeOnce.Do(func() {
+		q.mu.Lock()
+		q.isClosed = true
+		q.mu.Unlock()
+		close(q.closed)
+	})
 }
 
 // Done 通知队列指定任务已经处理完成。

@@ -33,8 +33,10 @@ func TestRunStartsAndClosesDependenciesInOrder(t *testing.T) {
 		"runtime",
 		"worker",
 		"recovery",
+		"maintenance",
 		"http",
 		"http-close",
+		"maintenance-close",
 		"worker-close",
 		"runtime-close",
 		"store-close",
@@ -80,6 +82,14 @@ func TestRunFailureClosesOnlyStartedDependencies(t *testing.T) {
 			},
 		},
 		{
+			name:   "maintenance",
+			failAt: "maintenance",
+			wantEvents: []string{
+				"config", "directories", "store", "artifacts", "runtime", "worker", "recovery", "maintenance",
+				"worker-close", "runtime-close", "store-close",
+			},
+		},
+		{
 			name:   "http",
 			failAt: "http",
 			wantEvents: []string{
@@ -90,7 +100,9 @@ func TestRunFailureClosesOnlyStartedDependencies(t *testing.T) {
 				"runtime",
 				"worker",
 				"recovery",
+				"maintenance",
 				"http",
+				"maintenance-close",
 				"worker-close",
 				"runtime-close",
 				"store-close",
@@ -190,7 +202,7 @@ func recordingFactories(
 			if err := stageError("worker", failAt, cause); err != nil {
 				return nil, err
 			}
-			return &recordingWorker{events: events}, nil
+			return &recordingWorker{events: events, closeEvent: "worker-close"}, nil
 		},
 		recover: func(
 			context.Context,
@@ -201,6 +213,13 @@ func recordingFactories(
 		) error {
 			*events = append(*events, "recovery")
 			return stageError("recovery", failAt, cause)
+		},
+		startMaintenance: func(context.Context, config.Config, store.Store, *reconcile.WakeQueue) (workerHandle, error) {
+			*events = append(*events, "maintenance")
+			if err := stageError("maintenance", failAt, cause); err != nil {
+				return nil, err
+			}
+			return &recordingWorker{events: events, closeEvent: "maintenance-close"}, nil
 		},
 		startHTTP: func(
 			config.Config,
@@ -257,12 +276,13 @@ func (r *recordingRuntime) Close() error {
 
 // recordingWorker 记录 worker 关闭。
 type recordingWorker struct {
-	events *[]string
+	events     *[]string
+	closeEvent string
 }
 
 // Close 记录 worker 已等待退出。
 func (w *recordingWorker) Close(context.Context) error {
-	*w.events = append(*w.events, "worker-close")
+	*w.events = append(*w.events, w.closeEvent)
 	return nil
 }
 
