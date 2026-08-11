@@ -6,6 +6,16 @@ package domain
 
 import "time"
 
+// SandboxOrigin 是 sandbox record 的受控来源，不包含任意外部标识。
+type SandboxOrigin string
+
+const (
+	// SandboxOriginAPI 表示 record 来自公共 create 请求或旧 schema 回填。
+	SandboxOriginAPI SandboxOrigin = "api"
+	// SandboxOriginRecoveredOrphan 表示 record 来自完整可信 orphan bundle 导入。
+	SandboxOriginRecoveredOrphan SandboxOrigin = "recovered_orphan"
+)
+
 // Sandbox 保存生命周期收敛所需的期望状态、观测状态和恢复元数据。
 type Sandbox struct {
 	// ID 是控制面生成并持久化的稳定 sandbox 标识。
@@ -32,8 +42,18 @@ type Sandbox struct {
 	UpdatedAt time.Time
 	// LastTransitionAt 是 ObservedState 最近一次变化的时间，由应用层统一转换为 UTC。
 	LastTransitionAt time.Time
-	// ExpiresAt 是 Phase 3 TTL 使用的预留到期时间，Phase 1 必须保持为 nil。
+	// ExpiresAt 是 Store 权威租约的 UTC 到期时间；已持久化记录必须非 nil。
 	ExpiresAt *time.Time
+	// RetryAttempt 是当前持久化 retryable failure 序号，CAS conflict 不增加。
+	RetryAttempt uint32
+	// NextReconcileAt 是下一次允许尝试收敛的 UTC 时间；未调度时为 nil。
+	NextReconcileAt *time.Time
+	// LastReconcileAt 是最近一次完成 reconcile attempt 的 UTC 时间；尚未执行时为 nil。
+	LastReconcileAt *time.Time
+	// HealthFailureCount 是连续 runner health probe 失败次数，成功后归零。
+	HealthFailureCount uint32
+	// Origin 是 record 的固定来源分类。
+	Origin SandboxOrigin
 }
 
 // Expired 判断 sandbox 在给定时间点是否已经达到预留的 Phase 3 TTL。

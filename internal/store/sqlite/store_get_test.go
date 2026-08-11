@@ -29,7 +29,6 @@ func TestGetSandboxRoundTrip(t *testing.T) {
 	want.CreatedAt = want.CreatedAt.UTC()
 	want.UpdatedAt = want.UpdatedAt.UTC()
 	want.LastTransitionAt = want.LastTransitionAt.UTC()
-	want.ExpiresAt = nil
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("round trip mismatch:\n got: %#v\nwant: %#v", got, want)
 	}
@@ -94,6 +93,21 @@ func TestGetSandboxCorruptRow(t *testing.T) {
 		{
 			name:      "invalid transition time",
 			statement: "UPDATE sandboxes SET last_transition_at = ? WHERE id = ?",
+			value:     poison,
+		},
+		{
+			name:      "invalid expiry time",
+			statement: "UPDATE sandboxes SET expires_at = ? WHERE id = ?",
+			value:     poison,
+		},
+		{
+			name:      "invalid next reconcile time",
+			statement: "UPDATE sandboxes SET next_reconcile_at = ? WHERE id = ?",
+			value:     poison,
+		},
+		{
+			name:      "invalid last reconcile time",
+			statement: "UPDATE sandboxes SET last_reconcile_at = ? WHERE id = ?",
 			value:     poison,
 		},
 	}

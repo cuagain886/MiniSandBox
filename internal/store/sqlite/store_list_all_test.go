@@ -16,7 +16,6 @@ func normalizedCreatedSandbox(sandbox domain.Sandbox) domain.Sandbox {
 	sandbox.CreatedAt = sandbox.CreatedAt.UTC()
 	sandbox.UpdatedAt = sandbox.UpdatedAt.UTC()
 	sandbox.LastTransitionAt = sandbox.LastTransitionAt.UTC()
-	sandbox.ExpiresAt = nil
 	return sandbox
 }
 

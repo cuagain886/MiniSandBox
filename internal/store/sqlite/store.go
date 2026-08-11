@@ -2,8 +2,8 @@
 //
 // 本模块设计上负责连接管理、schema 迁移和事务存取；当前已实现基于纯 Go
 // driver 的连接、迁移、sandbox 创建与读取、期望/观测状态 CAS 更新，以及
-// reconcile candidate 和全量恢复查询。它不决定生命周期状态转换、鉴权或
-// runtime 行为，也不负责创建数据库父目录。
+// reconcile candidate、全量恢复查询及 v2 lease/retry row mapping。它不
+// 决定生命周期状态转换、鉴权或 runtime 行为，也不负责创建数据库父目录。
 package sqlite
 
 import (
@@ -31,8 +31,9 @@ const cleanupPendingReason = "CLEANUP_PENDING"
 
 // Store 是 store 端口的 SQLite 实现。
 type Store struct {
-	db  *sql.DB
-	now func() time.Time
+	db   *sql.DB
+	path string
+	now  func() time.Time
 }
 
 // storedSandboxSpec 是 SQLite 中 resolved spec 的稳定 JSON 表示。
@@ -97,8 +98,9 @@ func Open(path string) (*Store, error) {
 	db.SetMaxOpenConns(1)
 
 	store := &Store{
-		db:  db,
-		now: time.Now,
+		db:   db,
+		path: path,
+		now:  time.Now,
 	}
 	if err := store.verifyConnection(); err != nil {
 		_ = db.Close()
@@ -171,6 +173,17 @@ func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
 		return fmt.Errorf("encode sandbox spec: %w", err)
 	}
 
+	expiresAt := sandbox.ExpiresAt
+	if expiresAt == nil {
+		// P3-010 必须让升级后的每条记录拥有非空租约；在 lifecycle application
+		// 开始显式传入 TTL 前，沿用冻结的 30m 默认值保持滚动开发可运行。
+		fallback := sandbox.CreatedAt.UTC().Add(migrationDefaultTTL)
+		expiresAt = &fallback
+	}
+	origin := sandbox.Origin
+	if origin == "" {
+		origin = domain.SandboxOriginAPI
+	}
 	_, err = s.db.ExecContext(
 		ctx,
 		`INSERT INTO sandboxes (
@@ -185,8 +198,14 @@ func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
 			revision,
 			created_at,
 			updated_at,
-			last_transition_at
-		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+			last_transition_at,
+			expires_at,
+			retry_attempt,
+			next_reconcile_at,
+			last_reconcile_at,
+			health_failure_count,
+			origin
+		) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
 		sandbox.ID,
 		specJSON,
 		sandbox.DesiredState,
@@ -199,6 +218,12 @@ func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
 		sandbox.CreatedAt.UTC().Format(time.RFC3339Nano),
 		sandbox.UpdatedAt.UTC().Format(time.RFC3339Nano),
 		sandbox.LastTransitionAt.UTC().Format(time.RFC3339Nano),
+		expiresAt.UTC().Format(time.RFC3339Nano),
+		sandbox.RetryAttempt,
+		storedNullableTime(sandbox.NextReconcileAt),
+		storedNullableTime(sandbox.LastReconcileAt),
+		sandbox.HealthFailureCount,
+		origin,
 	)
 	if err == nil {
 		return nil
@@ -207,6 +232,14 @@ func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
 		return fmt.Errorf("create sandbox: %w", domain.ErrConflict)
 	}
 	return fmt.Errorf("create sandbox: %w", err)
+}
+
+// storedNullableTime 把可选 UTC 时间转换为 SQLite NULL 或 RFC3339Nano 文本。
+func storedNullableTime(value *time.Time) any {
+	if value == nil {
+		return nil
+	}
+	return value.UTC().Format(time.RFC3339Nano)
 }
 
 // storedSpecFromDomain 把领域规格转换为不依赖领域字段名的持久化结构。

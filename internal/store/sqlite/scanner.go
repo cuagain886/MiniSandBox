@@ -25,7 +25,13 @@ const sandboxSelectColumns = `id,
 	revision,
 	created_at,
 	updated_at,
-	last_transition_at`
+	last_transition_at,
+	expires_at,
+	retry_attempt,
+	next_reconcile_at,
+	last_reconcile_at,
+	health_failure_count,
+	origin`
 
 // selectSandboxByIDQuery 是 Get 与事务内 CAS 回读共用的单记录查询。
 const selectSandboxByIDQuery = `SELECT ` + sandboxSelectColumns + `
@@ -58,6 +64,12 @@ func scanSandbox(row rowScanner) (domain.Sandbox, error) {
 		createdAtText        string
 		updatedAtText        string
 		lastTransitionAtText string
+		expiresAtText        string
+		retryAttempt         int64
+		nextReconcileAtText  *string
+		lastReconcileAtText  *string
+		healthFailureCount   int64
+		originText           string
 	)
 	if err := row.Scan(
 		&id,
@@ -72,6 +84,12 @@ func scanSandbox(row rowScanner) (domain.Sandbox, error) {
 		&createdAtText,
 		&updatedAtText,
 		&lastTransitionAtText,
+		&expiresAtText,
+		&retryAttempt,
+		&nextReconcileAtText,
+		&lastReconcileAtText,
+		&healthFailureCount,
+		&originText,
 	); err != nil {
 		return domain.Sandbox{}, err
 	}
@@ -106,21 +124,48 @@ func scanSandbox(row rowScanner) (domain.Sandbox, error) {
 	if err != nil {
 		return domain.Sandbox{}, err
 	}
+	expiresAt, err := parseStoredTime("expires_at", expiresAtText)
+	if err != nil {
+		return domain.Sandbox{}, err
+	}
+	nextReconcileAt, err := parseOptionalStoredTime("next_reconcile_at", nextReconcileAtText)
+	if err != nil {
+		return domain.Sandbox{}, err
+	}
+	lastReconcileAt, err := parseOptionalStoredTime("last_reconcile_at", lastReconcileAtText)
+	if err != nil {
+		return domain.Sandbox{}, err
+	}
+	if retryAttempt < 0 || retryAttempt > math.MaxUint32 {
+		return domain.Sandbox{}, corruptField("retry_attempt")
+	}
+	if healthFailureCount < 0 || healthFailureCount > math.MaxUint32 {
+		return domain.Sandbox{}, corruptField("health_failure_count")
+	}
+	origin, err := parseSandboxOrigin(originText)
+	if err != nil {
+		return domain.Sandbox{}, err
+	}
 
 	return domain.Sandbox{
-		ID:               id,
-		Spec:             spec,
-		DesiredState:     desired,
-		ObservedState:    observed,
-		Reason:           reason,
-		Message:          message,
-		RuntimeID:        runtimeID,
-		SpecHash:         specHash,
-		Revision:         uint64(revision),
-		CreatedAt:        createdAt,
-		UpdatedAt:        updatedAt,
-		LastTransitionAt: lastTransitionAt,
-		ExpiresAt:        nil,
+		ID:                 id,
+		Spec:               spec,
+		DesiredState:       desired,
+		ObservedState:      observed,
+		Reason:             reason,
+		Message:            message,
+		RuntimeID:          runtimeID,
+		SpecHash:           specHash,
+		Revision:           uint64(revision),
+		CreatedAt:          createdAt,
+		UpdatedAt:          updatedAt,
+		LastTransitionAt:   lastTransitionAt,
+		ExpiresAt:          &expiresAt,
+		RetryAttempt:       uint32(retryAttempt),
+		NextReconcileAt:    nextReconcileAt,
+		LastReconcileAt:    lastReconcileAt,
+		HealthFailureCount: uint32(healthFailureCount),
+		Origin:             origin,
 	}, nil
 }
 
@@ -195,6 +240,29 @@ func parseStoredTime(field, value string) (time.Time, error) {
 		return time.Time{}, corruptField(field)
 	}
 	return parsed.UTC(), nil
+}
+
+// parseOptionalStoredTime 解析 nullable RFC3339Nano 时间并归一化为 UTC。
+func parseOptionalStoredTime(field string, value *string) (*time.Time, error) {
+	if value == nil {
+		return nil, nil
+	}
+	parsed, err := parseStoredTime(field, *value)
+	if err != nil {
+		return nil, err
+	}
+	return &parsed, nil
+}
+
+// parseSandboxOrigin 校验持久化来源只使用 schema v2 固定枚举。
+func parseSandboxOrigin(value string) (domain.SandboxOrigin, error) {
+	origin := domain.SandboxOrigin(value)
+	switch origin {
+	case domain.SandboxOriginAPI, domain.SandboxOriginRecoveredOrphan:
+		return origin, nil
+	default:
+		return "", corruptField("origin")
+	}
 }
 
 // corruptField 构造不包含损坏字段原值的可分类错误。

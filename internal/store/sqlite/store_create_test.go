@@ -9,7 +9,7 @@ import (
 	"minisandbox/internal/domain"
 )
 
-// createTestSandbox 返回包含完整 Phase 1 持久化字段的 sandbox。
+// createTestSandbox 返回包含完整 Phase 3 v2 持久化字段的 sandbox。
 func createTestSandbox() domain.Sandbox {
 	location := time.FixedZone("UTC+8", 8*60*60)
 	createdAt := time.Date(2026, 7, 26, 19, 30, 1, 123456789, location)
@@ -29,6 +29,7 @@ func createTestSandbox() domain.Sandbox {
 			Arch: "amd64",
 		},
 	}
+	expiresAt := createdAt.UTC().Add(migrationDefaultTTL)
 	return domain.Sandbox{
 		ID:               "sb-create-01",
 		Spec:             spec,
@@ -42,6 +43,8 @@ func createTestSandbox() domain.Sandbox {
 		CreatedAt:        createdAt,
 		UpdatedAt:        createdAt.Add(time.Second),
 		LastTransitionAt: createdAt.Add(2 * time.Second),
+		ExpiresAt:        &expiresAt,
+		Origin:           domain.SandboxOriginAPI,
 	}
 }
 
@@ -60,6 +63,13 @@ func migrateTestStore(t *testing.T) *Store {
 func TestCreateSandbox(t *testing.T) {
 	store := migrateTestStore(t)
 	sandbox := createTestSandbox()
+	nextReconcileAt := sandbox.CreatedAt.UTC().Add(time.Minute)
+	lastReconcileAt := sandbox.CreatedAt.UTC().Add(30 * time.Second)
+	sandbox.RetryAttempt = 4
+	sandbox.NextReconcileAt = &nextReconcileAt
+	sandbox.LastReconcileAt = &lastReconcileAt
+	sandbox.HealthFailureCount = 2
+	sandbox.Origin = domain.SandboxOriginRecoveredOrphan
 
 	if err := store.Create(context.Background(), sandbox); err != nil {
 		t.Fatalf("create sandbox: %v", err)
@@ -77,6 +87,12 @@ func TestCreateSandbox(t *testing.T) {
 		createdAt        string
 		updatedAt        string
 		lastTransitionAt string
+		expiresAt        string
+		retryAttempt     uint32
+		nextReconcile    string
+		lastReconcile    string
+		healthFailures   uint32
+		origin           string
 	)
 	err := store.db.QueryRow(
 		`SELECT
@@ -90,7 +106,13 @@ func TestCreateSandbox(t *testing.T) {
 			revision,
 			created_at,
 			updated_at,
-			last_transition_at
+			last_transition_at,
+			expires_at,
+			retry_attempt,
+			next_reconcile_at,
+			last_reconcile_at,
+			health_failure_count,
+			origin
 		FROM sandboxes
 		WHERE id = ?`,
 		sandbox.ID,
@@ -106,6 +128,12 @@ func TestCreateSandbox(t *testing.T) {
 		&createdAt,
 		&updatedAt,
 		&lastTransitionAt,
+		&expiresAt,
+		&retryAttempt,
+		&nextReconcile,
+		&lastReconcile,
+		&healthFailures,
+		&origin,
 	)
 	if err != nil {
 		t.Fatalf("read inserted sandbox: %v", err)
@@ -141,6 +169,35 @@ func TestCreateSandbox(t *testing.T) {
 	}
 	if lastTransitionAt != sandbox.LastTransitionAt.UTC().Format(time.RFC3339Nano) {
 		t.Fatalf("last_transition_at: got %q", lastTransitionAt)
+	}
+	if sandbox.ExpiresAt == nil || expiresAt != sandbox.ExpiresAt.UTC().Format(time.RFC3339Nano) {
+		t.Fatalf("expires_at: got %q want %v", expiresAt, sandbox.ExpiresAt)
+	}
+	if retryAttempt != sandbox.RetryAttempt || nextReconcile != nextReconcileAt.Format(time.RFC3339Nano) || lastReconcile != lastReconcileAt.Format(time.RFC3339Nano) {
+		t.Fatalf("retry metadata changed: attempt=%d next=%q last=%q", retryAttempt, nextReconcile, lastReconcile)
+	}
+	if healthFailures != sandbox.HealthFailureCount || origin != string(domain.SandboxOriginRecoveredOrphan) {
+		t.Fatalf("health/origin changed: failures=%d origin=%q", healthFailures, origin)
+	}
+}
+
+// TestCreateSandboxAppliesRollingUpgradeDefaults 验证尚未传入 Phase 3 字段的
+// Phase 2 application 路径仍会写出完整 v2 record，而不是依赖空字符串默认值。
+func TestCreateSandboxAppliesRollingUpgradeDefaults(t *testing.T) {
+	store := migrateTestStore(t)
+	sandbox := createTestSandbox()
+	sandbox.ExpiresAt = nil
+	sandbox.Origin = ""
+	if err := store.Create(context.Background(), sandbox); err != nil {
+		t.Fatalf("create legacy-shaped sandbox: %v", err)
+	}
+	got, err := store.Get(context.Background(), sandbox.ID)
+	if err != nil {
+		t.Fatalf("read v2 sandbox: %v", err)
+	}
+	wantExpiry := sandbox.CreatedAt.UTC().Add(migrationDefaultTTL)
+	if got.ExpiresAt == nil || !got.ExpiresAt.Equal(wantExpiry) || got.Origin != domain.SandboxOriginAPI {
+		t.Fatalf("rolling defaults: expiry=%v origin=%q", got.ExpiresAt, got.Origin)
 	}
 }
 

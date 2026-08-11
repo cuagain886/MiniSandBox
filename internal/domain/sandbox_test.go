@@ -27,7 +27,10 @@ func TestSandboxZeroValue(t *testing.T) {
 		t.Fatal("zero-value timestamps must be zero")
 	}
 	if sandbox.ExpiresAt != nil {
-		t.Fatal("Phase 1 zero-value ExpiresAt must be nil")
+		t.Fatal("unpersisted zero-value ExpiresAt must be nil")
+	}
+	if sandbox.RetryAttempt != 0 || sandbox.NextReconcileAt != nil || sandbox.LastReconcileAt != nil || sandbox.HealthFailureCount != 0 || sandbox.Origin != "" {
+		t.Fatal("zero-value reliability metadata must be empty")
 	}
 }
 

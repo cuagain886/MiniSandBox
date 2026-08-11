@@ -2,13 +2,21 @@ package sqlite
 
 import (
 	"context"
+	"database/sql"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
 	"testing"
+	"time"
+
+	"minisandbox/internal/domain"
 )
 
 // openTestStore 打开临时数据库并注册清理。
 func openTestStore(t *testing.T) *Store {
 	t.Helper()
-
 	store, err := Open(testDatabasePath(t))
 	if err != nil {
 		t.Fatalf("open database: %v", err)
@@ -17,227 +25,325 @@ func openTestStore(t *testing.T) *Store {
 	return store
 }
 
-// currentVersion 读取当前 schema 版本。
 func currentVersion(t *testing.T, store *Store) int64 {
 	t.Helper()
-
-	var version int64
-	if err := store.db.QueryRow(
-		"SELECT COALESCE(MAX(version), 0) FROM schema_migrations",
-	).Scan(&version); err != nil {
+	version, err := schemaVersion(context.Background(), store.db)
+	if err != nil {
 		t.Fatalf("read schema version: %v", err)
 	}
 	return version
 }
 
-// tableExists 判断给定名称的表或索引是否存在。
 func tableExists(t *testing.T, store *Store, name string) bool {
 	t.Helper()
-
 	var count int64
-	if err := store.db.QueryRow(
-		"SELECT COUNT(*) FROM sqlite_master WHERE name = ?",
-		name,
-	).Scan(&count); err != nil {
+	if err := store.db.QueryRow("SELECT COUNT(*) FROM sqlite_master WHERE name = ?", name).Scan(&count); err != nil {
 		t.Fatalf("query sqlite_master: %v", err)
 	}
 	return count > 0
 }
 
-// TestMigrateEmptyDatabase 验证空库迁移创建 5.4 节要求的表结构和索引。
-func TestMigrateEmptyDatabase(t *testing.T) {
-	store := openTestStore(t)
-
-	if err := store.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate empty database: %v", err)
-	}
-
-	if got, want := currentVersion(t, store), int64(1); got != want {
-		t.Fatalf("schema version: got %d, want %d", got, want)
-	}
-	if !tableExists(t, store, "sandboxes") {
-		t.Fatal("sandboxes table missing")
-	}
-	if !tableExists(t, store, "idx_sandboxes_reconcile") {
-		t.Fatal("reconcile index missing")
-	}
-	if tableExists(t, store, "idempotency_keys") {
-		t.Fatal("phase 1 must not create idempotency_keys")
-	}
-
-	// 逐列核对 5.4 节要求的 sandboxes 表结构。
+func sandboxColumns(t *testing.T, store *Store) []string {
+	t.Helper()
 	rows, err := store.db.Query("PRAGMA table_info(sandboxes)")
 	if err != nil {
 		t.Fatalf("read table info: %v", err)
 	}
 	defer rows.Close()
-
-	columns := map[string]bool{}
+	var columns []string
 	for rows.Next() {
-		var (
-			cid          int64
-			name         string
-			columnType   string
-			notNull      int64
-			defaultValue any
-			primaryKey   int64
-		)
-		if err := rows.Scan(
-			&cid,
-			&name,
-			&columnType,
-			&notNull,
-			&defaultValue,
-			&primaryKey,
-		); err != nil {
+		var cid, notNull, primaryKey int64
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
 			t.Fatalf("scan table info: %v", err)
 		}
-		columns[name] = true
+		columns = append(columns, name)
 	}
 	if err := rows.Err(); err != nil {
 		t.Fatalf("iterate table info: %v", err)
 	}
+	return columns
+}
 
-	want := []string{
-		"id",
-		"spec_json",
-		"desired_state",
-		"observed_state",
-		"reason",
-		"message",
-		"runtime_id",
-		"spec_hash",
-		"revision",
-		"created_at",
-		"updated_at",
-		"last_transition_at",
+func migrateToV1(t *testing.T, store *Store) {
+	t.Helper()
+	if err := store.migrateWith(context.Background(), migrations[:1]); err != nil {
+		t.Fatalf("migrate fixture to v1: %v", err)
 	}
-	for _, column := range want {
-		if !columns[column] {
-			t.Fatalf("sandboxes table missing column %s", column)
+}
+
+// TestMigrateEmptyDatabase 验证空库直接建立 v2 schema，且不提前创建后续表。
+func TestMigrateEmptyDatabase(t *testing.T) {
+	store := openTestStore(t)
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate empty database: %v", err)
+	}
+	if got, want := currentVersion(t, store), int64(2); got != want {
+		t.Fatalf("schema version: got %d, want %d", got, want)
+	}
+	if err := validateSchema(context.Background(), store.db, 2); err != nil {
+		t.Fatalf("validate v2 schema: %v", err)
+	}
+	for _, absent := range []string{"idempotency_keys", "runtime_anomalies"} {
+		if tableExists(t, store, absent) {
+			t.Fatalf("P3-010 must not create %s", absent)
 		}
 	}
-	if got, wantCount := len(columns), len(want); got != wantCount {
-		t.Fatalf("unexpected column count: got %d, want %d", got, wantCount)
-	}
 }
 
-// TestMigrateIdempotent 验证重复迁移不报错也不重复执行。
-func TestMigrateIdempotent(t *testing.T) {
+// TestMigratePhase2FixtureBackfillsEveryState 使用真实 v1 表验证所有旧状态的
+// expiry、retry、health、origin 回填，并确认原 spec/revision/runtime/state 不变。
+func TestMigratePhase2FixtureBackfillsEveryState(t *testing.T) {
 	store := openTestStore(t)
-	ctx := context.Background()
-
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("first migrate: %v", err)
-	}
-	if err := store.Migrate(ctx); err != nil {
-		t.Fatalf("second migrate: %v", err)
-	}
-
-	if got, want := currentVersion(t, store), int64(1); got != want {
-		t.Fatalf("schema version after repeat: got %d, want %d", got, want)
+	migrateToV1(t, store)
+	migrationTime := time.Date(2026, 8, 11, 12, 30, 0, 123456789, time.UTC)
+	clockCalls := 0
+	store.now = func() time.Time {
+		clockCalls++
+		return migrationTime
 	}
 
-	var applied int64
-	if err := store.db.QueryRow(
-		"SELECT COUNT(*) FROM schema_migrations",
-	).Scan(&applied); err != nil {
-		t.Fatalf("count applied migrations: %v", err)
+	states := []domain.SandboxState{
+		domain.StatePending,
+		domain.StateCreating,
+		domain.StateRunning,
+		domain.StateStopping,
+		domain.StateTerminated,
+		domain.StateFailed,
 	}
-	if applied != 1 {
-		t.Fatalf("migration recorded %d times, want 1", applied)
+	lastTransitions := make(map[string]time.Time, len(states))
+	desiredStates := make(map[string]domain.DesiredState, len(states))
+	for index, state := range states {
+		id := fmt.Sprintf("phase2-%02d", index)
+		desired := domain.DesiredRunning
+		if state == domain.StateStopping || state == domain.StateTerminated {
+			desired = domain.DesiredTerminated
+		}
+		lastTransition := migrationTime.Add(-time.Duration(index+1) * time.Hour)
+		lastTransitions[id] = lastTransition
+		desiredStates[id] = desired
+		insertPhase2Sandbox(t, store, id, desired, state, uint64(index+7), "runtime-"+id, lastTransition)
+	}
+
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("upgrade Phase 2 fixture: %v", err)
+	}
+	if clockCalls != 1 {
+		t.Fatalf("migration clock called %d times, want exactly once", clockCalls)
+	}
+	if got := currentVersion(t, store); got != 2 {
+		t.Fatalf("schema version after upgrade: got %d", got)
+	}
+	for index, state := range states {
+		id := fmt.Sprintf("phase2-%02d", index)
+		got, err := store.Get(context.Background(), id)
+		if err != nil {
+			t.Fatalf("read upgraded %s: %v", id, err)
+		}
+		if got.DesiredState != desiredStates[id] || got.ObservedState != state || got.Revision != uint64(index+7) || got.RuntimeID != "runtime-"+id {
+			t.Fatalf("legacy fields changed for %s: %+v", id, got)
+		}
+		wantSpec := domain.SandboxSpec{
+			Image:     "busybox:1.36",
+			Resources: domain.ResourceLimits{CPUQuotaMillis: 500, MemoryMiB: 256, PIDs: 64},
+			Workspace: domain.WorkspaceSpec{MountPath: domain.WorkspaceMountPath},
+			Platform:  domain.Platform{OS: "linux", Arch: "amd64"},
+		}
+		if !reflect.DeepEqual(got.Spec, wantSpec) || got.SpecHash != "spec-hash-"+id || got.Reason != "FIXTURE" || got.Message != "fixture" {
+			t.Fatalf("spec fields changed for %s: %+v", id, got)
+		}
+		if !got.CreatedAt.Equal(lastTransitions[id].Add(-time.Hour)) || !got.UpdatedAt.Equal(lastTransitions[id]) || !got.LastTransitionAt.Equal(lastTransitions[id]) {
+			t.Fatalf("legacy timestamps changed for %s: %+v", id, got)
+		}
+		wantExpiry := migrationTime.Add(migrationDefaultTTL)
+		if state == domain.StateStopping {
+			wantExpiry = migrationTime
+		}
+		if state == domain.StateTerminated {
+			wantExpiry = lastTransitions[id]
+		}
+		if got.ExpiresAt == nil || !got.ExpiresAt.Equal(wantExpiry) {
+			t.Fatalf("expiry for %s: got %v, want %s", id, got.ExpiresAt, wantExpiry)
+		}
+		if got.RetryAttempt != 0 || got.NextReconcileAt != nil || got.LastReconcileAt != nil || got.HealthFailureCount != 0 || got.Origin != domain.SandboxOriginAPI {
+			t.Fatalf("v2 metadata not safely backfilled for %s: %+v", id, got)
+		}
+	}
+
+	backups, err := filepath.Glob(store.path + ".pre-v1.*.bak")
+	if err != nil || len(backups) != 1 {
+		t.Fatalf("pre-v2 backup count: paths=%v err=%v", backups, err)
+	}
+	backup, err := Open(backups[0])
+	if err != nil {
+		t.Fatalf("open consistent backup: %v", err)
+	}
+	defer backup.Close()
+	if err := validateSchema(context.Background(), backup.db, 1); err != nil {
+		t.Fatalf("backup is not readable Phase 2 schema: %v", err)
 	}
 }
 
-// TestMigrateRejectsNewerDatabase 验证未知更高版本拒绝启动。
+func insertPhase2Sandbox(t *testing.T, store *Store, id string, desired domain.DesiredState, observed domain.SandboxState, revision uint64, runtimeID string, lastTransition time.Time) {
+	t.Helper()
+	const specJSON = `{"image":"busybox:1.36","resources":{"cpu_quota_millis":500,"memory_mib":256,"pids":64},"workspace":{"mount_path":"/workspace","persistent":false},"network":{"outbound":false},"platform":{"os":"linux","arch":"amd64"}}`
+	_, err := store.db.Exec(`INSERT INTO sandboxes (
+		id, spec_json, desired_state, observed_state, reason, message, runtime_id,
+		spec_hash, revision, created_at, updated_at, last_transition_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		id, []byte(specJSON), desired, observed, "FIXTURE", "fixture", runtimeID,
+		"spec-hash-"+id, revision,
+		lastTransition.Add(-time.Hour).Format(time.RFC3339Nano),
+		lastTransition.Format(time.RFC3339Nano),
+		lastTransition.Format(time.RFC3339Nano),
+	)
+	if err != nil {
+		t.Fatalf("insert Phase 2 fixture %s: %v", id, err)
+	}
+}
+
+// TestMigrateBackupFailureDoesNotStartUpgrade 验证 VACUUM INTO 失败时 v1 原样保留。
+func TestMigrateBackupFailureDoesNotStartUpgrade(t *testing.T) {
+	store := openTestStore(t)
+	migrateToV1(t, store)
+	insertPhase2Sandbox(t, store, "kept", domain.DesiredRunning, domain.StateRunning, 9, "runtime-kept", time.Now().UTC())
+	store.path = filepath.Join(t.TempDir(), "missing", "sandboxd.db")
+
+	if err := store.Migrate(context.Background()); err == nil {
+		t.Fatal("expected backup failure")
+	}
+	if got := currentVersion(t, store); got != 1 {
+		t.Fatalf("backup failure changed schema version: %d", got)
+	}
+	if got := len(sandboxColumns(t, store)); got != 12 {
+		t.Fatalf("backup failure changed v1 columns: %d", got)
+	}
+}
+
+// TestMigrateReopenIdempotent 验证关闭重开后重复迁移不再创建备份或版本行。
+func TestMigrateReopenIdempotent(t *testing.T) {
+	path := testDatabasePath(t)
+	first, err := Open(path)
+	if err != nil {
+		t.Fatalf("open first store: %v", err)
+	}
+	migrateToV1(t, first)
+	if err := first.Close(); err != nil {
+		t.Fatalf("close v1 store: %v", err)
+	}
+	second, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen v1 store: %v", err)
+	}
+	if err := second.Migrate(context.Background()); err != nil {
+		t.Fatalf("upgrade reopened store: %v", err)
+	}
+	if err := second.Close(); err != nil {
+		t.Fatalf("close v2 store: %v", err)
+	}
+	third, err := Open(path)
+	if err != nil {
+		t.Fatalf("reopen v2 store: %v", err)
+	}
+	defer third.Close()
+	if err := third.Migrate(context.Background()); err != nil {
+		t.Fatalf("repeat migration: %v", err)
+	}
+	var applied int
+	if err := third.db.QueryRow("SELECT COUNT(*) FROM schema_migrations").Scan(&applied); err != nil || applied != 2 {
+		t.Fatalf("migration rows: got %d err=%v", applied, err)
+	}
+	backups, _ := filepath.Glob(path + ".pre-v1.*.bak")
+	if len(backups) != 1 {
+		t.Fatalf("idempotent reopen created extra backups: %v", backups)
+	}
+}
+
+// TestMigrateInterruptedUpgradeRollsBack 验证 v2 后续步骤失败会把整个
+// BEGIN IMMEDIATE 事务回滚到可重试 v1，而备份仍可用于停机恢复。
+func TestMigrateInterruptedUpgradeRollsBack(t *testing.T) {
+	store := openTestStore(t)
+	migrateToV1(t, store)
+	insertPhase2Sandbox(t, store, "rollback", domain.DesiredRunning, domain.StateCreating, 11, "runtime-rollback", time.Now().UTC())
+	broken := append([]migration{}, migrations...)
+	broken = append(broken, migration{version: 3, apply: func(ctx context.Context, conn *sql.Conn, _ time.Time) error {
+		if _, err := conn.ExecContext(ctx, "CREATE TABLE must_rollback (id INTEGER)"); err != nil {
+			return err
+		}
+		return errors.New("simulated interruption")
+	}})
+	if err := store.migrateWith(context.Background(), broken); err == nil {
+		t.Fatal("expected interrupted migration failure")
+	}
+	if got := currentVersion(t, store); got != 1 || len(sandboxColumns(t, store)) != 12 {
+		t.Fatalf("interrupted migration did not restore v1: version=%d columns=%v", got, sandboxColumns(t, store))
+	}
+	if tableExists(t, store, "must_rollback") {
+		t.Fatal("interrupted migration left later schema object")
+	}
+	var revision uint64
+	if err := store.db.QueryRow("SELECT revision FROM sandboxes WHERE id = 'rollback'").Scan(&revision); err != nil || revision != 11 {
+		t.Fatalf("legacy row changed after rollback: revision=%d err=%v", revision, err)
+	}
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("retry migration after rollback: %v", err)
+	}
+}
+
 func TestMigrateRejectsNewerDatabase(t *testing.T) {
 	store := openTestStore(t)
-	ctx := context.Background()
-
-	if err := store.Migrate(ctx); err != nil {
+	if err := store.Migrate(context.Background()); err != nil {
 		t.Fatalf("initial migrate: %v", err)
 	}
-	if _, err := store.db.Exec(
-		"INSERT INTO schema_migrations (version, applied_at) VALUES (999, '')",
-	); err != nil {
+	if _, err := store.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (999, '')"); err != nil {
 		t.Fatalf("simulate newer schema: %v", err)
 	}
-
-	if err := store.Migrate(ctx); err == nil {
+	if err := store.Migrate(context.Background()); err == nil {
 		t.Fatal("expected error for newer database schema")
 	}
 }
 
-// TestMigrateRollsBackOnFailure 验证失败迁移整体回滚，不留下半完成 schema。
-func TestMigrateRollsBackOnFailure(t *testing.T) {
-	t.Run("first migration fails", func(t *testing.T) {
-		store := openTestStore(t)
-
-		broken := []migration{
-			{
-				version: 1,
-				statements: []string{
-					"CREATE TABLE sandboxes (id TEXT PRIMARY KEY)",
-					"THIS IS NOT VALID SQL",
-				},
-			},
+func TestMigrateFirstVersionFailureRollsBack(t *testing.T) {
+	store := openTestStore(t)
+	broken := []migration{{version: 1, apply: func(ctx context.Context, conn *sql.Conn, _ time.Time) error {
+		if _, err := conn.ExecContext(ctx, "CREATE TABLE sandboxes (id TEXT PRIMARY KEY)"); err != nil {
+			return err
 		}
-		if err := store.migrateWith(
-			context.Background(),
-			broken,
-		); err == nil {
-			t.Fatal("expected migration failure")
-		}
-
-		// 事务回滚后不应留下任何对象，包括版本表本身。
-		if tableExists(t, store, "sandboxes") {
-			t.Fatal("failed migration left sandboxes table")
-		}
-		if tableExists(t, store, "schema_migrations") {
-			t.Fatal("failed migration left schema_migrations table")
-		}
-	})
-
-	t.Run("later migration fails after applied version", func(t *testing.T) {
-		store := openTestStore(t)
-		ctx := context.Background()
-
-		if err := store.Migrate(ctx); err != nil {
-			t.Fatalf("apply migration 1: %v", err)
-		}
-
-		broken := append(
-			append([]migration{}, migrations...),
-			migration{
-				version:    2,
-				statements: []string{"THIS IS NOT VALID SQL"},
-			},
-		)
-		if err := store.migrateWith(ctx, broken); err == nil {
-			t.Fatal("expected migration failure")
-		}
-
-		if got, want := currentVersion(t, store), int64(1); got != want {
-			t.Fatalf(
-				"version changed by failed migration: got %d, want %d",
-				got,
-				want,
-			)
-		}
-	})
+		return errors.New("simulated first migration failure")
+	}}}
+	if err := store.migrateWith(context.Background(), broken); err == nil {
+		t.Fatal("expected migration failure")
+	}
+	if tableExists(t, store, "sandboxes") || tableExists(t, store, "schema_migrations") {
+		t.Fatal("failed first migration left schema objects")
+	}
 }
 
-// TestMigrateRejectsInvalidList 验证乱序迁移列表在执行前被拒绝。
 func TestMigrateRejectsInvalidList(t *testing.T) {
 	store := openTestStore(t)
-
-	invalid := []migration{
-		{version: 2, statements: []string{"SELECT 1"}},
-	}
-	if err := store.migrateWith(context.Background(), invalid); err == nil {
+	if err := store.migrateWith(context.Background(), []migration{{version: 2}}); err == nil {
 		t.Fatal("expected error for invalid migration list")
 	}
 	if tableExists(t, store, "schema_migrations") {
 		t.Fatal("invalid list must be rejected before any DDL")
+	}
+}
+
+// TestBackupFileIsMaterialized guards against a driver silently accepting VACUUM INTO
+// without creating a regular backup file on the host filesystem.
+func TestBackupFileIsMaterialized(t *testing.T) {
+	store := openTestStore(t)
+	migrateToV1(t, store)
+	if err := store.Migrate(context.Background()); err != nil {
+		t.Fatalf("migrate with backup: %v", err)
+	}
+	paths, _ := filepath.Glob(store.path + ".pre-v1.*.bak")
+	if len(paths) != 1 {
+		t.Fatalf("backup path count: %v", paths)
+	}
+	info, err := os.Lstat(paths[0])
+	if err != nil || !info.Mode().IsRegular() || info.Size() == 0 {
+		t.Fatalf("backup is not a non-empty regular file: info=%v err=%v", info, err)
 	}
 }
