@@ -512,6 +512,11 @@ func (s *reconcileStore) CreateIdempotent(context.Context, store.IdempotentCreat
 	return store.IdempotentCreateResult{}, errors.New("unexpected CreateIdempotent")
 }
 
+// CreateNonIdempotent 未被 reconciler 测试使用。
+func (s *reconcileStore) CreateNonIdempotent(context.Context, domain.Sandbox) (domain.Sandbox, error) {
+	return domain.Sandbox{}, errors.New("unexpected CreateNonIdempotent")
+}
+
 // Renew 未被当前 reconciler 测试使用。
 func (s *reconcileStore) Renew(context.Context, store.RenewUpdate) (domain.Sandbox, error) {
 	return domain.Sandbox{}, errors.New("unexpected Renew")

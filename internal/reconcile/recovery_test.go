@@ -366,6 +366,11 @@ func (s *recoveryStore) CreateIdempotent(context.Context, store.IdempotentCreate
 	return store.IdempotentCreateResult{}, errors.New("unexpected CreateIdempotent")
 }
 
+// CreateNonIdempotent 未被启动恢复测试使用。
+func (s *recoveryStore) CreateNonIdempotent(context.Context, domain.Sandbox) (domain.Sandbox, error) {
+	return domain.Sandbox{}, errors.New("unexpected CreateNonIdempotent")
+}
+
 // Renew 未被启动恢复测试使用。
 func (s *recoveryStore) Renew(context.Context, store.RenewUpdate) (domain.Sandbox, error) {
 	return domain.Sandbox{}, errors.New("unexpected Renew")

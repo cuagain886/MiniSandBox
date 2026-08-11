@@ -201,6 +201,7 @@ func TestFakesConcurrentAccess(t *testing.T) {
 			defer wait.Done()
 			sandbox := domain.Sandbox{ID: "sandbox"}
 			_ = storeFake.Create(ctx, sandbox)
+			_, _ = storeFake.CreateNonIdempotent(ctx, sandbox)
 			_, _ = storeFake.CreateIdempotent(ctx, storeport.IdempotentCreateRequest{Sandbox: sandbox})
 			_, _ = storeFake.Get(ctx, sandbox.ID)
 			_, _ = storeFake.UpdateDesired(

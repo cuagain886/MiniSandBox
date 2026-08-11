@@ -153,6 +153,8 @@ type IdempotentCreateResult struct {
 type Store interface {
 	// Create 持久化一条新记录，ID 已存在时返回 domain.ErrConflict。
 	Create(ctx context.Context, sandbox domain.Sandbox) error
+	// CreateNonIdempotent 在独占事务中创建一条无 key sandbox，不写重放表。
+	CreateNonIdempotent(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error)
 	// CreateIdempotent 在一个 BEGIN IMMEDIATE 事务中创建 sandbox 和首次响应记录。
 	CreateIdempotent(ctx context.Context, request IdempotentCreateRequest) (IdempotentCreateResult, error)
 	// Get 按 ID 返回 sandbox，不存在时返回 domain.ErrNotFound。

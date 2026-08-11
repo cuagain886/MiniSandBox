@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"minisandbox/internal/domain"
 	storeport "minisandbox/internal/store"
 )
 
@@ -39,5 +40,26 @@ func (s *SandboxService) CommitIdempotentCreate(
 		Location:   result.Response.Location,
 		Body:       append([]byte(nil), result.Response.Body...),
 		Replayed:   result.Replayed,
+	}, nil
+}
+
+// CommitNonIdempotentCreate 提交一次无 key 创建，并复用首次创建响应 outcome。
+//
+// 本方法不生成任何内部 key，也不写 idempotency table；与 keyed 分支相同，
+// HTTP 装配和 Wake 延后到 P3-027。
+func (s *SandboxService) CommitNonIdempotentCreate(
+	ctx context.Context,
+	sandbox domain.Sandbox,
+	response storeport.IdempotentResponse,
+) (IdempotentCreateOutcome, error) {
+	created, err := s.store.CreateNonIdempotent(ctx, sandbox)
+	if err != nil {
+		return IdempotentCreateOutcome{}, fmt.Errorf("commit non-idempotent sandbox creation: %w", err)
+	}
+	return IdempotentCreateOutcome{
+		SandboxID:  created.ID,
+		StatusCode: response.StatusCode,
+		Location:   response.Location,
+		Body:       append([]byte(nil), response.Body...),
 	}, nil
 }

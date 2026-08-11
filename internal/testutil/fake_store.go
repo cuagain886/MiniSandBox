@@ -26,11 +26,14 @@ type DesiredUpdateCall struct {
 type FakeStore struct {
 	mu sync.Mutex
 
-	createErr              error
-	createCalls            []domain.Sandbox
-	createIdempotentResult storeport.IdempotentCreateResult
-	createIdempotentErr    error
-	createIdempotentCalls  []storeport.IdempotentCreateRequest
+	createErr                 error
+	createCalls               []domain.Sandbox
+	createIdempotentResult    storeport.IdempotentCreateResult
+	createIdempotentErr       error
+	createIdempotentCalls     []storeport.IdempotentCreateRequest
+	createNonIdempotentResult domain.Sandbox
+	createNonIdempotentErr    error
+	createNonIdempotentCalls  []domain.Sandbox
 
 	getResult domain.Sandbox
 	getErr    error
@@ -93,6 +96,28 @@ func (f *FakeStore) Create(_ context.Context, sandbox domain.Sandbox) error {
 	defer f.mu.Unlock()
 	f.createCalls = append(f.createCalls, sandbox)
 	return f.createErr
+}
+
+// SetCreateNonIdempotentResult 配置无 key 原子创建结果。
+func (f *FakeStore) SetCreateNonIdempotentResult(result domain.Sandbox, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createNonIdempotentResult, f.createNonIdempotentErr = result, err
+}
+
+// CreateNonIdempotentCalls 返回无 key 创建参数快照。
+func (f *FakeStore) CreateNonIdempotentCalls() []domain.Sandbox {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]domain.Sandbox(nil), f.createNonIdempotentCalls...)
+}
+
+// CreateNonIdempotent 记录无 key 创建并返回预设结果。
+func (f *FakeStore) CreateNonIdempotent(_ context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createNonIdempotentCalls = append(f.createNonIdempotentCalls, sandbox)
+	return f.createNonIdempotentResult, f.createNonIdempotentErr
 }
 
 // SetCreateIdempotentResult 配置 CreateIdempotent 返回的结果和错误。

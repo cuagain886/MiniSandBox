@@ -16,6 +16,7 @@ import (
 func idempotentCreateRequest(id, key string) storeport.IdempotentCreateRequest {
 	sandbox := createTestSandbox()
 	sandbox.ID = id
+	sandbox.Revision = 0
 	sandbox.Origin = domain.SandboxOriginAPI
 	createdAt := sandbox.CreatedAt.UTC()
 	body := []byte(`{"id":"` + id + `","state":"Pending","reason":"CREATE_ACCEPTED","message":"Sandbox creation has been accepted.","image":"busybox:1.36","expires_at":"` + sandbox.ExpiresAt.UTC().Format(time.RFC3339Nano) + `","created_at":"` + createdAt.Format(time.RFC3339Nano) + `","updated_at":"` + createdAt.Format(time.RFC3339Nano) + `"}`)

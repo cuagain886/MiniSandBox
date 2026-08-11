@@ -260,6 +260,39 @@ func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
 	return fmt.Errorf("create sandbox: %w", err)
 }
 
+// CreateNonIdempotent 在独占写事务中创建 sandbox，且完全不触碰重放表。
+func (s *Store) CreateNonIdempotent(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {
+	if err := validateAtomicSandbox(sandbox); err != nil {
+		return domain.Sandbox{}, err
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("acquire non-idempotent create connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return domain.Sandbox{}, fmt.Errorf("begin non-idempotent create: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	if err := insertAtomicSandbox(ctx, conn, sandbox); err != nil {
+		return domain.Sandbox{}, err
+	}
+	created, err := scanSandbox(conn.QueryRowContext(ctx, selectSandboxByIDQuery, sandbox.ID))
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("read non-idempotent sandbox: %w", err)
+	}
+	if err := s.commitImmediate(ctx, conn); err != nil {
+		return domain.Sandbox{}, fmt.Errorf("commit non-idempotent create: %w", err)
+	}
+	committed = true
+	return created, nil
+}
+
 // CreateIdempotent 在独占写事务中原子创建 sandbox 与首次 202 响应记录。
 //
 // 事务先检查 scope/key，避免为已存在身份生成孤立 sandbox；任何 sandbox、
@@ -271,10 +304,6 @@ func (s *Store) CreateIdempotent(
 ) (storeport.IdempotentCreateResult, error) {
 	if err := validateIdempotentCreateRequest(request); err != nil {
 		return storeport.IdempotentCreateResult{}, err
-	}
-	specJSON, err := json.Marshal(storedSpecFromDomain(request.Sandbox.Spec))
-	if err != nil {
-		return storeport.IdempotentCreateResult{}, fmt.Errorf("encode idempotent sandbox spec: %w", err)
 	}
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
@@ -330,38 +359,8 @@ func (s *Store) CreateIdempotent(
 	}
 
 	sandbox := request.Sandbox
-	result, err := conn.ExecContext(ctx, `INSERT INTO sandboxes (
-		id, spec_json, desired_state, observed_state, reason, message, runtime_id,
-		spec_hash, revision, created_at, updated_at, last_transition_at, expires_at,
-		retry_attempt, next_reconcile_at, last_reconcile_at, health_failure_count, origin
-	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		sandbox.ID,
-		specJSON,
-		sandbox.DesiredState,
-		sandbox.ObservedState,
-		sandbox.Reason,
-		sandbox.Message,
-		sandbox.RuntimeID,
-		sandbox.SpecHash,
-		uint64(1),
-		sandbox.CreatedAt.UTC().Format(time.RFC3339Nano),
-		sandbox.UpdatedAt.UTC().Format(time.RFC3339Nano),
-		sandbox.LastTransitionAt.UTC().Format(time.RFC3339Nano),
-		sandbox.ExpiresAt.UTC().Format(time.RFC3339Nano),
-		sandbox.RetryAttempt,
-		storedNullableTime(sandbox.NextReconcileAt),
-		storedNullableTime(sandbox.LastReconcileAt),
-		sandbox.HealthFailureCount,
-		sandbox.Origin,
-	)
-	if err != nil {
-		if isDuplicateConstraint(err) {
-			return storeport.IdempotentCreateResult{}, domain.ErrConflict
-		}
-		return storeport.IdempotentCreateResult{}, fmt.Errorf("insert idempotent sandbox: %w", err)
-	}
-	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
-		return storeport.IdempotentCreateResult{}, fmt.Errorf("insert idempotent sandbox result: affected=%d error=%w", affected, err)
+	if err := insertAtomicSandbox(ctx, conn, sandbox); err != nil {
+		return storeport.IdempotentCreateResult{}, err
 	}
 
 	response := request.Response
@@ -390,6 +389,48 @@ func (s *Store) CreateIdempotent(
 	committed = true
 	response.Body = append([]byte(nil), response.Body...)
 	return storeport.IdempotentCreateResult{Sandbox: created, Response: response}, nil
+}
+
+// insertAtomicSandbox 是有 key 与无 key 创建共享的唯一 sandbox INSERT。
+func insertAtomicSandbox(ctx context.Context, conn *sql.Conn, sandbox domain.Sandbox) error {
+	specJSON, err := json.Marshal(storedSpecFromDomain(sandbox.Spec))
+	if err != nil {
+		return fmt.Errorf("encode atomic sandbox spec: %w", err)
+	}
+	result, err := conn.ExecContext(ctx, `INSERT INTO sandboxes (
+		id, spec_json, desired_state, observed_state, reason, message, runtime_id,
+		spec_hash, revision, created_at, updated_at, last_transition_at, expires_at,
+		retry_attempt, next_reconcile_at, last_reconcile_at, health_failure_count, origin
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sandbox.ID,
+		specJSON,
+		sandbox.DesiredState,
+		sandbox.ObservedState,
+		sandbox.Reason,
+		sandbox.Message,
+		sandbox.RuntimeID,
+		sandbox.SpecHash,
+		uint64(1),
+		sandbox.CreatedAt.UTC().Format(time.RFC3339Nano),
+		sandbox.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		sandbox.LastTransitionAt.UTC().Format(time.RFC3339Nano),
+		sandbox.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		sandbox.RetryAttempt,
+		storedNullableTime(sandbox.NextReconcileAt),
+		storedNullableTime(sandbox.LastReconcileAt),
+		sandbox.HealthFailureCount,
+		sandbox.Origin,
+	)
+	if err != nil {
+		if isDuplicateConstraint(err) {
+			return domain.ErrConflict
+		}
+		return fmt.Errorf("insert atomic sandbox: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		return fmt.Errorf("insert atomic sandbox result: affected=%d error=%v", affected, err)
+	}
+	return nil
 }
 
 // decodeIdempotentResponse 在返回原始 bytes 前验证大小、schema v1 和 sandbox 关联。
@@ -439,9 +480,6 @@ func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) 
 	if !validIdempotencyToken(request.ScopeID, 64) ||
 		!validIdempotencyToken(request.Key, 128) ||
 		!validLowerHexHash(request.RequestHash) ||
-		request.Sandbox.ExpiresAt == nil ||
-		request.Sandbox.CreatedAt.IsZero() || request.Sandbox.UpdatedAt.IsZero() ||
-		request.Sandbox.LastTransitionAt.IsZero() ||
 		response.SchemaVersion != idempotencyResponseSchemaVersion ||
 		response.StatusCode != 202 || response.CreatedAt.IsZero() ||
 		len(response.Location) < 1 || len(response.Location) > 1024 ||
@@ -449,8 +487,8 @@ func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) 
 		!json.Valid(response.Body) {
 		return fmt.Errorf("validate idempotent create: %w", domain.ErrInvalid)
 	}
-	if request.Sandbox.Origin != domain.SandboxOriginAPI {
-		return fmt.Errorf("validate idempotent create origin: %w", domain.ErrInvalid)
+	if err := validateAtomicSandbox(request.Sandbox); err != nil {
+		return err
 	}
 	if _, err := decodeIdempotentResponse(
 		request.Sandbox.ID,
@@ -460,6 +498,21 @@ func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) 
 		response.CreatedAt.UTC().Format(time.RFC3339Nano),
 	); err != nil {
 		return fmt.Errorf("validate idempotent response schema: %w", domain.ErrInvalid)
+	}
+	return nil
+}
+
+// validateAtomicSandbox 固定所有 Phase 3 create transaction 共用的初始状态。
+func validateAtomicSandbox(sandbox domain.Sandbox) error {
+	if sandbox.ID == "" || sandbox.ExpiresAt == nil || sandbox.CreatedAt.IsZero() ||
+		sandbox.UpdatedAt.IsZero() || sandbox.LastTransitionAt.IsZero() ||
+		!sandbox.ExpiresAt.After(sandbox.CreatedAt) ||
+		sandbox.DesiredState != domain.DesiredRunning || sandbox.ObservedState != domain.StatePending ||
+		sandbox.Revision != 0 || sandbox.RetryAttempt != 0 || sandbox.NextReconcileAt != nil ||
+		sandbox.LastReconcileAt != nil || sandbox.HealthFailureCount != 0 ||
+		sandbox.Origin != domain.SandboxOriginAPI || sandbox.SpecHash == "" ||
+		sandbox.SpecHash != sandbox.Spec.Hash() {
+		return fmt.Errorf("validate atomic sandbox: %w", domain.ErrInvalid)
 	}
 	return nil
 }
