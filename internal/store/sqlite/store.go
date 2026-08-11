@@ -1277,6 +1277,33 @@ func (s *Store) ListReconcileCandidates(
 	return candidates, nil
 }
 
+// ListActiveLeases 用 ID keyset 分页返回仍由 TTL 调度负责的权威记录。
+func (s *Store) ListActiveLeases(ctx context.Context, afterID string, limit int) ([]domain.Sandbox, error) {
+	if limit < 1 {
+		return nil, fmt.Errorf("list active leases: %w", domain.ErrInvalid)
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT `+sandboxSelectColumns+`
+		FROM sandboxes
+		WHERE id > ? AND desired_state = ? AND observed_state <> ?
+		ORDER BY id ASC LIMIT ?`, afterID, domain.DesiredRunning, domain.StateTerminated, limit)
+	if err != nil {
+		return nil, fmt.Errorf("query active leases: %w", err)
+	}
+	defer rows.Close()
+	result := make([]domain.Sandbox, 0, limit)
+	for rows.Next() {
+		sandbox, err := scanSandbox(rows)
+		if err != nil {
+			return nil, fmt.Errorf("scan active lease: %w", err)
+		}
+		result = append(result, sandbox)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, fmt.Errorf("iterate active leases: %w", err)
+	}
+	return result, nil
+}
+
 // ListAll 按创建时间和 ID 稳定返回全部持久化记录。
 //
 // 本方法用于启动恢复和诊断，不读取 Docker，也不修改任何生命周期状态；

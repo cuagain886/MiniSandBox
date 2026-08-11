@@ -55,6 +55,26 @@ const maxCandidateScanPages = 10_000
 
 // startProductionMaintenance 启动周期 candidate scanner 与幂等记录 GC。
 func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (workerHandle, error) {
+	ttlStore, ok := sandboxStore.(reconcile.TTLRecoveryStore)
+	if !ok {
+		return nil, errors.New("sandbox store does not provide TTL recovery")
+	}
+	var ttlExpiration *reconcile.TTLExpirationCoordinator
+	ttlScheduler := reconcile.NewTTLScheduler(reconcile.SystemClock{}, func(ctx context.Context, entry reconcile.TTLHeapEntry) {
+		if err := ttlExpiration.ExpireEntry(ctx, entry); err != nil && !errors.Is(err, context.Canceled) {
+			slog.Warn("TTL expiration failed", "reason", runtimeport.ClassifyError(err).Reason)
+		}
+	})
+	// coordinator 和 scheduler 必须共享同一 index；重建 coordinator 后再恢复，
+	// 且 Recover 返回前绝不启动 timer loop。
+	ttlExpiration = reconcile.NewTTLExpirationCoordinator(ttlStore, ttlScheduler, reconcile.SystemClock{}, queue.Wake)
+	ttlRecovery, err := reconcile.NewTTLRecovery(ttlStore, ttlScheduler, ttlExpiration, cfg.Reconcile.PageSize, maxCandidateScanPages)
+	if err != nil {
+		return nil, err
+	}
+	if err := ttlRecovery.Recover(ctx); err != nil {
+		return nil, err
+	}
 	sweeper, err := reconcile.NewCandidateSweeper(
 		sandboxStore, cfg.Reconcile.PageSize, maxCandidateScanPages,
 		cfg.Reconcile.Timeout, cfg.Reconcile.RunningCheckInterval,
@@ -111,7 +131,8 @@ func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxS
 	go func() {
 		defer close(handle.done)
 		var wait sync.WaitGroup
-		wait.Add(3)
+		wait.Add(4)
+		go func() { defer wait.Done(); ttlScheduler.Run(maintenanceCtx) }()
 		go func() { defer wait.Done(); loop.Run(maintenanceCtx) }()
 		go func() { defer wait.Done(); gc.Run(maintenanceCtx) }()
 		go func() { defer wait.Done(); health.Run(maintenanceCtx) }()
