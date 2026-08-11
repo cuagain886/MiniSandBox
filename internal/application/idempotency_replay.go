@@ -51,8 +51,11 @@ func (s *SandboxService) CommitNonIdempotentCreate(
 	ctx context.Context,
 	sandbox domain.Sandbox,
 	response storeport.IdempotentResponse,
+	maxSandboxes int,
 ) (IdempotentCreateOutcome, error) {
-	created, err := s.store.CreateNonIdempotent(ctx, sandbox)
+	created, err := s.store.CreateNonIdempotent(ctx, storeport.NonIdempotentCreateRequest{
+		Sandbox: sandbox, MaxSandboxes: maxSandboxes,
+	})
 	if err != nil {
 		return IdempotentCreateOutcome{}, fmt.Errorf("commit non-idempotent sandbox creation: %w", err)
 	}

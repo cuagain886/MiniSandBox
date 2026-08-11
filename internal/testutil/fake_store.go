@@ -33,7 +33,7 @@ type FakeStore struct {
 	createIdempotentCalls     []storeport.IdempotentCreateRequest
 	createNonIdempotentResult domain.Sandbox
 	createNonIdempotentErr    error
-	createNonIdempotentCalls  []domain.Sandbox
+	createNonIdempotentCalls  []storeport.NonIdempotentCreateRequest
 
 	getResult domain.Sandbox
 	getErr    error
@@ -106,17 +106,17 @@ func (f *FakeStore) SetCreateNonIdempotentResult(result domain.Sandbox, err erro
 }
 
 // CreateNonIdempotentCalls 返回无 key 创建参数快照。
-func (f *FakeStore) CreateNonIdempotentCalls() []domain.Sandbox {
+func (f *FakeStore) CreateNonIdempotentCalls() []storeport.NonIdempotentCreateRequest {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	return append([]domain.Sandbox(nil), f.createNonIdempotentCalls...)
+	return append([]storeport.NonIdempotentCreateRequest(nil), f.createNonIdempotentCalls...)
 }
 
 // CreateNonIdempotent 记录无 key 创建并返回预设结果。
-func (f *FakeStore) CreateNonIdempotent(_ context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {
+func (f *FakeStore) CreateNonIdempotent(_ context.Context, request storeport.NonIdempotentCreateRequest) (domain.Sandbox, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	f.createNonIdempotentCalls = append(f.createNonIdempotentCalls, sandbox)
+	f.createNonIdempotentCalls = append(f.createNonIdempotentCalls, request)
 	return f.createNonIdempotentResult, f.createNonIdempotentErr
 }
 

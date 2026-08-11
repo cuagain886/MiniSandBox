@@ -513,7 +513,7 @@ func (s *reconcileStore) CreateIdempotent(context.Context, store.IdempotentCreat
 }
 
 // CreateNonIdempotent 未被 reconciler 测试使用。
-func (s *reconcileStore) CreateNonIdempotent(context.Context, domain.Sandbox) (domain.Sandbox, error) {
+func (s *reconcileStore) CreateNonIdempotent(context.Context, store.NonIdempotentCreateRequest) (domain.Sandbox, error) {
 	return domain.Sandbox{}, errors.New("unexpected CreateNonIdempotent")
 }
 

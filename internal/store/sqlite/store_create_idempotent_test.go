@@ -32,6 +32,7 @@ func idempotentCreateRequest(id, key string) storeport.IdempotentCreateRequest {
 			Body:          body,
 			CreatedAt:     createdAt,
 		},
+		MaxSandboxes: 100,
 	}
 }
 

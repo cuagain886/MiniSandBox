@@ -52,7 +52,7 @@ func TestCommitNonIdempotentCreateUsesSameResponseShape(t *testing.T) {
 	fake.SetCreateNonIdempotentResult(sandbox, nil)
 	response := storeport.IdempotentResponse{StatusCode: 202, Location: "/v1/sandboxes/no-key", Body: []byte(`{"id":"no-key"}`)}
 	service := NewSandboxService(fake, nil, nil, SandboxSpecBuilder{}, nil)
-	outcome, err := service.CommitNonIdempotentCreate(context.Background(), sandbox, response)
+	outcome, err := service.CommitNonIdempotentCreate(context.Background(), sandbox, response, 100)
 	if err != nil {
 		t.Fatalf("commit no-key create: %v", err)
 	}

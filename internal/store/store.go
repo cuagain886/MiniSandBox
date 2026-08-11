@@ -133,6 +133,16 @@ type IdempotentCreateRequest struct {
 	Sandbox domain.Sandbox
 	// Response 是与 Sandbox 同事务保存的首次 202 响应。
 	Response IdempotentResponse
+	// MaxSandboxes 是本次事务允许的非 Terminated 记录上限，必须为正数。
+	MaxSandboxes int
+}
+
+// NonIdempotentCreateRequest 描述无 key 创建及其事务内容量上限。
+type NonIdempotentCreateRequest struct {
+	// Sandbox 是待创建的完整初始领域记录。
+	Sandbox domain.Sandbox
+	// MaxSandboxes 是本次事务允许的非 Terminated 记录上限，必须为正数。
+	MaxSandboxes int
 }
 
 // IdempotentCreateResult 描述首次创建或后续精确重放结果。
@@ -154,7 +164,7 @@ type Store interface {
 	// Create 持久化一条新记录，ID 已存在时返回 domain.ErrConflict。
 	Create(ctx context.Context, sandbox domain.Sandbox) error
 	// CreateNonIdempotent 在独占事务中创建一条无 key sandbox，不写重放表。
-	CreateNonIdempotent(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error)
+	CreateNonIdempotent(ctx context.Context, request NonIdempotentCreateRequest) (domain.Sandbox, error)
 	// CreateIdempotent 在一个 BEGIN IMMEDIATE 事务中创建 sandbox 和首次响应记录。
 	CreateIdempotent(ctx context.Context, request IdempotentCreateRequest) (IdempotentCreateResult, error)
 	// Get 按 ID 返回 sandbox，不存在时返回 domain.ErrNotFound。

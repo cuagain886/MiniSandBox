@@ -261,10 +261,11 @@ func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
 }
 
 // CreateNonIdempotent 在独占写事务中创建 sandbox，且完全不触碰重放表。
-func (s *Store) CreateNonIdempotent(ctx context.Context, sandbox domain.Sandbox) (domain.Sandbox, error) {
-	if err := validateAtomicSandbox(sandbox); err != nil {
+func (s *Store) CreateNonIdempotent(ctx context.Context, request storeport.NonIdempotentCreateRequest) (domain.Sandbox, error) {
+	if err := validateAtomicCreateRequest(request.Sandbox, request.MaxSandboxes); err != nil {
 		return domain.Sandbox{}, err
 	}
+	sandbox := request.Sandbox
 	conn, err := s.db.Conn(ctx)
 	if err != nil {
 		return domain.Sandbox{}, fmt.Errorf("acquire non-idempotent create connection: %w", err)
@@ -279,6 +280,9 @@ func (s *Store) CreateNonIdempotent(ctx context.Context, sandbox domain.Sandbox)
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
+	if err := enforceSandboxAdmission(ctx, conn, request.MaxSandboxes); err != nil {
+		return domain.Sandbox{}, err
+	}
 	if err := insertAtomicSandbox(ctx, conn, sandbox); err != nil {
 		return domain.Sandbox{}, err
 	}
@@ -319,6 +323,9 @@ func (s *Store) CreateIdempotent(
 			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
 		}
 	}()
+	if err := enforceSandboxAdmission(ctx, conn, request.MaxSandboxes); err != nil {
+		return storeport.IdempotentCreateResult{}, err
+	}
 
 	var (
 		existingHash      string
@@ -487,7 +494,7 @@ func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) 
 		!json.Valid(response.Body) {
 		return fmt.Errorf("validate idempotent create: %w", domain.ErrInvalid)
 	}
-	if err := validateAtomicSandbox(request.Sandbox); err != nil {
+	if err := validateAtomicCreateRequest(request.Sandbox, request.MaxSandboxes); err != nil {
 		return err
 	}
 	if _, err := decodeIdempotentResponse(
@@ -498,6 +505,30 @@ func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) 
 		response.CreatedAt.UTC().Format(time.RFC3339Nano),
 	); err != nil {
 		return fmt.Errorf("validate idempotent response schema: %w", domain.ErrInvalid)
+	}
+	return nil
+}
+
+// validateAtomicCreateRequest 组合初始记录与正容量上限校验。
+func validateAtomicCreateRequest(sandbox domain.Sandbox, maxSandboxes int) error {
+	if maxSandboxes < 1 {
+		return fmt.Errorf("validate sandbox admission limit: %w", domain.ErrInvalid)
+	}
+	return validateAtomicSandbox(sandbox)
+}
+
+// enforceSandboxAdmission 在 BEGIN IMMEDIATE 写锁内原子检查 active sandbox 数。
+func enforceSandboxAdmission(ctx context.Context, conn *sql.Conn, maxSandboxes int) error {
+	var active int
+	if err := conn.QueryRowContext(
+		ctx,
+		"SELECT COUNT(*) FROM sandboxes WHERE observed_state <> ?",
+		domain.StateTerminated,
+	).Scan(&active); err != nil {
+		return fmt.Errorf("count active sandboxes for admission: %w", err)
+	}
+	if active >= maxSandboxes {
+		return domain.ErrSandboxLimitReached
 	}
 	return nil
 }

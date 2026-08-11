@@ -9,6 +9,7 @@ import (
 	"testing"
 
 	"minisandbox/internal/domain"
+	storeport "minisandbox/internal/store"
 )
 
 // nonIdempotentSandbox 返回与 keyed create 相同初始不变量但没有重放身份的记录。
@@ -21,7 +22,7 @@ func nonIdempotentSandbox(id string) domain.Sandbox {
 func TestCreateNonIdempotentAlwaysCreatesDistinctSandbox(t *testing.T) {
 	store := migrateTestStore(t)
 	for _, id := range []string{"no-key-one", "no-key-two"} {
-		created, err := store.CreateNonIdempotent(context.Background(), nonIdempotentSandbox(id))
+		created, err := store.CreateNonIdempotent(context.Background(), storeport.NonIdempotentCreateRequest{Sandbox: nonIdempotentSandbox(id), MaxSandboxes: 100})
 		if err != nil || created.ID != id || created.Revision != 1 {
 			t.Fatalf("create %s: %#v/%v", id, created, err)
 		}
@@ -41,10 +42,9 @@ func TestCreateNonIdempotentConcurrentRequests(t *testing.T) {
 		go func(index int) {
 			defer wait.Done()
 			<-start
-			_, errorsByIndex[index] = store.CreateNonIdempotent(
-				context.Background(),
-				nonIdempotentSandbox(fmt.Sprintf("no-key-%d", index)),
-			)
+			_, errorsByIndex[index] = store.CreateNonIdempotent(context.Background(), storeport.NonIdempotentCreateRequest{
+				Sandbox: nonIdempotentSandbox(fmt.Sprintf("no-key-%d", index)), MaxSandboxes: 100,
+			})
 		}(index)
 	}
 	close(start)
@@ -65,7 +65,7 @@ func TestCreateNonIdempotentRollback(t *testing.T) {
 			BEFORE INSERT ON sandboxes BEGIN SELECT RAISE(ABORT, 'injected'); END`); err != nil {
 			t.Fatalf("create trigger: %v", err)
 		}
-		if _, err := store.CreateNonIdempotent(context.Background(), nonIdempotentSandbox("insert-fail")); err == nil {
+		if _, err := store.CreateNonIdempotent(context.Background(), storeport.NonIdempotentCreateRequest{Sandbox: nonIdempotentSandbox("insert-fail"), MaxSandboxes: 100}); err == nil {
 			t.Fatal("insert failure ignored")
 		}
 		assertIdempotentCounts(t, store, 0, 0)
@@ -74,7 +74,7 @@ func TestCreateNonIdempotentRollback(t *testing.T) {
 		store := migrateTestStore(t)
 		injected := errors.New("injected commit failure")
 		store.commitImmediate = func(context.Context, *sql.Conn) error { return injected }
-		if _, err := store.CreateNonIdempotent(context.Background(), nonIdempotentSandbox("commit-fail")); !errors.Is(err, injected) {
+		if _, err := store.CreateNonIdempotent(context.Background(), storeport.NonIdempotentCreateRequest{Sandbox: nonIdempotentSandbox("commit-fail"), MaxSandboxes: 100}); !errors.Is(err, injected) {
 			t.Fatalf("commit failure: %v", err)
 		}
 		assertIdempotentCounts(t, store, 0, 0)
