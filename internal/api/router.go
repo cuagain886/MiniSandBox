@@ -25,11 +25,11 @@ type BuildInfo struct {
 // 接口刻意不暴露 Store、Runtime 或 reconcile 细节，避免 HTTP 层越过
 // application 边界直接操作基础设施。
 type LifecycleService interface {
-	// Create 提交 sandbox 创建意图；成功不表示 Docker 资源已经创建完成。
-	Create(
+	// CreateAccepted 原子提交创建意图并返回可直接写出的首次或 replay 响应。
+	CreateAccepted(
 		ctx context.Context,
 		command application.CreateSandbox,
-	) (domain.Sandbox, error)
+	) (application.IdempotentCreateOutcome, error)
 	// Get 读取 sandbox 最近一次持久化的生命周期状态。
 	Get(ctx context.Context, id string) (domain.Sandbox, error)
 	// Delete 幂等提交 sandbox 终止意图；成功不等待资源清理完成。

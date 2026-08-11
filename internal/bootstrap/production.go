@@ -186,7 +186,7 @@ func startProductionHTTP(
 	queue *reconcile.WakeQueue,
 	readiness *controlapi.Readiness,
 ) (httpHandle, error) {
-	lifecycle := application.NewSandboxServiceWithOutbound(
+	lifecycle := application.NewSandboxServiceWithCreatePolicy(
 		sandboxStore,
 		application.NewRandomIDGenerator(),
 		application.SystemClock{},
@@ -196,6 +196,10 @@ func startProductionHTTP(
 		),
 		queueWaker{queue: queue},
 		cfg.Security.AllowOutbound,
+		application.CreatePolicy{
+			DefaultTTL: cfg.Limits.DefaultTTL, MinimumTTL: cfg.Limits.MinimumTTL,
+			MaximumTTL: cfg.Limits.MaximumTTL, MaxSandboxes: cfg.Limits.MaxSandboxes,
+		},
 	)
 	masterKey, err := runnerauth.LoadMasterKey(cfg.Security.RunnerMasterKeyFile)
 	if err != nil {

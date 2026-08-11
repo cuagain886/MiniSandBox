@@ -31,13 +31,27 @@ type fakeLifecycleService struct {
 	deleteCalls  []application.DeleteSandbox
 }
 
-// Create 记录创建命令并返回测试预设结果。
-func (f *fakeLifecycleService) Create(
+// CreateAccepted 记录创建命令并返回测试预设的精确响应。
+func (f *fakeLifecycleService) CreateAccepted(
 	_ context.Context,
 	command application.CreateSandbox,
-) (domain.Sandbox, error) {
+) (application.IdempotentCreateOutcome, error) {
 	f.createCalls = append(f.createCalls, command)
-	return f.createResult, f.createErr
+	if f.createErr != nil {
+		return application.IdempotentCreateOutcome{}, f.createErr
+	}
+	mapped, err := mapSandboxResponse(f.createResult)
+	if err != nil {
+		return application.IdempotentCreateOutcome{}, err
+	}
+	body, err := json.Marshal(mapped)
+	if err != nil {
+		return application.IdempotentCreateOutcome{}, err
+	}
+	return application.IdempotentCreateOutcome{
+		SandboxID: f.createResult.ID, StatusCode: http.StatusAccepted,
+		Location: "/v1/sandboxes/" + f.createResult.ID, Body: body,
+	}, nil
 }
 
 // Get 记录查询 ID 并返回测试预设结果。

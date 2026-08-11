@@ -134,8 +134,9 @@ func TestSandboxSpecBuilderDeterministic(t *testing.T) {
 // TestCreateSandboxCommandSurface 验证应用命令只接收公共创建语义和安全幂等身份。
 func TestCreateSandboxCommandSurface(t *testing.T) {
 	commandType := reflect.TypeOf(CreateSandbox{})
-	if commandType.NumField() != 3 || commandType.Field(0).Name != "Image" ||
-		commandType.Field(1).Name != "Outbound" || commandType.Field(2).Name != "Idempotency" {
+	if commandType.NumField() != 4 || commandType.Field(0).Name != "Image" ||
+		commandType.Field(1).Name != "Outbound" || commandType.Field(2).Name != "TTLSeconds" ||
+		commandType.Field(3).Name != "Idempotency" {
 		t.Fatalf("unexpected CreateSandbox fields: %#v", commandType)
 	}
 }

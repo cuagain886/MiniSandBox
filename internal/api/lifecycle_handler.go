@@ -5,7 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/url"
 	"strings"
 
 	"minisandbox/internal/application"
@@ -156,11 +155,12 @@ func createSandboxHandler(service LifecycleService) http.HandlerFunc {
 		if request.Network != nil {
 			outbound = request.Network.Outbound
 		}
-		sandbox, err := service.Create(
+		outcome, err := service.CreateAccepted(
 			r.Context(),
 			application.CreateSandbox{
 				Image:       request.Image,
 				Outbound:    outbound,
+				TTLSeconds:  request.TTLSeconds,
 				Idempotency: idempotency,
 			},
 		)
@@ -168,17 +168,7 @@ func createSandboxHandler(service LifecycleService) http.HandlerFunc {
 			writeError(w, r, err)
 			return
 		}
-		response, err := mapSandboxResponse(sandbox)
-		if err != nil {
-			writeError(w, r, err)
-			return
-		}
-
-		w.Header().Set(
-			"Location",
-			"/v1/sandboxes/"+url.PathEscape(response.ID),
-		)
-		writeJSON(w, http.StatusAccepted, response)
+		_ = writeCreateOutcome(w, outcome)
 	}
 }
 

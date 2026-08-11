@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"minisandbox/internal/domain"
 	"minisandbox/internal/store"
@@ -33,6 +34,33 @@ type SandboxService struct {
 	specBuilder   SandboxSpecBuilder
 	waker         Waker
 	allowOutbound bool
+	createPolicy  CreatePolicy
+}
+
+// CreatePolicy 固定公共 create 的 TTL 与实例容量边界。
+type CreatePolicy struct {
+	// DefaultTTL 是请求省略 TTL 时使用的服务端租期。
+	DefaultTTL time.Duration
+	// MinimumTTL 和 MaximumTTL 是显式及默认 TTL 的闭区间。
+	MinimumTTL time.Duration
+	MaximumTTL time.Duration
+	// MaxSandboxes 是非 Terminated sandbox 的事务内容量上限。
+	MaxSandboxes int
+}
+
+// NewSandboxServiceWithCreatePolicy 创建完整装配 Phase 3 create 语义的生命周期服务。
+func NewSandboxServiceWithCreatePolicy(
+	s store.Store,
+	idGenerator IDGenerator,
+	clock Clock,
+	specBuilder SandboxSpecBuilder,
+	waker Waker,
+	allowOutbound bool,
+	policy CreatePolicy,
+) *SandboxService {
+	service := NewSandboxServiceWithOutbound(s, idGenerator, clock, specBuilder, waker, allowOutbound)
+	service.createPolicy = policy
+	return service
 }
 
 // NewSandboxServiceWithOutbound 创建按平台门禁允许 outbound 意图的生命周期服务。

@@ -17,6 +17,8 @@ type CreateSandbox struct {
 	Image string
 	// Outbound 表示用户是否请求受管公网出站能力；缺失公共字段时为 false。
 	Outbound bool
+	// TTLSeconds 是客户端显式提供的整秒 TTL；nil 保留“字段缺失”的幂等身份。
+	TTLSeconds *int64
 	// Idempotency 是可选、已校验且已作用域化的创建重放身份。
 	Idempotency *IdempotencyKey
 }

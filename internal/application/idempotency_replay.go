@@ -62,6 +62,9 @@ func (s *SandboxService) CommitNonIdempotentCreate(
 	if err != nil {
 		return IdempotentCreateOutcome{}, fmt.Errorf("commit non-idempotent sandbox creation: %w", err)
 	}
+	if s.waker != nil {
+		s.waker.Wake(created.ID)
+	}
 	return IdempotentCreateOutcome{
 		SandboxID:  created.ID,
 		StatusCode: response.StatusCode,
