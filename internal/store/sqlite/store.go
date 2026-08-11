@@ -142,6 +142,11 @@ func (s *Store) Close() error {
 	return s.db.Close()
 }
 
+// ProbeDependency 使用调用方 deadline 执行轻量 SQLite Ping，不开启业务事务。
+func (s *Store) ProbeDependency(ctx context.Context) error {
+	return s.db.PingContext(ctx)
+}
+
 // verifyConnection 确认连接可 Ping 且关键 PRAGMA 实际生效。
 //
 // WAL 等 PRAGMA 在部分文件系统上可能静默回退，显式读取结果可以在启动时

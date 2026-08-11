@@ -142,6 +142,7 @@ type Runtime struct {
 	bootstrap        RunnerBootstrapProvider
 	bootstrapCloser  io.Closer
 	imagePullLimiter runtimeport.Limiter
+	availability     runtimeport.OperationAvailability
 	egressLocksMu    sync.Mutex
 	egressLocks      map[string]*egressAttachLock
 }
@@ -183,6 +184,8 @@ type RuntimeOptions struct {
 	Bootstrap RunnerBootstrapProvider
 	// ImagePullLimiter 是主容器与 egress sidecar 共享的实际拉取并发门禁；nil 表示不限制。
 	ImagePullLimiter runtimeport.Limiter
+	// Availability 是依赖健康监测控制的全局操作门禁；nil 保持兼容测试装配。
+	Availability runtimeport.OperationAvailability
 }
 
 // New 创建 Docker client 并立即探测 daemon。
@@ -268,12 +271,37 @@ func (r *Runtime) applyOptions(options RuntimeOptions) {
 	r.egressConfig = nil
 	r.bootstrap = options.Bootstrap
 	r.imagePullLimiter = options.ImagePullLimiter
+	r.availability = options.Availability
 	r.bootstrapCloser, _ = options.Bootstrap.(io.Closer)
 	if options.Egress != nil {
 		copy := *options.Egress
 		copy.AdditionalDeniedCIDRs = append([]string(nil), options.Egress.AdditionalDeniedCIDRs...)
 		r.egressConfig = &copy
 	}
+}
+
+// WaitAvailable 等待全局 Docker operation gate 开放。
+func (r *Runtime) WaitAvailable(ctx context.Context) error {
+	if r.availability == nil {
+		return nil
+	}
+	return r.availability.WaitAvailable(ctx)
+}
+
+// SetAvailable 由依赖健康监测开关全局 Docker operation gate。
+func (r *Runtime) SetAvailable(available bool) {
+	if r.availability != nil {
+		r.availability.SetAvailable(available)
+	}
+}
+
+// ProbeDependency 执行不改变资源状态的轻量 Docker Ping。
+func (r *Runtime) ProbeDependency(ctx context.Context) error {
+	_, err := r.engine.Ping(ctx, mobyclient.PingOptions{})
+	if err != nil {
+		return runtimeUnavailable(err)
+	}
+	return nil
 }
 
 // Close 释放 Docker client 资源。

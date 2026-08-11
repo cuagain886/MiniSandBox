@@ -7,6 +7,7 @@ import (
 	"net"
 	"net/http"
 	"sync"
+	"time"
 
 	controlapi "minisandbox/internal/api"
 	"minisandbox/internal/application"
@@ -53,7 +54,7 @@ func productionFactories() factories {
 const maxCandidateScanPages = 10_000
 
 // startProductionMaintenance 启动周期 candidate scanner 与幂等记录 GC。
-func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxStore store.Store, queue *reconcile.WakeQueue) (workerHandle, error) {
+func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (workerHandle, error) {
 	sweeper, err := reconcile.NewCandidateSweeper(
 		sandboxStore, cfg.Reconcile.PageSize, maxCandidateScanPages,
 		cfg.Reconcile.Timeout, cfg.Reconcile.RunningCheckInterval,
@@ -85,14 +86,35 @@ func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxS
 	if err != nil {
 		return nil, err
 	}
+	storeProbe, ok := sandboxStore.(reconcile.DependencyProbe)
+	if !ok {
+		return nil, errors.New("sandbox store does not provide dependency probe")
+	}
+	dockerProbe, ok := runtime.(reconcile.DependencyProbe)
+	if !ok {
+		return nil, errors.New("sandbox runtime does not provide dependency probe")
+	}
+	availability, ok := runtime.(runtimeport.OperationAvailability)
+	if !ok {
+		return nil, errors.New("sandbox runtime does not provide operation availability gate")
+	}
+	probeTimeout := min(5*time.Second, cfg.Reconcile.DockerFreshness/2)
+	health, err := reconcile.NewDependencyHealthMonitor(
+		storeProbe, dockerProbe, readiness, availability, reconcile.SystemClock{},
+		cfg.Reconcile.Interval, probeTimeout, cfg.Reconcile.DockerFreshness, report,
+	)
+	if err != nil {
+		return nil, err
+	}
 	maintenanceCtx, cancel := context.WithCancel(ctx)
 	handle := &runningMaintenance{cancel: cancel, done: make(chan struct{})}
 	go func() {
 		defer close(handle.done)
 		var wait sync.WaitGroup
-		wait.Add(2)
+		wait.Add(3)
 		go func() { defer wait.Done(); loop.Run(maintenanceCtx) }()
 		go func() { defer wait.Done(); gc.Run(maintenanceCtx) }()
+		go func() { defer wait.Done(); health.Run(maintenanceCtx) }()
 		wait.Wait()
 	}()
 	return handle, nil
@@ -136,6 +158,7 @@ func openProductionRuntime(
 	if err != nil {
 		return nil, errors.Join(err, stager.Close())
 	}
+	availability := runtimeport.NewAvailabilityGate(true)
 	runtime, err := dockerruntime.New(
 		ctx,
 		cfg.Runtime.DockerHost,
@@ -146,6 +169,7 @@ func openProductionRuntime(
 			Egress:           egress,
 			Bootstrap:        stager,
 			ImagePullLimiter: imagePullLimiter,
+			Availability:     availability,
 		},
 	)
 	if err != nil {

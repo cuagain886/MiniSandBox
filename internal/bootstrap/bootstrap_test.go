@@ -214,7 +214,7 @@ func recordingFactories(
 			*events = append(*events, "recovery")
 			return stageError("recovery", failAt, cause)
 		},
-		startMaintenance: func(context.Context, config.Config, store.Store, *reconcile.WakeQueue) (workerHandle, error) {
+		startMaintenance: func(context.Context, config.Config, store.Store, runtimeport.Runtime, *reconcile.WakeQueue, *controlapi.Readiness) (workerHandle, error) {
 			*events = append(*events, "maintenance")
 			if err := stageError("maintenance", failAt, cause); err != nil {
 				return nil, err

@@ -76,7 +76,9 @@ type factories struct {
 		context.Context,
 		config.Config,
 		store.Store,
+		runtimeport.Runtime,
 		*reconcile.WakeQueue,
+		*controlapi.Readiness,
 	) (workerHandle, error)
 	recover func(
 		context.Context,
@@ -182,7 +184,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 		)
 	}
 	readiness.SetRecovery(true)
-	maintenance, err := factory.startMaintenance(ctx, cfg, sandboxStore, queue)
+	maintenance, err := factory.startMaintenance(ctx, cfg, sandboxStore, runtime, queue, readiness)
 	if err != nil {
 		return errors.Join(
 			fmt.Errorf("start reliability maintenance: %w", err),

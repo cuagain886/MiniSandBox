@@ -44,6 +44,7 @@ type Reconciler struct {
 	retryMax      time.Duration
 	createLimiter runtimeport.Limiter
 	deleteLimiter runtimeport.Limiter
+	availability  runtimeport.OperationAvailability
 }
 
 // OperationLimits 是 reconciler 共享 runtime 操作的固定并发上限。
@@ -63,7 +64,7 @@ func NewWithShutdown(s store.Store, r runtimeport.Runtime, probe RunnerProbe, sh
 
 // New 使用持久化、runtime 和 runner probe 端口创建状态收敛器。
 func New(s store.Store, r runtimeport.Runtime, probe RunnerProbe) *Reconciler {
-	return &Reconciler{
+	reconciler := &Reconciler{
 		store:    s,
 		runtime:  r,
 		probe:    probe,
@@ -73,6 +74,8 @@ func New(s store.Store, r runtimeport.Runtime, probe RunnerProbe) *Reconciler {
 		retryMin: time.Second,
 		retryMax: time.Minute,
 	}
+	reconciler.availability, _ = r.(runtimeport.OperationAvailability)
+	return reconciler
 }
 
 // NewWithRetry 创建使用显式时间、随机源和退避边界的状态收敛器。
@@ -238,6 +241,11 @@ func (r *Reconciler) reconcileRunning(
 // ensureRuntime 在 keyed lock 内等待全局 create 配额；未取得配额时直接返回
 // context 错误，不进入失败记账。defer 保证 Runtime panic 也会释放配额。
 func (r *Reconciler) ensureRuntime(ctx context.Context, sandbox domain.Sandbox) (runtimeport.ActualSandbox, error) {
+	if r.availability != nil {
+		if err := r.availability.WaitAvailable(ctx); err != nil {
+			return runtimeport.ActualSandbox{}, &operationLimitWaitError{cause: err}
+		}
+	}
 	if r.createLimiter == nil {
 		return r.runtime.Ensure(ctx, sandbox)
 	}
@@ -370,6 +378,11 @@ func (r *Reconciler) failRunning(
 // deleteRuntime 在所有删除、失败补偿及后续恢复清理路径之间共享全局 delete 配额。
 // slot 只覆盖实际 Runtime.Delete 调用，等待取消不会改写 Store intent。
 func (r *Reconciler) deleteRuntime(ctx context.Context, sandboxID string) error {
+	if r.availability != nil {
+		if err := r.availability.WaitAvailable(ctx); err != nil {
+			return &operationLimitWaitError{cause: err}
+		}
+	}
 	if r.deleteLimiter == nil {
 		return r.runtime.Delete(ctx, sandboxID)
 	}

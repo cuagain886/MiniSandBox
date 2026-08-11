@@ -342,6 +342,22 @@ func TestNewRuntimePingsWithVersionNegotiation(t *testing.T) {
 	}
 }
 
+// TestRuntimeProbeDependencyUsesLightweightPing 验证周期探测不重复协商版本，
+// 且失败保持安全 unavailable 分类。
+func TestRuntimeProbeDependencyUsesLightweightPing(t *testing.T) {
+	cause := errors.New("docker unavailable")
+	engine := &fakeEngine{pingErr: cause}
+	runtime := &Runtime{engine: engine}
+	err := runtime.ProbeDependency(context.Background())
+	var unavailable *RuntimeUnavailableError
+	if !errors.As(err, &unavailable) || !errors.Is(err, cause) {
+		t.Fatalf("dependency probe error: %v", err)
+	}
+	if engine.pingCalls != 1 || engine.pingOptions[0].NegotiateAPIVersion {
+		t.Fatalf("dependency ping options: %#v", engine.pingOptions)
+	}
+}
+
 // TestNewRuntimePingFailureIsUnavailable 验证失败保留 cause、关闭 client 并可映射 503。
 func TestNewRuntimePingFailureIsUnavailable(t *testing.T) {
 	cause := errors.New("secret docker socket path")
