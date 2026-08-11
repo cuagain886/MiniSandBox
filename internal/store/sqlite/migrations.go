@@ -22,10 +22,11 @@ type migration struct {
 // migrations 是全部已知迁移，追加新版本时必须保持版本严格递增。
 //
 // v1 是 Phase 2 最终 sandbox schema；v2 只增加 lease、retry、health 与
-// origin 字段。idempotency 和 anomaly 表分别留给 v3、v4，不能混入本版本。
+// origin 字段；v3 只增加 idempotency records。anomaly 表留给 v4。
 var migrations = []migration{
 	{version: 1, apply: applyMigrationV1},
 	{version: 2, apply: applyMigrationV2},
+	{version: 3, apply: applyMigrationV3},
 }
 
 // Migrate 在可恢复备份之后，以 BEGIN IMMEDIATE 把 schema 升级到最新版本。
@@ -228,6 +229,32 @@ func applyMigrationV2(ctx context.Context, conn *sql.Conn, migrationTime time.Ti
 	})
 }
 
+// applyMigrationV3 创建幂等重放记录及按 sandbox 终态宽限回收所需索引。
+func applyMigrationV3(ctx context.Context, conn *sql.Conn, _ time.Time) error {
+	return executeMigrationStatements(ctx, conn, []string{
+		`CREATE TABLE idempotency_records (
+			scope_id TEXT NOT NULL
+				CHECK (length(scope_id) BETWEEN 1 AND 64 AND scope_id NOT GLOB '*[^A-Za-z0-9._:-]*'),
+			idempotency_key TEXT NOT NULL
+				CHECK (length(idempotency_key) BETWEEN 1 AND 128 AND idempotency_key NOT GLOB '*[^A-Za-z0-9._:-]*'),
+			request_hash TEXT NOT NULL
+				CHECK (length(request_hash) = 64 AND request_hash NOT GLOB '*[^0-9a-f]*'),
+			sandbox_id TEXT NOT NULL REFERENCES sandboxes(id) ON DELETE RESTRICT,
+			status_code INTEGER NOT NULL CHECK (status_code = 202),
+			location TEXT NOT NULL CHECK (length(location) BETWEEN 1 AND 1024),
+			response_json BLOB NOT NULL
+				CHECK (length(response_json) BETWEEN 2 AND 65536 AND json_valid(CAST(response_json AS TEXT))),
+			created_at TEXT NOT NULL
+				CHECK (length(created_at) BETWEEN 20 AND 35 AND created_at GLOB '????-??-??T??:??:??*Z'),
+			PRIMARY KEY (scope_id, idempotency_key)
+		)`,
+		`CREATE INDEX idx_idempotency_records_sandbox
+			ON idempotency_records (sandbox_id)`,
+		`CREATE INDEX idx_sandboxes_terminal_retention
+			ON sandboxes (observed_state, last_transition_at, id)`,
+	})
+}
+
 func executeMigrationStatements(ctx context.Context, conn *sql.Conn, statements []string) error {
 	for _, statement := range statements {
 		if _, err := conn.ExecContext(ctx, statement); err != nil {
@@ -317,6 +344,54 @@ func validateSchema(ctx context.Context, queryer schemaQueryer, version int64) e
 	}
 	if indexCount != 1 {
 		return errors.New("required sandbox reconcile index is missing")
+	}
+	if version >= 3 {
+		if err := validateTableColumns(ctx, queryer, "idempotency_records", []string{
+			"scope_id", "idempotency_key", "request_hash", "sandbox_id", "status_code", "location", "response_json", "created_at",
+		}); err != nil {
+			return err
+		}
+		for _, indexName := range []string{"idx_idempotency_records_sandbox", "idx_sandboxes_terminal_retention"} {
+			var count int
+			if err := queryer.QueryRowContext(ctx,
+				"SELECT COUNT(*) FROM sqlite_master WHERE type = 'index' AND name = ?", indexName,
+			).Scan(&count); err != nil {
+				return err
+			}
+			if count != 1 {
+				return fmt.Errorf("required index %s is missing", indexName)
+			}
+		}
+	}
+	return nil
+}
+
+func validateTableColumns(ctx context.Context, queryer schemaQueryer, table string, want []string) error {
+	rows, err := queryer.QueryContext(ctx, "PRAGMA table_info("+table+")")
+	if err != nil {
+		return err
+	}
+	defer rows.Close()
+	actual := make([]string, 0, len(want))
+	for rows.Next() {
+		var cid, notNull, primaryKey int64
+		var name, columnType string
+		var defaultValue any
+		if err := rows.Scan(&cid, &name, &columnType, &notNull, &defaultValue, &primaryKey); err != nil {
+			return err
+		}
+		actual = append(actual, name)
+	}
+	if err := rows.Err(); err != nil {
+		return err
+	}
+	if len(actual) != len(want) {
+		return fmt.Errorf("%s column count is %d, want %d", table, len(actual), len(want))
+	}
+	for index := range want {
+		if actual[index] != want[index] {
+			return fmt.Errorf("%s column %d is unexpected", table, index)
+		}
 	}
 	return nil
 }

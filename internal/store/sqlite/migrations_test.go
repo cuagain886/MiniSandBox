@@ -73,19 +73,24 @@ func migrateToV1(t *testing.T, store *Store) {
 	}
 }
 
+func migrateToV2(t *testing.T, store *Store) {
+	t.Helper()
+	if err := store.migrateWith(context.Background(), migrations[:2]); err != nil {
+		t.Fatalf("migrate fixture to v2: %v", err)
+	}
+}
+
 // TestMigrateEmptyDatabase 验证空库直接建立 v2 schema，且不提前创建后续表。
 func TestMigrateEmptyDatabase(t *testing.T) {
 	store := openTestStore(t)
-	if err := store.Migrate(context.Background()); err != nil {
-		t.Fatalf("migrate empty database: %v", err)
-	}
+	migrateToV2(t, store)
 	if got, want := currentVersion(t, store), int64(2); got != want {
 		t.Fatalf("schema version: got %d, want %d", got, want)
 	}
 	if err := validateSchema(context.Background(), store.db, 2); err != nil {
 		t.Fatalf("validate v2 schema: %v", err)
 	}
-	for _, absent := range []string{"idempotency_keys", "runtime_anomalies"} {
+	for _, absent := range []string{"idempotency_records", "runtime_anomalies"} {
 		if tableExists(t, store, absent) {
 			t.Fatalf("P3-010 must not create %s", absent)
 		}
@@ -126,7 +131,7 @@ func TestMigratePhase2FixtureBackfillsEveryState(t *testing.T) {
 		insertPhase2Sandbox(t, store, id, desired, state, uint64(index+7), "runtime-"+id, lastTransition)
 	}
 
-	if err := store.Migrate(context.Background()); err != nil {
+	if err := store.migrateWith(context.Background(), migrations[:2]); err != nil {
 		t.Fatalf("upgrade Phase 2 fixture: %v", err)
 	}
 	if clockCalls != 1 {
@@ -210,7 +215,7 @@ func TestMigrateBackupFailureDoesNotStartUpgrade(t *testing.T) {
 	insertPhase2Sandbox(t, store, "kept", domain.DesiredRunning, domain.StateRunning, 9, "runtime-kept", time.Now().UTC())
 	store.path = filepath.Join(t.TempDir(), "missing", "sandboxd.db")
 
-	if err := store.Migrate(context.Background()); err == nil {
+	if err := store.migrateWith(context.Background(), migrations[:2]); err == nil {
 		t.Fatal("expected backup failure")
 	}
 	if got := currentVersion(t, store); got != 1 {
@@ -236,7 +241,7 @@ func TestMigrateReopenIdempotent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen v1 store: %v", err)
 	}
-	if err := second.Migrate(context.Background()); err != nil {
+	if err := second.migrateWith(context.Background(), migrations[:2]); err != nil {
 		t.Fatalf("upgrade reopened store: %v", err)
 	}
 	if err := second.Close(); err != nil {
@@ -247,7 +252,7 @@ func TestMigrateReopenIdempotent(t *testing.T) {
 		t.Fatalf("reopen v2 store: %v", err)
 	}
 	defer third.Close()
-	if err := third.Migrate(context.Background()); err != nil {
+	if err := third.migrateWith(context.Background(), migrations[:2]); err != nil {
 		t.Fatalf("repeat migration: %v", err)
 	}
 	var applied int
@@ -266,7 +271,7 @@ func TestMigrateInterruptedUpgradeRollsBack(t *testing.T) {
 	store := openTestStore(t)
 	migrateToV1(t, store)
 	insertPhase2Sandbox(t, store, "rollback", domain.DesiredRunning, domain.StateCreating, 11, "runtime-rollback", time.Now().UTC())
-	broken := append([]migration{}, migrations...)
+	broken := append([]migration{}, migrations[:2]...)
 	broken = append(broken, migration{version: 3, apply: func(ctx context.Context, conn *sql.Conn, _ time.Time) error {
 		if _, err := conn.ExecContext(ctx, "CREATE TABLE must_rollback (id INTEGER)"); err != nil {
 			return err
@@ -286,14 +291,14 @@ func TestMigrateInterruptedUpgradeRollsBack(t *testing.T) {
 	if err := store.db.QueryRow("SELECT revision FROM sandboxes WHERE id = 'rollback'").Scan(&revision); err != nil || revision != 11 {
 		t.Fatalf("legacy row changed after rollback: revision=%d err=%v", revision, err)
 	}
-	if err := store.Migrate(context.Background()); err != nil {
+	if err := store.migrateWith(context.Background(), migrations[:2]); err != nil {
 		t.Fatalf("retry migration after rollback: %v", err)
 	}
 }
 
 func TestMigrateRejectsNewerDatabase(t *testing.T) {
 	store := openTestStore(t)
-	if err := store.Migrate(context.Background()); err != nil {
+	if err := store.migrateWith(context.Background(), migrations[:2]); err != nil {
 		t.Fatalf("initial migrate: %v", err)
 	}
 	if _, err := store.db.Exec("INSERT INTO schema_migrations (version, applied_at) VALUES (999, '')"); err != nil {
