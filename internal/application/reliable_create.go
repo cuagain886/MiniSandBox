@@ -103,11 +103,14 @@ func (s *SandboxService) resolveCreateLease(seconds *int64) (resolvedCreateLease
 }
 
 func createAcceptedResponse(sandbox domain.Sandbox) (storeport.IdempotentResponse, error) {
+	if sandbox.ExpiresAt == nil {
+		return storeport.IdempotentResponse{}, fmt.Errorf("encode accepted sandbox response: missing expiry: %w", domain.ErrInvalid)
+	}
 	mapped := protocol.Sandbox{
 		ID: sandbox.ID, State: protocol.SandboxStatePending,
 		Reason: protocol.SandboxReasonCreateAccepted, Message: sandbox.Message,
-		Image: sandbox.Spec.Image, ExpiresAt: *sandbox.ExpiresAt,
-		CreatedAt: sandbox.CreatedAt, UpdatedAt: sandbox.UpdatedAt,
+		Image: sandbox.Spec.Image, ExpiresAt: sandbox.ExpiresAt.UTC(),
+		CreatedAt: sandbox.CreatedAt.UTC(), UpdatedAt: sandbox.UpdatedAt.UTC(),
 	}
 	body, err := json.Marshal(mapped)
 	if err != nil {
@@ -115,6 +118,6 @@ func createAcceptedResponse(sandbox domain.Sandbox) (storeport.IdempotentRespons
 	}
 	return storeport.IdempotentResponse{
 		SchemaVersion: 1, StatusCode: http.StatusAccepted,
-		Location: "/v1/sandboxes/" + sandbox.ID, Body: body, CreatedAt: sandbox.CreatedAt,
+		Location: "/v1/sandboxes/" + sandbox.ID, Body: body, CreatedAt: sandbox.CreatedAt.UTC(),
 	}, nil
 }

@@ -78,6 +78,7 @@ func TestMapSandboxReason(t *testing.T) {
 // TestMapSandboxResponseSafeFields 验证失败 message 可见而内部恢复字段不可见。
 func TestMapSandboxResponseSafeFields(t *testing.T) {
 	location := time.FixedZone("UTC+8", 8*60*60)
+	expiresAt := time.Date(2027, 7, 9, 9, 10, 11, 12, location)
 	sandbox := domain.Sandbox{
 		ID: "sandbox-1",
 		Spec: domain.SandboxSpec{
@@ -96,6 +97,7 @@ func TestMapSandboxResponseSafeFields(t *testing.T) {
 		RuntimeID:     "secret-runtime-id",
 		SpecHash:      "secret-spec-hash",
 		Revision:      42,
+		ExpiresAt:     &expiresAt,
 		CreatedAt:     time.Date(2027, 7, 8, 9, 10, 11, 12, location),
 		UpdatedAt:     time.Date(2027, 7, 8, 9, 11, 12, 13, location),
 	}
@@ -111,7 +113,8 @@ func TestMapSandboxResponseSafeFields(t *testing.T) {
 		got.Image != sandbox.Spec.Image {
 		t.Fatalf("public response mismatch: %#v", got)
 	}
-	if got.CreatedAt.Location() != time.UTC || got.UpdatedAt.Location() != time.UTC {
+	if got.ExpiresAt.Location() != time.UTC || !got.ExpiresAt.Equal(expiresAt) ||
+		got.CreatedAt.Location() != time.UTC || got.UpdatedAt.Location() != time.UTC {
 		t.Fatalf("response times are not UTC: %#v", got)
 	}
 
@@ -132,6 +135,18 @@ func TestMapSandboxResponseSafeFields(t *testing.T) {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("public response leaked %q: %s", forbidden, encoded)
 		}
+	}
+}
+
+// TestMapSandboxResponseRejectsMissingExpiry 验证损坏的旧记录不能伪装成合法 Phase 3 响应。
+func TestMapSandboxResponseRejectsMissingExpiry(t *testing.T) {
+	_, err := mapSandboxResponse(domain.Sandbox{
+		ID: "missing-expiry", Spec: domain.SandboxSpec{Image: "alpine:3.22"},
+		DesiredState: domain.DesiredRunning, ObservedState: domain.StatePending,
+		Reason: domain.SandboxReasonCreateAccepted,
+	})
+	if !errors.Is(err, errMissingSandboxExpiry) {
+		t.Fatalf("missing expiry: got %v, want errMissingSandboxExpiry", err)
 	}
 }
 

@@ -14,6 +14,8 @@ var (
 	errUnsupportedSandboxReason = errors.New("unsupported sandbox reason")
 	// errUnsupportedSandboxStatus 表示已知 state 和 reason 形成了未冻结组合。
 	errUnsupportedSandboxStatus = errors.New("unsupported sandbox status")
+	// errMissingSandboxExpiry 表示 Store 记录不满足 Phase 3 必填租约不变量。
+	errMissingSandboxExpiry = errors.New("missing sandbox expiry")
 )
 
 // mapSandboxResponse 把领域 Sandbox 显式转换为安全的公共响应。
@@ -36,12 +38,16 @@ func mapSandboxResponse(sandbox domain.Sandbox) (protocol.Sandbox, error) {
 	if !ok {
 		return protocol.Sandbox{}, errUnsupportedSandboxReason
 	}
+	if sandbox.ExpiresAt == nil {
+		return protocol.Sandbox{}, errMissingSandboxExpiry
+	}
 	return protocol.Sandbox{
 		ID:        sandbox.ID,
 		State:     state,
 		Reason:    reason,
 		Message:   message,
 		Image:     sandbox.Spec.Image,
+		ExpiresAt: sandbox.ExpiresAt.UTC(),
 		CreatedAt: sandbox.CreatedAt.UTC(),
 		UpdatedAt: sandbox.UpdatedAt.UTC(),
 	}, nil

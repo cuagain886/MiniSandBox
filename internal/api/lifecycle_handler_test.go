@@ -168,6 +168,7 @@ func TestDeleteSandboxHandler(t *testing.T) {
 func TestGetSandboxHandlerOK(t *testing.T) {
 	const id = "00010203-0405-4607-8809-0a0b0c0d0e0f"
 	now := time.Date(2027, 7, 8, 9, 10, 11, 0, time.UTC)
+	expiresAt := now.Add(time.Hour)
 	service := &fakeLifecycleService{
 		getResult: domain.Sandbox{
 			ID:            id,
@@ -177,6 +178,7 @@ func TestGetSandboxHandlerOK(t *testing.T) {
 			Message:       "Sandbox is running.",
 			CreatedAt:     now,
 			UpdatedAt:     now,
+			ExpiresAt:     &expiresAt,
 		},
 	}
 	request := httptest.NewRequest(
@@ -291,6 +293,7 @@ func TestGetSandboxHandlerMapsServiceErrors(t *testing.T) {
 // TestCreateSandboxHandlerAccepted 验证创建请求只提交意图并返回 202 与 Location。
 func TestCreateSandboxHandlerAccepted(t *testing.T) {
 	now := time.Date(2027, 7, 8, 9, 10, 11, 0, time.UTC)
+	expiresAt := now.Add(time.Hour)
 	service := &fakeLifecycleService{
 		createResult: domain.Sandbox{
 			ID:            "00010203-0405-4607-8809-0a0b0c0d0e0f",
@@ -300,6 +303,7 @@ func TestCreateSandboxHandlerAccepted(t *testing.T) {
 			Message:       "Sandbox creation has been accepted.",
 			CreatedAt:     now,
 			UpdatedAt:     now,
+			ExpiresAt:     &expiresAt,
 		},
 	}
 	request := httptest.NewRequest(
@@ -338,6 +342,8 @@ func TestCreateSandboxHandlerAccepted(t *testing.T) {
 
 // TestCreateSandboxHandlerMapsOutbound 验证可选 public network 字段只映射布尔意图。
 func TestCreateSandboxHandlerMapsOutbound(t *testing.T) {
+	now := time.Now().UTC()
+	expiresAt := now.Add(time.Hour)
 	service := &fakeLifecycleService{
 		createResult: domain.Sandbox{
 			ID:            "00010203-0405-4607-8809-0a0b0c0d0e0f",
@@ -345,8 +351,9 @@ func TestCreateSandboxHandlerMapsOutbound(t *testing.T) {
 			ObservedState: domain.StatePending,
 			Reason:        string(protocol.SandboxReasonCreateAccepted),
 			Message:       "Sandbox creation has been accepted.",
-			CreatedAt:     time.Now(),
-			UpdatedAt:     time.Now(),
+			CreatedAt:     now,
+			UpdatedAt:     now,
+			ExpiresAt:     &expiresAt,
 		},
 	}
 	request := httptest.NewRequest(

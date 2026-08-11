@@ -135,6 +135,13 @@ func TestCreateIdempotentReopen(t *testing.T) {
 	if got, err := second.Get(context.Background(), request.Sandbox.ID); err != nil || got.ExpiresAt == nil || !got.ExpiresAt.Equal(*request.Sandbox.ExpiresAt) {
 		t.Fatalf("reopened sandbox: %#v/%v", got, err)
 	}
+	replayRequest := idempotentCreateRequest("ignored-replay-candidate", request.Key)
+	replayRequest.RequestHash = request.RequestHash
+	replayed, err := second.CreateIdempotent(context.Background(), replayRequest)
+	if err != nil || !replayed.Replayed || replayed.Sandbox.ID != request.Sandbox.ID ||
+		string(replayed.Response.Body) != string(request.Response.Body) {
+		t.Fatalf("reopened replay: %#v/%v", replayed, err)
+	}
 }
 
 // TestCreateIdempotentRejectsInvalidEnvelope 验证非 202、未知 schema 和无 expiry 在事务前失败。
