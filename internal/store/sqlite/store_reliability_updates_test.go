@@ -94,7 +94,8 @@ func TestExpireIntentRequiresCurrentDueLease(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expire intent: %v", err)
 	}
-	if got.DesiredState != domain.DesiredTerminated || got.Revision != 2 ||
+	if got.DesiredState != domain.DesiredTerminated || got.ObservedState != domain.StateStopping ||
+		got.Reason != domain.SandboxReasonTTLExpired || got.Message != "Sandbox lease has expired." || got.Revision != 2 ||
 		got.NextReconcileAt == nil || !got.NextReconcileAt.Equal(now) {
 		t.Fatalf("expire result: %#v", got)
 	}

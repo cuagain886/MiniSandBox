@@ -995,11 +995,18 @@ func (s *Store) ExpireIntent(
 	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE sandboxes
-		SET desired_state = ?, next_reconcile_at = ?, revision = revision + 1, updated_at = ?
+		SET desired_state = ?, observed_state = ?, reason = ?, message = ?,
+			next_reconcile_at = ?, revision = revision + 1, updated_at = ?,
+			last_transition_at = CASE WHEN observed_state <> ? THEN ? ELSE last_transition_at END
 		WHERE id = ? AND revision = ? AND desired_state = ?
 			AND observed_state <> ? AND expires_at = ? AND expires_at <= ?`,
 		domain.DesiredTerminated,
+		domain.StateStopping,
+		domain.SandboxReasonTTLExpired,
+		"Sandbox lease has expired.",
 		now,
+		now,
+		domain.StateStopping,
 		now,
 		update.ID,
 		update.ExpectedRevision,
