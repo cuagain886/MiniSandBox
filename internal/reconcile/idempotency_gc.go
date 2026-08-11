@@ -20,7 +20,7 @@ type IdempotencyGC struct {
 	retention time.Duration
 	interval  time.Duration
 	batchSize int
-	now       func() time.Time
+	clock     Clock
 	report    ErrorReporter
 }
 
@@ -31,13 +31,26 @@ func NewIdempotencyGC(store IdempotencyGCStore, retention, interval time.Duratio
 	}
 	return &IdempotencyGC{
 		store: store, retention: retention, interval: interval, batchSize: batchSize,
-		now: time.Now, report: report,
+		clock: SystemClock{}, report: report,
 	}, nil
+}
+
+// NewIdempotencyGCWithClock 创建使用显式时间源的周期回收器。
+func NewIdempotencyGCWithClock(store IdempotencyGCStore, retention, interval time.Duration, batchSize int, clock Clock, report ErrorReporter) (*IdempotencyGC, error) {
+	gc, err := NewIdempotencyGC(store, retention, interval, batchSize, report)
+	if err != nil {
+		return nil, err
+	}
+	if clock == nil {
+		return nil, errors.New("idempotency GC clock must not be nil")
+	}
+	gc.clock = clock
+	return gc, nil
 }
 
 // SweepOnce 删除当前时刻全部已满足条件的记录；任一批失败立即结束本轮。
 func (g *IdempotencyGC) SweepOnce(ctx context.Context) (int, error) {
-	now := g.now().UTC()
+	now := g.clock.Now().UTC()
 	query := storeport.IdempotencyGCQuery{
 		Now: now, TerminalRetention: g.retention, Limit: g.batchSize,
 	}
@@ -65,13 +78,13 @@ func (g *IdempotencyGC) SweepOnce(ctx context.Context) (int, error) {
 
 // Run 周期执行回收；单轮失败仅报告，下一周期会从空游标重新尝试。
 func (g *IdempotencyGC) Run(ctx context.Context) {
-	ticker := time.NewTicker(g.interval)
+	ticker := g.clock.NewTicker(g.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			if _, err := g.SweepOnce(ctx); err != nil && !errors.Is(err, context.Canceled) && g.report != nil {
 				g.report(err)
 			}

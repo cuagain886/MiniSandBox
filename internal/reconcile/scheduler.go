@@ -9,22 +9,28 @@ import (
 type Scheduler struct {
 	interval time.Duration
 	run      func(context.Context)
+	clock    Clock
 }
 
 // NewScheduler 创建周期调度器；run 应快速响应传入 context 的取消信号。
 func NewScheduler(interval time.Duration, run func(context.Context)) *Scheduler {
-	return &Scheduler{interval: interval, run: run}
+	return NewSchedulerWithClock(interval, run, SystemClock{})
+}
+
+// NewSchedulerWithClock 创建使用显式时间源的固定间隔调度器。
+func NewSchedulerWithClock(interval time.Duration, run func(context.Context), clock Clock) *Scheduler {
+	return &Scheduler{interval: interval, run: run, clock: clock}
 }
 
 // Run 阻塞运行调度循环，直到 context 被取消。
 func (s *Scheduler) Run(ctx context.Context) {
-	ticker := time.NewTicker(s.interval)
+	ticker := s.clock.NewTicker(s.interval)
 	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-ticker.C:
+		case <-ticker.C():
 			s.run(ctx)
 		}
 	}

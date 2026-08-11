@@ -40,7 +40,7 @@ func TestIdempotencyGCSweepOnceAdvancesCursor(t *testing.T) {
 		t.Fatalf("new GC: %v", err)
 	}
 	fixed := time.Date(2026, 8, 11, 12, 0, 0, 0, time.UTC)
-	gc.now = func() time.Time { return fixed }
+	gc.clock = newManualClock(fixed)
 	deleted, err := gc.SweepOnce(context.Background())
 	if err != nil || deleted != 3 || len(store.calls) != 2 {
 		t.Fatalf("sweep result: deleted=%d calls=%#v err=%v", deleted, store.calls, err)
@@ -55,14 +55,17 @@ func TestIdempotencyGCRunStopsAndRetries(t *testing.T) {
 	injected := errors.New("injected GC failure")
 	store := &fakeIdempotencyGCStore{err: injected}
 	reported := make(chan error, 2)
-	gc, err := NewIdempotencyGC(store, 24*time.Hour, time.Millisecond, 10, func(err error) { reported <- err })
+	clock := newManualClock(time.Unix(0, 0).UTC())
+	gc, err := NewIdempotencyGCWithClock(store, 24*time.Hour, time.Minute, 10, clock, func(err error) { reported <- err })
 	if err != nil {
 		t.Fatalf("new GC: %v", err)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); gc.Run(ctx) }()
+	<-clock.tickerCreated
 	for index := 0; index < 2; index++ {
+		clock.Advance(time.Minute)
 		select {
 		case err := <-reported:
 			if !errors.Is(err, injected) {
