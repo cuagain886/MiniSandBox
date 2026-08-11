@@ -1008,7 +1008,7 @@ func (s *Store) ScheduleRetry(
 	result, err := tx.ExecContext(
 		ctx,
 		`UPDATE sandboxes
-		SET observed_state = ?, reason = ?, message = ?,
+		SET observed_state = ?, reason = ?, message = ?, runtime_id = ?,
 			retry_attempt = retry_attempt + 1, next_reconcile_at = ?, last_reconcile_at = ?,
 			revision = revision + 1, updated_at = ?,
 			last_transition_at = CASE WHEN observed_state <> ? THEN ? ELSE last_transition_at END
@@ -1016,6 +1016,7 @@ func (s *Store) ScheduleRetry(
 		domain.StateFailed,
 		update.Reason,
 		update.Message,
+		update.RuntimeID,
 		update.NextReconcileAt.UTC().Format(time.RFC3339Nano),
 		attemptedAt,
 		attemptedAt,

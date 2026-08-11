@@ -107,6 +107,8 @@ type RetryUpdate struct {
 	Reason string
 	// Message 是不含秘密和底层错误文本的人类可读说明。
 	Message string
+	// RuntimeID 是失败后仍需保留以供清理的 runtime 标识；补偿清理成功时传空值。
+	RuntimeID string
 }
 
 // RetryResetUpdate 描述一次成功收敛及 retry metadata 清零的原子结果。

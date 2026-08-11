@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	"minisandbox/internal/domain"
 	"minisandbox/internal/runnerbootstrap"
@@ -168,6 +169,9 @@ func TestReconcileRunningRecordsProbeFailure(t *testing.T) {
 	if !reflect.DeepEqual(events, want) {
 		t.Fatalf("events: got %v, want %v", events, want)
 	}
+	if len(sandboxStore.retryCalls) != 0 {
+		t.Fatalf("protocol mismatch must not schedule retry: %#v", sandboxStore.retryCalls)
+	}
 }
 
 // TestReconcileTerminatedTransitionsFromEveryNonTerminalState 验证所有起点先 Stopping 再删除。
@@ -246,6 +250,9 @@ func TestReconcileTerminatedDeleteFailureWritesCleanupPending(t *testing.T) {
 	}
 	if got := sandboxStore.record.ObservedState; got != domain.StateFailed {
 		t.Fatalf("state: got %s, want Failed", got)
+	}
+	if sandboxStore.record.RetryAttempt != 1 || sandboxStore.record.NextReconcileAt == nil {
+		t.Fatalf("delete retry was not persisted: %#v", sandboxStore.record)
 	}
 }
 
@@ -399,6 +406,50 @@ func TestReconcileFailureCASConflictDoesNotOverwriteState(t *testing.T) {
 	if sandboxStore.record.ObservedState != domain.StateCreating {
 		t.Fatalf("conflicting state was overwritten: %#v", sandboxStore.record)
 	}
+	if got := events[len(events)-1]; got != "store-get" {
+		t.Fatalf("CAS conflict did not reread latest record: %v", events)
+	}
+}
+
+// TestReconcileRetryScheduleUsesPersistedAttempt 验证首次及后续失败都根据已持久化 attempt
+// 计算绝对时间，进程重启不会把退避重置为首次失败。
+func TestReconcileRetryScheduleUsesPersistedAttempt(t *testing.T) {
+	now := time.Date(2027, 5, 6, 7, 8, 9, 0, time.UTC)
+	for _, testCase := range []struct {
+		name        string
+		attempt     uint32
+		wantAttempt uint32
+		wantDelay   time.Duration
+	}{
+		{name: "first", attempt: 0, wantAttempt: 1, wantDelay: 10 * time.Second},
+		{name: "persisted fourth", attempt: 3, wantAttempt: 4, wantDelay: time.Minute},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			events := make([]string, 0, 5)
+			sandbox := pendingSandbox()
+			sandbox.RetryAttempt = testCase.attempt
+			sandboxStore := newReconcileStore(&events, sandbox)
+			reconciler, err := NewWithRetry(
+				sandboxStore,
+				&recordingRuntime{events: &events, ensureErr: new(dockerruntime.RuntimeUnavailableError)},
+				&recordingProbe{events: &events},
+				&manualClock{now: now}, fixedRandom{value: int64(testCase.wantDelay) - 1},
+				10*time.Second, time.Minute,
+			)
+			if err != nil {
+				t.Fatalf("new reconciler: %v", err)
+			}
+			if err := reconciler.Reconcile(context.Background(), sandbox.ID); err == nil {
+				t.Fatal("reconcile unexpectedly succeeded")
+			}
+			got := sandboxStore.record
+			if got.RetryAttempt != testCase.wantAttempt || got.LastReconcileAt == nil ||
+				!got.LastReconcileAt.Equal(now) || got.NextReconcileAt == nil ||
+				!got.NextReconcileAt.Equal(now.Add(testCase.wantDelay)) {
+				t.Fatalf("retry record: %#v", got)
+			}
+		})
+	}
 }
 
 // TestReconcileTerminatedRecordIsNoOp 验证已 Terminated 记录不再调用 Runtime.Delete。
@@ -433,6 +484,7 @@ type reconcileStore struct {
 	updates    []store.ObservedUpdate
 	failReason string
 	failErr    error
+	retryCalls []store.RetryUpdate
 }
 
 // newReconcileStore 创建包含单条记录的状态化 Store fake。
@@ -527,9 +579,26 @@ func (s *reconcileStore) ExpireIntent(context.Context, store.ExpireIntentUpdate)
 	return domain.Sandbox{}, errors.New("unexpected ExpireIntent")
 }
 
-// ScheduleRetry 未被当前 reconciler 测试使用。
-func (s *reconcileStore) ScheduleRetry(context.Context, store.RetryUpdate) (domain.Sandbox, error) {
-	return domain.Sandbox{}, errors.New("unexpected ScheduleRetry")
+// ScheduleRetry 模拟失败状态、attempt 和绝对 next time 的同一 CAS 更新。
+func (s *reconcileStore) ScheduleRetry(_ context.Context, update store.RetryUpdate) (domain.Sandbox, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if update.ID != s.record.ID || update.ExpectedRevision != s.record.Revision {
+		return domain.Sandbox{}, domain.ErrConflict
+	}
+	if update.Reason == s.failReason && s.failErr != nil {
+		return domain.Sandbox{}, s.failErr
+	}
+	s.retryCalls = append(s.retryCalls, update)
+	*s.events = append(*s.events, "store-update-Failed-"+update.Reason)
+	s.record.ObservedState = domain.StateFailed
+	s.record.Reason, s.record.Message = update.Reason, update.Message
+	s.record.RuntimeID = update.RuntimeID
+	s.record.RetryAttempt++
+	s.record.NextReconcileAt = &update.NextReconcileAt
+	s.record.LastReconcileAt = &update.AttemptedAt
+	s.record.Revision++
+	return s.record, nil
 }
 
 // ResetRetry 未被当前 reconciler 测试使用。

@@ -8,6 +8,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"time"
 
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
@@ -37,6 +38,10 @@ type Reconciler struct {
 	probe    RunnerProbe
 	shutdown RunnerShutdown
 	locks    *KeyedLock
+	clock    Clock
+	random   Random
+	retryMin time.Duration
+	retryMax time.Duration
 }
 
 // NewWithShutdown 创建带 runner cancel-all 前置步骤的状态收敛器。
@@ -49,11 +54,36 @@ func NewWithShutdown(s store.Store, r runtimeport.Runtime, probe RunnerProbe, sh
 // New 使用持久化、runtime 和 runner probe 端口创建状态收敛器。
 func New(s store.Store, r runtimeport.Runtime, probe RunnerProbe) *Reconciler {
 	return &Reconciler{
-		store:   s,
-		runtime: r,
-		probe:   probe,
-		locks:   NewKeyedLock(),
+		store:    s,
+		runtime:  r,
+		probe:    probe,
+		locks:    NewKeyedLock(),
+		clock:    SystemClock{},
+		random:   CryptoRandom{},
+		retryMin: time.Second,
+		retryMax: time.Minute,
 	}
+}
+
+// NewWithRetry 创建使用显式时间、随机源和退避边界的状态收敛器。
+func NewWithRetry(s store.Store, r runtimeport.Runtime, probe RunnerProbe, clock Clock, random Random, retryMin, retryMax time.Duration) (*Reconciler, error) {
+	if clock == nil || random == nil || retryMin <= 0 || retryMax < retryMin {
+		return nil, errors.New("invalid reconciler retry configuration")
+	}
+	reconciler := New(s, r, probe)
+	reconciler.clock, reconciler.random = clock, random
+	reconciler.retryMin, reconciler.retryMax = retryMin, retryMax
+	return reconciler, nil
+}
+
+// NewWithShutdownAndRetry 创建同时支持 runner shutdown 与持久化 retry 的收敛器。
+func NewWithShutdownAndRetry(s store.Store, r runtimeport.Runtime, probe RunnerProbe, shutdown RunnerShutdown, clock Clock, random Random, retryMin, retryMax time.Duration) (*Reconciler, error) {
+	reconciler, err := NewWithRetry(s, r, probe, clock, random, retryMin, retryMax)
+	if err != nil {
+		return nil, err
+	}
+	reconciler.shutdown = shutdown
+	return reconciler, nil
 }
 
 // Reconcile 对指定 sandbox 执行一次幂等收敛。
@@ -132,7 +162,7 @@ func (r *Reconciler) reconcileRunning(
 
 	actual, err := r.runtime.Ensure(ctx, creating)
 	if err != nil {
-		return r.failRunning(ctx, creating, err)
+		return r.failRunning(ctx, creating, err, RetryOperationCreate)
 	}
 	waiting, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               creating.ID,
@@ -149,17 +179,17 @@ func (r *Reconciler) reconcileRunning(
 		networkProbe, ok := r.probe.(RunnerNetworkProbe)
 		egressGate, runtimeOK := r.runtime.(runtimeport.ExecutionEgressGate)
 		if !ok || !runtimeOK {
-			return r.failRunning(ctx, waiting, errors.New("outbound readiness gate is unavailable"))
+			return r.failRunning(ctx, waiting, errors.New("outbound readiness gate is unavailable"), RetryOperationStart)
 		}
 		identity, err := networkProbe.ProbeNetwork(ctx, waiting.ID, actual.RunnerProtocolVersion)
 		if err != nil {
-			return r.failRunning(ctx, waiting, err)
+			return r.failRunning(ctx, waiting, err, RetryOperationStart)
 		}
 		if err := egressGate.CheckSandboxEgress(ctx, waiting.ID, identity); err != nil {
-			return r.failRunning(ctx, waiting, err)
+			return r.failRunning(ctx, waiting, err, RetryOperationStart)
 		}
 	} else if err := r.probe.Probe(ctx, waiting.ID, actual.RunnerProtocolVersion); err != nil {
-		return r.failRunning(ctx, waiting, err)
+		return r.failRunning(ctx, waiting, err, RetryOperationStart)
 	}
 	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               waiting.ID,
@@ -199,12 +229,17 @@ func (r *Reconciler) reconcileTerminated(
 		_ = r.shutdown.Shutdown(ctx, stopping.ID)
 	}
 	if err := r.runtime.Delete(ctx, stopping.ID); err != nil {
-		return r.recordFailure(
-			ctx,
-			stopping,
-			&cleanupPendingFailure{cause: err},
-			stopping.RuntimeID,
-		)
+		if ClassifyRetryError(RetryOperationDelete, err).Successful {
+			// runtime 已不存在等价于删除目标满足，继续提交 Terminated。
+		} else {
+			return r.recordFailure(
+				ctx,
+				stopping,
+				&cleanupPendingFailure{cause: err},
+				stopping.RuntimeID,
+				RetryOperationDelete,
+			)
+		}
 	}
 	_, err = r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               stopping.ID,
@@ -228,9 +263,10 @@ func (r *Reconciler) failRunning(
 	ctx context.Context,
 	sandbox domain.Sandbox,
 	operationErr error,
+	operation RetryOperation,
 ) error {
 	cleanupErr := r.runtime.Delete(ctx, sandbox.ID)
-	if cleanupErr != nil {
+	if cleanupErr != nil && !ClassifyRetryError(RetryOperationCleanup, cleanupErr).Successful {
 		return r.recordFailure(
 			ctx,
 			sandbox,
@@ -238,6 +274,7 @@ func (r *Reconciler) failRunning(
 				cause: errors.Join(operationErr, cleanupErr),
 			},
 			sandbox.RuntimeID,
+			RetryOperationCleanup,
 		)
 	}
 
@@ -251,7 +288,7 @@ func (r *Reconciler) failRunning(
 		compensated.OperationError() != nil {
 		failureErr = compensated.OperationError()
 	}
-	return r.recordFailure(ctx, sandbox, failureErr, "")
+	return r.recordFailure(ctx, sandbox, failureErr, "", operation)
 }
 
 // recordFailure 用当前 revision CAS 写入安全的 Failed 状态并保留原始 cause。
@@ -260,8 +297,42 @@ func (r *Reconciler) recordFailure(
 	sandbox domain.Sandbox,
 	failureErr error,
 	runtimeID string,
+	operation RetryOperation,
 ) error {
 	failure := runtimeport.ClassifyError(failureErr)
+	classification := ClassifyRetryError(operation, failureErr)
+	decision, decisionErr := DecideRetry(RetryPolicyInput{
+		Operation: operation, ErrorClass: classification.ErrorClass, Attempt: sandbox.RetryAttempt,
+	})
+	if decisionErr != nil {
+		return errors.Join(failureErr, decisionErr)
+	}
+	if decision.Action == RetryActionRetryAt {
+		delay, err := FullJitterBackoff(sandbox.RetryAttempt, r.retryMin, r.retryMax, r.random)
+		if err != nil {
+			return errors.Join(failureErr, err)
+		}
+		attemptedAt := r.clock.Now().UTC()
+		_, updateErr := r.store.ScheduleRetry(ctx, store.RetryUpdate{
+			ID: sandbox.ID, ExpectedRevision: sandbox.Revision,
+			AttemptedAt: attemptedAt, NextReconcileAt: attemptedAt.Add(delay),
+			Reason: failure.Reason, Message: failure.Message, RuntimeID: runtimeID,
+		})
+		if updateErr != nil {
+			if errors.Is(updateErr, domain.ErrConflict) {
+				_, _ = r.store.Get(ctx, sandbox.ID)
+			}
+			return errors.Join(failureErr, fmt.Errorf("schedule sandbox retry: %w", updateErr))
+		}
+		return failureErr
+	}
+	if decision.Action == RetryActionImmediateReread {
+		_, _ = r.store.Get(ctx, sandbox.ID)
+		return failureErr
+	}
+	if classification.ErrorClass == RetryErrorShutdown {
+		return failureErr
+	}
 	_, updateErr := r.store.UpdateObserved(ctx, store.ObservedUpdate{
 		ID:               sandbox.ID,
 		ExpectedRevision: sandbox.Revision,

@@ -131,14 +131,14 @@ func TestScheduleAndResetRetryAreAtomic(t *testing.T) {
 	next := reliabilityNow.Add(17 * time.Second)
 	failed, err := store.ScheduleRetry(context.Background(), storeport.RetryUpdate{
 		ID: record.ID, ExpectedRevision: record.Revision, AttemptedAt: reliabilityNow,
-		NextReconcileAt: next, Reason: "RUNTIME_UNAVAILABLE", Message: "Runtime is temporarily unavailable.",
+		NextReconcileAt: next, Reason: "RUNTIME_UNAVAILABLE", Message: "Runtime is temporarily unavailable.", RuntimeID: "runtime-1",
 	})
 	if err != nil {
 		t.Fatalf("schedule retry: %v", err)
 	}
 	if failed.ObservedState != domain.StateFailed || failed.RetryAttempt != 1 ||
 		failed.NextReconcileAt == nil || !failed.NextReconcileAt.Equal(next) ||
-		failed.LastReconcileAt == nil || !failed.LastReconcileAt.Equal(reliabilityNow) {
+		failed.LastReconcileAt == nil || !failed.LastReconcileAt.Equal(reliabilityNow) || failed.RuntimeID != "runtime-1" {
 		t.Fatalf("scheduled result: %#v", failed)
 	}
 
@@ -228,10 +228,12 @@ func TestReliabilityUpdatesNotFoundAndReopen(t *testing.T) {
 	}); !errors.Is(err, domain.ErrNotFound) {
 		t.Fatalf("missing renew: got %v, want not found", err)
 	}
-	record := createReliabilitySandbox(t, first, "reopen", domain.DesiredRunning, domain.StateRunning)
+	record := createReliabilitySandbox(t, first, "reopen", domain.DesiredRunning, domain.StateCreating)
 	checkedAt := reliabilityNow.In(time.FixedZone("UTC+9", 9*60*60))
-	updated, err := first.RecordHealthResult(context.Background(), storeport.HealthResultUpdate{
-		ID: record.ID, ExpectedRevision: record.Revision, CheckedAt: checkedAt,
+	next := checkedAt.Add(23 * time.Second)
+	updated, err := first.ScheduleRetry(context.Background(), storeport.RetryUpdate{
+		ID: record.ID, ExpectedRevision: record.Revision, AttemptedAt: checkedAt,
+		NextReconcileAt: next, Reason: "RUNTIME_UNAVAILABLE", Message: "Runtime is temporarily unavailable.",
 	})
 	if err != nil {
 		t.Fatalf("record before reopen: %v", err)
@@ -248,7 +250,9 @@ func TestReliabilityUpdatesNotFoundAndReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("get after reopen: %v", err)
 	}
-	if got.Revision != updated.Revision || got.LastReconcileAt == nil || !got.LastReconcileAt.Equal(checkedAt) {
+	if got.Revision != updated.Revision || got.RetryAttempt != 1 ||
+		got.LastReconcileAt == nil || !got.LastReconcileAt.Equal(checkedAt) ||
+		got.NextReconcileAt == nil || !got.NextReconcileAt.Equal(next) {
 		t.Fatalf("reopened result: %#v", got)
 	}
 }

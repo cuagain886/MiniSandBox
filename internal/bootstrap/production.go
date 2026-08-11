@@ -118,7 +118,14 @@ func startProductionWorker(
 	if err != nil {
 		return nil, err
 	}
-	reconciler := reconcile.NewWithShutdown(sandboxStore, runtime, factory, factory)
+	reconciler, err := reconcile.NewWithShutdownAndRetry(
+		sandboxStore, runtime, factory, factory,
+		reconcile.SystemClock{}, reconcile.CryptoRandom{}, cfg.Reconcile.RetryMin, cfg.Reconcile.RetryMax,
+	)
+	if err != nil {
+		factory.Close()
+		return nil, err
+	}
 	worker, err := reconcile.NewWorker(
 		queue,
 		cfg.Reconcile.DeletionTimeout,
