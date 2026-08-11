@@ -26,14 +26,19 @@ import (
 // busyTimeoutMillis 是等待数据库锁的毫秒数，超时前重试而不是立即报错。
 const busyTimeoutMillis = 5000
 
+const idempotencyResponseSchemaVersion uint32 = 1
+
+const maxIdempotencyResponseBytes = 65_536
+
 // cleanupPendingReason 标识仍有受管资源需要重试清理的失败记录。
 const cleanupPendingReason = "CLEANUP_PENDING"
 
 // Store 是 store 端口的 SQLite 实现。
 type Store struct {
-	db   *sql.DB
-	path string
-	now  func() time.Time
+	db              *sql.DB
+	path            string
+	now             func() time.Time
+	commitImmediate func(context.Context, *sql.Conn) error
 }
 
 // storedSandboxSpec 是 SQLite 中 resolved spec 的稳定 JSON 表示。
@@ -101,6 +106,10 @@ func Open(path string) (*Store, error) {
 		db:   db,
 		path: path,
 		now:  time.Now,
+		commitImmediate: func(ctx context.Context, conn *sql.Conn) error {
+			_, err := conn.ExecContext(ctx, "COMMIT")
+			return err
+		},
 	}
 	if err := store.verifyConnection(); err != nil {
 		_ = db.Close()
@@ -232,6 +241,165 @@ func (s *Store) Create(ctx context.Context, sandbox domain.Sandbox) error {
 		return fmt.Errorf("create sandbox: %w", domain.ErrConflict)
 	}
 	return fmt.Errorf("create sandbox: %w", err)
+}
+
+// CreateIdempotent 在独占写事务中原子创建 sandbox 与首次 202 响应记录。
+//
+// 事务先检查 scope/key，避免为已存在身份生成孤立 sandbox；任何 sandbox、
+// idempotency 或 commit 失败都会执行 ROLLBACK。P3-019 对已有 key 只返回冲突，
+// 精确重放由后续任务扩展同一事务分支。
+func (s *Store) CreateIdempotent(
+	ctx context.Context,
+	request storeport.IdempotentCreateRequest,
+) (storeport.IdempotentCreateResult, error) {
+	if err := validateIdempotentCreateRequest(request); err != nil {
+		return storeport.IdempotentCreateResult{}, err
+	}
+	specJSON, err := json.Marshal(storedSpecFromDomain(request.Sandbox.Spec))
+	if err != nil {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("encode idempotent sandbox spec: %w", err)
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("acquire idempotent create connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("begin idempotent create: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+
+	var existing int
+	err = conn.QueryRowContext(ctx,
+		"SELECT 1 FROM idempotency_records WHERE scope_id = ? AND idempotency_key = ?",
+		request.ScopeID,
+		request.Key,
+	).Scan(&existing)
+	if err == nil {
+		return storeport.IdempotentCreateResult{}, domain.ErrConflict
+	}
+	if !errors.Is(err, sql.ErrNoRows) {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("check idempotency record: %w", err)
+	}
+
+	sandbox := request.Sandbox
+	result, err := conn.ExecContext(ctx, `INSERT INTO sandboxes (
+		id, spec_json, desired_state, observed_state, reason, message, runtime_id,
+		spec_hash, revision, created_at, updated_at, last_transition_at, expires_at,
+		retry_attempt, next_reconcile_at, last_reconcile_at, health_failure_count, origin
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+		sandbox.ID,
+		specJSON,
+		sandbox.DesiredState,
+		sandbox.ObservedState,
+		sandbox.Reason,
+		sandbox.Message,
+		sandbox.RuntimeID,
+		sandbox.SpecHash,
+		uint64(1),
+		sandbox.CreatedAt.UTC().Format(time.RFC3339Nano),
+		sandbox.UpdatedAt.UTC().Format(time.RFC3339Nano),
+		sandbox.LastTransitionAt.UTC().Format(time.RFC3339Nano),
+		sandbox.ExpiresAt.UTC().Format(time.RFC3339Nano),
+		sandbox.RetryAttempt,
+		storedNullableTime(sandbox.NextReconcileAt),
+		storedNullableTime(sandbox.LastReconcileAt),
+		sandbox.HealthFailureCount,
+		sandbox.Origin,
+	)
+	if err != nil {
+		if isDuplicateConstraint(err) {
+			return storeport.IdempotentCreateResult{}, domain.ErrConflict
+		}
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("insert idempotent sandbox: %w", err)
+	}
+	if affected, err := result.RowsAffected(); err != nil || affected != 1 {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("insert idempotent sandbox result: affected=%d error=%w", affected, err)
+	}
+
+	response := request.Response
+	if _, err := conn.ExecContext(ctx, `INSERT INTO idempotency_records (
+		scope_id, idempotency_key, request_hash, sandbox_id, status_code,
+		location, response_json, created_at
+	) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		request.ScopeID,
+		request.Key,
+		request.RequestHash,
+		sandbox.ID,
+		response.StatusCode,
+		response.Location,
+		response.Body,
+		response.CreatedAt.UTC().Format(time.RFC3339Nano),
+	); err != nil {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("insert idempotency record: %w", err)
+	}
+	created, err := scanSandbox(conn.QueryRowContext(ctx, selectSandboxByIDQuery, sandbox.ID))
+	if err != nil {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("read idempotent sandbox: %w", err)
+	}
+	if err := s.commitImmediate(ctx, conn); err != nil {
+		return storeport.IdempotentCreateResult{}, fmt.Errorf("commit idempotent create: %w", err)
+	}
+	committed = true
+	response.Body = append([]byte(nil), response.Body...)
+	return storeport.IdempotentCreateResult{Sandbox: created, Response: response}, nil
+}
+
+// validateIdempotentCreateRequest 在开启写事务前拒绝不可能通过 schema 的输入。
+func validateIdempotentCreateRequest(request storeport.IdempotentCreateRequest) error {
+	response := request.Response
+	if !validIdempotencyToken(request.ScopeID, 64) ||
+		!validIdempotencyToken(request.Key, 128) ||
+		!validLowerHexHash(request.RequestHash) ||
+		request.Sandbox.ExpiresAt == nil ||
+		request.Sandbox.CreatedAt.IsZero() || request.Sandbox.UpdatedAt.IsZero() ||
+		request.Sandbox.LastTransitionAt.IsZero() ||
+		response.SchemaVersion != idempotencyResponseSchemaVersion ||
+		response.StatusCode != 202 || response.CreatedAt.IsZero() ||
+		len(response.Location) < 1 || len(response.Location) > 1024 ||
+		len(response.Body) < 2 || len(response.Body) > maxIdempotencyResponseBytes ||
+		!json.Valid(response.Body) {
+		return fmt.Errorf("validate idempotent create: %w", domain.ErrInvalid)
+	}
+	if request.Sandbox.Origin != domain.SandboxOriginAPI {
+		return fmt.Errorf("validate idempotent create origin: %w", domain.ErrInvalid)
+	}
+	return nil
+}
+
+// validIdempotencyToken 镜像 schema 的 ASCII token 约束而不回显原值。
+func validIdempotencyToken(value string, limit int) bool {
+	if len(value) < 1 || len(value) > limit {
+		return false
+	}
+	for index := range value {
+		character := value[index]
+		if character >= 'A' && character <= 'Z' || character >= 'a' && character <= 'z' ||
+			character >= '0' && character <= '9' || character == '.' || character == '_' ||
+			character == ':' || character == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// validLowerHexHash 验证固定长度 lowercase SHA-256 hex。
+func validLowerHexHash(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	for index := range value {
+		if value[index] < '0' || value[index] > '9' && (value[index] < 'a' || value[index] > 'f') {
+			return false
+		}
+	}
+	return true
 }
 
 // storedNullableTime 把可选 UTC 时间转换为 SQLite NULL 或 RFC3339Nano 文本。

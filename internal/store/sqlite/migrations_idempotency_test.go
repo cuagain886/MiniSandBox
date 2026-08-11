@@ -10,8 +10,6 @@ import (
 	"minisandbox/internal/domain"
 )
 
-const maxIdempotencyResponseBytes = 65_536
-
 func insertIdempotencyRecord(t *testing.T, store *Store, scope, key, sandboxID string, response []byte, createdAt time.Time) error {
 	t.Helper()
 	_, err := store.db.Exec(`INSERT INTO idempotency_records (

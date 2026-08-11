@@ -107,6 +107,44 @@ type HealthResultUpdate struct {
 	Healthy bool
 }
 
+// IdempotentResponse 是首次接受创建时需要逐字节保存的 HTTP 响应。
+type IdempotentResponse struct {
+	// SchemaVersion 是 Store 支持的重放结构版本，当前固定为 1。
+	SchemaVersion uint32
+	// StatusCode 是首次接受状态，当前只允许 202。
+	StatusCode int
+	// Location 是首次响应的稳定资源路径。
+	Location string
+	// Body 是首次响应 JSON bytes，最大 64 KiB；调用双方不得复用其 backing array。
+	Body []byte
+	// CreatedAt 是首次提交记录的 UTC 时间，不因重放而变化。
+	CreatedAt time.Time
+}
+
+// IdempotentCreateRequest 描述 sandbox 与重放记录的一次原子创建。
+type IdempotentCreateRequest struct {
+	// ScopeID 是已经校验的租户作用域。
+	ScopeID string
+	// Key 是已经校验且禁止记录到日志的 raw idempotency key。
+	Key string
+	// RequestHash 是带域分离的 lowercase SHA-256 hex。
+	RequestHash string
+	// Sandbox 是待创建的完整领域记录，必须包含绝对 expiry。
+	Sandbox domain.Sandbox
+	// Response 是与 Sandbox 同事务保存的首次 202 响应。
+	Response IdempotentResponse
+}
+
+// IdempotentCreateResult 描述首次创建或后续精确重放结果。
+type IdempotentCreateResult struct {
+	// Sandbox 是首次创建后的 domain snapshot；重放时至少包含稳定 ID。
+	Sandbox domain.Sandbox
+	// Response 是首次保存的不可变响应副本。
+	Response IdempotentResponse
+	// Replayed 表示本次没有创建新 sandbox，而是命中已有相同请求。
+	Replayed bool
+}
+
 // Store 定义 sandbox 期望状态的持久化能力。
 //
 // 所有更新都基于 revision CAS：expectedRevision 与存量记录不一致时必须
@@ -115,6 +153,8 @@ type HealthResultUpdate struct {
 type Store interface {
 	// Create 持久化一条新记录，ID 已存在时返回 domain.ErrConflict。
 	Create(ctx context.Context, sandbox domain.Sandbox) error
+	// CreateIdempotent 在一个 BEGIN IMMEDIATE 事务中创建 sandbox 和首次响应记录。
+	CreateIdempotent(ctx context.Context, request IdempotentCreateRequest) (IdempotentCreateResult, error)
 	// Get 按 ID 返回 sandbox，不存在时返回 domain.ErrNotFound。
 	Get(ctx context.Context, id string) (domain.Sandbox, error)
 	// UpdateDesired 以 CAS 方式提交 DesiredTerminated 并返回更新后的记录。

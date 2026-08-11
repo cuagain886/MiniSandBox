@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"reflect"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -59,6 +60,17 @@ func TestFakeStoreRecordsCallsAndInjectsResults(t *testing.T) {
 		ID:               sandbox.ID,
 		ExpectedRevision: sandbox.Revision,
 		State:            domain.StateRunning,
+	}
+	idempotentCall := storeport.IdempotentCreateRequest{
+		ScopeID: "local:v1", Key: "key", RequestHash: strings.Repeat("a", 64),
+		Sandbox: sandbox, Response: storeport.IdempotentResponse{Body: []byte(`{}`)},
+	}
+	idempotentResult := storeport.IdempotentCreateResult{Sandbox: sandbox, Response: idempotentCall.Response}
+	fake.SetCreateIdempotentResult(idempotentResult, injected)
+	_, _ = fake.CreateIdempotent(ctx, idempotentCall)
+	idempotentCall.Response.Body[0] = '['
+	if got := fake.CreateIdempotentCalls(); len(got) != 1 || string(got[0].Response.Body) != `{}` {
+		t.Fatalf("CreateIdempotent calls: %#v", got)
 	}
 	fake.SetUpdateObservedResult(sandbox, injected)
 	_, _ = fake.UpdateObserved(ctx, observedCall)
@@ -189,6 +201,7 @@ func TestFakesConcurrentAccess(t *testing.T) {
 			defer wait.Done()
 			sandbox := domain.Sandbox{ID: "sandbox"}
 			_ = storeFake.Create(ctx, sandbox)
+			_, _ = storeFake.CreateIdempotent(ctx, storeport.IdempotentCreateRequest{Sandbox: sandbox})
 			_, _ = storeFake.Get(ctx, sandbox.ID)
 			_, _ = storeFake.UpdateDesired(
 				ctx,

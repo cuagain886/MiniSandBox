@@ -361,6 +361,11 @@ func (s *recoveryStore) ListReconcileCandidates(
 	return append([]domain.Sandbox(nil), s.records[:limit]...), nil
 }
 
+// CreateIdempotent 未被启动恢复测试使用。
+func (s *recoveryStore) CreateIdempotent(context.Context, store.IdempotentCreateRequest) (store.IdempotentCreateResult, error) {
+	return store.IdempotentCreateResult{}, errors.New("unexpected CreateIdempotent")
+}
+
 // Renew 未被启动恢复测试使用。
 func (s *recoveryStore) Renew(context.Context, store.RenewUpdate) (domain.Sandbox, error) {
 	return domain.Sandbox{}, errors.New("unexpected Renew")

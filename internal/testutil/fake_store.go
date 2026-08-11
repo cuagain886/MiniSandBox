@@ -26,8 +26,11 @@ type DesiredUpdateCall struct {
 type FakeStore struct {
 	mu sync.Mutex
 
-	createErr   error
-	createCalls []domain.Sandbox
+	createErr              error
+	createCalls            []domain.Sandbox
+	createIdempotentResult storeport.IdempotentCreateResult
+	createIdempotentErr    error
+	createIdempotentCalls  []storeport.IdempotentCreateRequest
 
 	getResult domain.Sandbox
 	getErr    error
@@ -90,6 +93,35 @@ func (f *FakeStore) Create(_ context.Context, sandbox domain.Sandbox) error {
 	defer f.mu.Unlock()
 	f.createCalls = append(f.createCalls, sandbox)
 	return f.createErr
+}
+
+// SetCreateIdempotentResult 配置 CreateIdempotent 返回的结果和错误。
+func (f *FakeStore) SetCreateIdempotentResult(result storeport.IdempotentCreateResult, err error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.createIdempotentResult, f.createIdempotentErr = result, err
+}
+
+// CreateIdempotentCalls 返回原子创建请求的独立深拷贝快照。
+func (f *FakeStore) CreateIdempotentCalls() []storeport.IdempotentCreateRequest {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	result := append([]storeport.IdempotentCreateRequest(nil), f.createIdempotentCalls...)
+	for index := range result {
+		result[index].Response.Body = append([]byte(nil), result[index].Response.Body...)
+	}
+	return result
+}
+
+// CreateIdempotent 记录请求并返回预先配置的结果副本。
+func (f *FakeStore) CreateIdempotent(_ context.Context, request storeport.IdempotentCreateRequest) (storeport.IdempotentCreateResult, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	request.Response.Body = append([]byte(nil), request.Response.Body...)
+	f.createIdempotentCalls = append(f.createIdempotentCalls, request)
+	result := f.createIdempotentResult
+	result.Response.Body = append([]byte(nil), result.Response.Body...)
+	return result, f.createIdempotentErr
 }
 
 // SetGetResult 配置 Get 返回的领域对象和错误。
