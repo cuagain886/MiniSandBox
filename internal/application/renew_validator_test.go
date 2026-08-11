@@ -40,7 +40,7 @@ func TestValidateRenewSemantics(t *testing.T) {
 		t.Run(tt.name, func(t *testing.T) {
 			current := base
 			if tt.mutate != nil {
-				t.mutate(&current)
+				tt.mutate(&current)
 			}
 			clock := &recordingClock{now: now}
 			service := &SandboxService{clock: clock, createPolicy: CreatePolicy{MinimumTTL: time.Hour, MaximumTTL: 24 * time.Hour}}
