@@ -67,7 +67,7 @@ func TestOperationCountersSupportConcurrentUpdates(t *testing.T) {
 
 func assertSafeMetricLabels(t *testing.T, family *dto.MetricFamily) {
 	t.Helper()
-	allowedNames := map[string]struct{}{"result": {}, "operation": {}, "error_code": {}, "classification": {}}
+	allowedNames := map[string]struct{}{"result": {}, "operation": {}, "error_code": {}, "classification": {}, "mode": {}}
 	for _, metric := range family.Metric {
 		for _, label := range metric.Label {
 			if _, ok := allowedNames[label.GetName()]; !ok {
