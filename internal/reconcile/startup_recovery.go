@@ -109,6 +109,7 @@ type InventoryRecoveryExecutor struct {
 	expectation     DriftExpectation
 	operationLogger *OperationLogger
 	metrics         interface{ ObserveOrphan(string) }
+	clock           Clock
 }
 
 // SetOperationLogger 为每个 startup recovery plan 装配只读安全日志。
@@ -144,7 +145,7 @@ func NewInventoryRecoveryExecutor(s storeport.Store, anomalies storeport.Runtime
 		return nil, err
 	}
 	return &InventoryRecoveryExecutor{store: s, anomalies: anomalyExecutor, metadata: metadata,
-		orphans: orphans, wake: wake, expectation: expectation}, nil
+		orphans: orphans, wake: wake, expectation: expectation, clock: clock}, nil
 }
 
 // Recover 完整关联 Store 与 actual，对每个资源独立执行动作并在最后解决本轮消失的异常。
@@ -185,7 +186,9 @@ func (e *InventoryRecoveryExecutor) Recover(ctx context.Context, inventory Actua
 		}
 		failures = errors.Join(failures, unscopedErr)
 	}
-	resolvedAt := time.Now().UTC()
+	// anomaly 的观察与解决必须使用同一个可注入时钟；宿主 wall clock 回拨时不能让完整
+	// inventory 因 completedAt 早于 scanStartedAt 而错误阻断整个启动恢复。
+	resolvedAt := e.clock.Now().UTC()
 	_, resolveErr := FinalizeAnomalyScan(ctx, e.anomalies.repository, inventory,
 		InventoryCoverage{ContainersComplete: true, VolumesComplete: true, FilesystemComplete: true}, scanStartedAt, resolvedAt)
 	failures = errors.Join(failures, resolveErr)
