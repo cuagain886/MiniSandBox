@@ -11,6 +11,7 @@ import (
 	mobyclient "github.com/moby/moby/client"
 	"minisandbox/internal/domain"
 	"minisandbox/internal/egressnft"
+	"minisandbox/internal/runnerbootstrap"
 	runtimeport "minisandbox/internal/runtime"
 )
 
@@ -109,6 +110,11 @@ func mapEgressContainerObservation(container mobycontainer.InspectResponse, obse
 
 func mapSafeContainerProfile(container mobycontainer.InspectResponse, observation *runtimeport.ManagedContainerObservation) {
 	host := container.HostConfig
+	config := container.Config
+	observation.ImageReference = config.Image
+	if container.Platform == "linux" {
+		observation.PlatformOS, observation.PlatformArch = "linux", "amd64"
+	}
 	mode := string(host.NetworkMode)
 	switch {
 	case mode == "none":
@@ -130,9 +136,65 @@ func mapSafeContainerProfile(container mobycontainer.InspectResponse, observatio
 			observation.NoNewPrivileges = true
 		}
 	}
+	observation.NamespaceProfileValid = host.PidMode == "" && host.IpcMode == "" && host.UTSMode == ""
+	observation.PortProfileValid = len(config.ExposedPorts) == 0 && len(host.PortBindings) == 0
+	observation.DeviceProfileValid = len(host.Devices) == 0 && len(host.DeviceRequests) == 0 && len(host.VolumesFrom) == 0
+	observation.ResourceProfileValid = mapObservedResources(host.Resources, observation)
+	observation.ProcessProfileValid = processProfileMatches(config, observation.Role)
+	observation.MountProfileValid = mountProfileMatches(container, observation.Role)
 	for _, mount := range container.Mounts {
 		if mount.Type == "volume" && mount.Destination == domain.WorkspaceMountPath {
 			observation.Workspace, observation.WorkspaceDestination = mount.Name, mount.Destination
 		}
 	}
+}
+
+func mapObservedResources(resources mobycontainer.Resources, observation *runtimeport.ManagedContainerObservation) bool {
+	if resources.NanoCPUs <= 0 || resources.NanoCPUs%nanoCPUsPerMilliCPU != 0 ||
+		resources.Memory <= 0 || resources.Memory%bytesPerMiB != 0 || resources.PidsLimit == nil || *resources.PidsLimit <= 0 {
+		return false
+	}
+	observation.CPUQuotaMillis = resources.NanoCPUs / nanoCPUsPerMilliCPU
+	observation.MemoryMiB = resources.Memory / bytesPerMiB
+	observation.PIDs = *resources.PidsLimit
+	return true
+}
+
+func processProfileMatches(config *mobycontainer.Config, role runtimeport.ContainerResourceRole) bool {
+	if role == runtimeport.ContainerRoleMain {
+		return config.User == "0:0" && config.WorkingDir == domain.WorkspaceMountPath &&
+			sameStringSlice(config.Entrypoint, fixedEntrypoint) && len(config.Cmd) == 0
+	}
+	return config.User == "0:0" && config.WorkingDir == egressWorkingDirectory &&
+		sameStringSlice(config.Entrypoint, []string{egressEntrypoint, "bootstrap"}) && len(config.Cmd) == 0
+}
+
+func mountProfileMatches(container mobycontainer.InspectResponse, role runtimeport.ContainerResourceRole) bool {
+	if role == runtimeport.ContainerRoleEgress {
+		return len(container.Mounts) == 0 && len(container.HostConfig.Binds) == 0 && len(container.HostConfig.Mounts) == 0
+	}
+	workspace, runtimeDirectory := 0, 0
+	for _, mount := range container.Mounts {
+		switch {
+		case mount.Type == "volume" && mount.Destination == domain.WorkspaceMountPath:
+			workspace++
+		case mount.Type == "bind" && mount.Destination == runnerbootstrap.RuntimeDirectory:
+			runtimeDirectory++
+		default:
+			return false
+		}
+	}
+	return workspace == 1 && runtimeDirectory == 1 && len(container.Mounts) == 2
+}
+
+func sameStringSlice(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if left[index] != right[index] {
+			return false
+		}
+	}
+	return true
 }

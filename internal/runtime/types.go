@@ -63,6 +63,18 @@ type ManagedContainerObservation struct {
 	Role ContainerResourceRole
 	// Name 是经过确定性命名规则校验的容器名。
 	Name string
+	// ImageReference 是主容器创建时使用的镜像引用，仅用于重建 Store 规格，不进入诊断文本。
+	ImageReference string
+	// PlatformOS 是 inspect 声明的受支持操作系统。
+	PlatformOS string
+	// PlatformArch 是由当前固定 runtime profile 证明的目标架构。
+	PlatformArch string
+	// CPUQuotaMillis 是从 Docker NanoCPUs 精确反算的毫核数；无法整除时为零并标记 profile 问题。
+	CPUQuotaMillis int64
+	// MemoryMiB 是从 Docker bytes 精确反算的 MiB 数；无法整除时为零并标记 profile 问题。
+	MemoryMiB int64
+	// PIDs 是 Docker cgroup 进程数上限；缺失时为零。
+	PIDs int64
 	// State 是与 Docker 细节解耦的粗粒度状态。
 	State ActualState
 	// SchemaVersion 是已接受的 v1 或 v2 label schema。
@@ -91,6 +103,18 @@ type ManagedContainerObservation struct {
 	ReadonlyRootfs bool
 	// NoNewPrivileges 表示安全选项是否禁止获得新权限。
 	NoNewPrivileges bool
+	// ProcessProfileValid 表示用户、工作目录、入口点和固定启动形态完全匹配受管职责。
+	ProcessProfileValid bool
+	// MountProfileValid 表示只存在职责允许的挂载，且未暴露 Docker socket 或任意额外 bind。
+	MountProfileValid bool
+	// NamespaceProfileValid 表示没有使用 host PID/IPC/UTS namespace，network 另由聚合器校验。
+	NamespaceProfileValid bool
+	// PortProfileValid 表示没有声明或发布任何容器端口。
+	PortProfileValid bool
+	// DeviceProfileValid 表示没有设备、device request 或 volumes-from 扩权。
+	DeviceProfileValid bool
+	// ResourceProfileValid 表示主容器 cgroup 资源可无损映射回领域单位。
+	ResourceProfileValid bool
 	// CapAdd 是容器显式增加的 capability 名称副本。
 	CapAdd []string
 	// CapDrop 是容器显式移除的 capability 名称副本。

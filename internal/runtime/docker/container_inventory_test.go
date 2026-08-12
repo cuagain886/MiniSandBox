@@ -10,6 +10,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
+	"minisandbox/internal/runnerbootstrap"
 	runtimeport "minisandbox/internal/runtime"
 )
 
@@ -50,6 +51,12 @@ func TestInventoryManagedContainersInspectsAndSortsMainAndEgress(t *testing.T) {
 	if mainGot.State != runtimeport.ActualRunning || mainGot.SpecHash != testSpecHash || mainGot.NetworkMode != "none" ||
 		mainGot.Workspace != testWorkspace || mainGot.Privileged || !mainGot.NoNewPrivileges || mainGot.DiscoveryIssue != "" {
 		t.Fatalf("main observation: %#v", mainGot)
+	}
+	if !mainGot.ProcessProfileValid || !mainGot.MountProfileValid || !mainGot.NamespaceProfileValid ||
+		!mainGot.PortProfileValid || !mainGot.DeviceProfileValid || !mainGot.ResourceProfileValid ||
+		mainGot.CPUQuotaMillis != 500 || mainGot.MemoryMiB != 256 || mainGot.PIDs != 64 ||
+		mainGot.PlatformOS != "linux" || mainGot.PlatformArch != "amd64" {
+		t.Fatalf("main safe profile: %#v", mainGot)
 	}
 	if got[0].EgressPolicyHash == "" || got[0].EgressProtocolVersion < 1 || got[0].State != runtimeport.ActualStopped {
 		t.Fatalf("egress observation: %#v", got[0])
@@ -128,17 +135,21 @@ func inventoryMainContainer(t *testing.T) mobycontainer.InspectResponse {
 	labels := validTestLabels(t)
 	return mobycontainer.InspectResponse{
 		ID: "main-container", Name: "/" + containerName(testSandboxID),
-		Config:     &mobycontainer.Config{Labels: labels},
-		HostConfig: &mobycontainer.HostConfig{NetworkMode: "none", CapDrop: []string{"ALL"}, SecurityOpt: []string{noNewPrivilegesSecurity}, RestartPolicy: mobycontainer.RestartPolicy{Name: mobycontainer.RestartPolicyDisabled}},
+		Config:     &mobycontainer.Config{Labels: labels, Image: "busybox:1.36", User: "0:0", WorkingDir: "/workspace", Entrypoint: append([]string(nil), fixedEntrypoint...)},
+		HostConfig: &mobycontainer.HostConfig{NetworkMode: "none", CapDrop: []string{"ALL"}, CapAdd: []string{"CHOWN", "SETUID", "SETGID", "KILL"}, SecurityOpt: []string{noNewPrivilegesSecurity}, RestartPolicy: mobycontainer.RestartPolicy{Name: mobycontainer.RestartPolicyDisabled}, Resources: mobycontainer.Resources{NanoCPUs: 500 * nanoCPUsPerMilliCPU, Memory: 256 * bytesPerMiB, PidsLimit: int64Pointer(64)}},
 		State:      &mobycontainer.State{Status: mobycontainer.StateRunning},
-		Mounts:     []mobycontainer.MountPoint{{Type: "volume", Name: testWorkspace, Destination: "/workspace"}},
+		Mounts: []mobycontainer.MountPoint{
+			{Type: "volume", Name: testWorkspace, Destination: "/workspace"},
+			{Type: "bind", Destination: runnerbootstrap.RuntimeDirectory},
+		},
+		Platform: "linux",
 	}
 }
 
 func inventoryEgressContainer() mobycontainer.InspectResponse {
 	return mobycontainer.InspectResponse{
 		ID: "egress-container", Name: "/" + egressSidecarName(testSandboxID),
-		Config: &mobycontainer.Config{Labels: map[string]string{
+		Config: &mobycontainer.Config{User: "0:0", WorkingDir: egressWorkingDirectory, Entrypoint: []string{egressEntrypoint, "bootstrap"}, Labels: map[string]string{
 			LabelManaged: labelManagedValue, LabelSchemaVersion: labelSchemaVersionValue,
 			LabelSandboxID: testSandboxID, LabelResourceRole: resourceRoleEgressSidecar,
 			LabelEgressPolicyHash: strings.Repeat("b", 64), LabelEgressImage: "example.invalid/egress@sha256:" + strings.Repeat("c", 64), LabelEgressProtocol: "1",
@@ -147,3 +158,5 @@ func inventoryEgressContainer() mobycontainer.InspectResponse {
 		State:      &mobycontainer.State{Status: mobycontainer.StateExited},
 	}
 }
+
+func int64Pointer(value int64) *int64 { return &value }
