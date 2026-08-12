@@ -11,6 +11,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	mobycontainer "github.com/moby/moby/api/types/container"
 	mobyclient "github.com/moby/moby/client"
+	"minisandbox/internal/testcrashpoint"
 )
 
 const defaultContainerStopTimeout = 10 * time.Second
@@ -37,6 +38,7 @@ func (r *Runtime) Delete(ctx context.Context, sandboxID string) (resultErr error
 	); err != nil {
 		failures = append(failures, fmt.Errorf("delete container: %w", err))
 	} else if engine, ok := r.engine.(EgressEngine); ok {
+		testcrashpoint.Hit("delete.container-remove")
 		// 只有主容器已确认不存在后才能移除 namespace anchor，避免在途 execution 突然落入不同网络语义。
 		if err := deleteManagedEgressSidecar(ctx, engine, sandboxID, defaultContainerStopTimeout); err != nil {
 			failures = append(failures, fmt.Errorf("delete egress sidecar: %w", err))
@@ -47,12 +49,16 @@ func (r *Runtime) Delete(ctx context.Context, sandboxID string) (resultErr error
 			failures,
 			fmt.Errorf("delete workspace volume: %w", err),
 		)
+	} else {
+		testcrashpoint.Hit("delete.volume-remove")
 	}
 	if err := DeleteRuntimeDirectory(r.dataDirectory, sandboxID); err != nil {
 		failures = append(
 			failures,
 			fmt.Errorf("delete runtime directory: %w", err),
 		)
+	} else {
+		testcrashpoint.Hit("delete.runtime-directory-remove")
 	}
 	return errors.Join(failures...)
 }

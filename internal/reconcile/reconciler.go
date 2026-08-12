@@ -393,6 +393,7 @@ func (r *Reconciler) reconcileTerminated(
 	if r.shutdown != nil {
 		_ = r.shutdown.Shutdown(ctx, stopping.ID)
 	}
+	testcrashpoint.Hit("delete.runner-shutdown")
 	if err := r.deleteRuntime(ctx, stopping.ID); err != nil {
 		var waitErr *operationLimitWaitError
 		if errors.As(err, &waitErr) {
@@ -410,6 +411,7 @@ func (r *Reconciler) reconcileTerminated(
 			)
 		}
 	}
+	testcrashpoint.Hit("delete.before-terminated-cas")
 	_, err = r.store.ResetRetry(ctx, store.RetryResetUpdate{
 		Observed: store.ObservedUpdate{
 			ID: stopping.ID, ExpectedRevision: stopping.Revision, State: domain.StateTerminated,
@@ -420,6 +422,7 @@ func (r *Reconciler) reconcileTerminated(
 	if err != nil {
 		return fmt.Errorf("mark sandbox terminated: %w", err)
 	}
+	testcrashpoint.Hit("delete.after-terminated-cas")
 	return nil
 }
 

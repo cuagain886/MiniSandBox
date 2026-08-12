@@ -177,6 +177,7 @@ func (s *SandboxService) Delete(
 			current.Revision,
 		)
 		if err == nil {
+			testcrashpoint.Hit("delete.desired-cas")
 			if !testcrashpoint.Drop("wake.delete") {
 				s.waker.Wake(updated.ID)
 			}
