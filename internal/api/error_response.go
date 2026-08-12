@@ -8,6 +8,7 @@ import (
 	"net/http"
 
 	"minisandbox/internal/domain"
+	"minisandbox/internal/observability/logging"
 	"minisandbox/pkg/protocol"
 )
 
@@ -41,6 +42,10 @@ func notImplemented(_ string) http.HandlerFunc {
 // Error() 文本。
 func writeError(w http.ResponseWriter, r *http.Request, err error) {
 	requestID := w.Header().Get(requestIDHeader)
+	if contextual, ok := logging.RequestIDFromContext(r.Context()); ok {
+		requestID = contextual.String()
+		w.Header().Set(requestIDHeader, requestID)
+	}
 	if requestID == "" {
 		requestID = r.Header.Get(requestIDHeader)
 		if requestID != "" {

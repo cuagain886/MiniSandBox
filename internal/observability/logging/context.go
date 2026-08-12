@@ -71,6 +71,12 @@ func ContextAttrs(ctx context.Context) []Attr {
 	return result
 }
 
+// RequestIDFromContext 返回 middleware 已验证的 request ID；缺失时返回 false。
+func RequestIDFromContext(ctx context.Context) (SafeID, bool) {
+	id := fieldsFromContext(ctx).requestID
+	return id, id.kind == IDKindRequest && id.value != ""
+}
+
 func fieldsFromContext(ctx context.Context) operationContext {
 	if ctx == nil {
 		return operationContext{}
