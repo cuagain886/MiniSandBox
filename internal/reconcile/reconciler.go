@@ -209,6 +209,9 @@ func (r *Reconciler) reconcileRunning(
 	sandbox domain.Sandbox,
 ) error {
 	if sandbox.ObservedState == domain.StateRunning {
+		if replacer, ok := r.runtime.(runtimeport.ComputeReplacer); ok {
+			return r.recoverRunning(ctx, sandbox, replacer)
+		}
 		if err := r.projectLease(sandbox); err != nil {
 			return r.recordFailure(ctx, sandbox, err, sandbox.RuntimeID, RetryOperationRecover)
 		}

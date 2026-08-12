@@ -20,3 +20,12 @@ type Runtime interface {
 	// ListManaged 枚举带有 MiniSandbox 管理标识的全部实际资源，用于重启恢复。
 	ListManaged(context.Context) ([]ActualSandbox, error)
 }
+
+// ComputeReplacer 是 Running 自动恢复可使用的唯一聚合替换端口。
+//
+// 实现必须保留已验证的 workspace volume 与 lease.json，只替换 main、可选 egress sidecar、
+// runner socket、bootstrap 和 execution 临时数据；禁止把该操作实现为完整 Delete。
+type ComputeReplacer interface {
+	// ReplaceCompute 先关闭并移除 main，再移除可选 sidecar，最后按当前权威规格重建 compute。
+	ReplaceCompute(context.Context, domain.Sandbox) (ActualSandbox, error)
+}
