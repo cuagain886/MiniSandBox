@@ -230,6 +230,17 @@ func startProductionWorker(
 		factory.Close()
 		return nil, err
 	}
+	safeLogger, err := logging.New(slog.Default())
+	if err != nil {
+		factory.Close()
+		return nil, err
+	}
+	operationLogger, err := reconcile.NewOperationLogger(safeLogger, reconcile.SystemClock{})
+	if err != nil {
+		factory.Close()
+		return nil, err
+	}
+	reconciler.SetOperationLogger(operationLogger)
 	leaseWriter, err := runtimeport.NewLeaseManifestWriter(paths.RunRoot)
 	if err != nil {
 		factory.Close()
@@ -292,6 +303,14 @@ func recoverProductionState(
 	if !ok {
 		return errors.New("sandbox store does not provide runtime anomaly repository")
 	}
+	safeLogger, err := logging.New(slog.Default())
+	if err != nil {
+		return err
+	}
+	operationLogger, err := reconcile.NewOperationLogger(safeLogger, reconcile.SystemClock{})
+	if err != nil {
+		return err
+	}
 	stages := reconcile.StartupRecoveryStages{}
 	stages.Recover = func(ctx context.Context, actual reconcile.ActualResourceInventory, scanStartedAt time.Time) error {
 		expected, err := expectations.RecoveryExpectation(ctx)
@@ -305,6 +324,7 @@ func recoverProductionState(
 		if err != nil {
 			return err
 		}
+		executor.SetOperationLogger(operationLogger)
 		return executor.Recover(ctx, actual, scanStartedAt)
 	}
 	stages.RecoverTTL = func(ctx context.Context) error {

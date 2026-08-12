@@ -101,12 +101,18 @@ func (c *StartupRecoveryCoordinator) Run(ctx context.Context) error {
 
 // InventoryRecoveryExecutor 执行纯 planner 产生的有限恢复动作，并隔离单项失败以继续处理其他资源。
 type InventoryRecoveryExecutor struct {
-	store       storeport.Store
-	anomalies   *RecoveryAnomalyExecutor
-	metadata    *MetadataRepairExecutor
-	orphans     *OrphanImportExecutor
-	wake        RecoveryWake
-	expectation DriftExpectation
+	store           storeport.Store
+	anomalies       *RecoveryAnomalyExecutor
+	metadata        *MetadataRepairExecutor
+	orphans         *OrphanImportExecutor
+	wake            RecoveryWake
+	expectation     DriftExpectation
+	operationLogger *OperationLogger
+}
+
+// SetOperationLogger 为每个 startup recovery plan 装配只读安全日志。
+func (e *InventoryRecoveryExecutor) SetOperationLogger(logger *OperationLogger) {
+	e.operationLogger = logger
 }
 
 // NewInventoryRecoveryExecutor 装配 Store/anomaly/import/wake 边界，trusted orphan 策略由显式开关控制。
@@ -157,6 +163,14 @@ func (e *InventoryRecoveryExecutor) Recover(ctx context.Context, inventory Actua
 	sort.Strings(ordered)
 	var failures error
 	if len(inventory.UnscopedAnomalies) != 0 {
+		if e.operationLogger != nil {
+			for _, anomaly := range inventory.UnscopedAnomalies {
+				snapshot := &ActualResourceSnapshot{Anomalies: []ActualAnomaly{anomaly}}
+				e.operationLogger.recoveryPlan(ctx, RecoveryPlan{
+					Action: RecoveryActionRecordAnomaly, Reason: recoveryPlanReasonActualAnomaly,
+				}, snapshot)
+			}
+		}
 		failures = errors.Join(failures, e.anomalies.RecordUnscoped(ctx, inventory.UnscopedAnomalies, scanStartedAt))
 	}
 	resolvedAt := time.Now().UTC()
@@ -175,22 +189,30 @@ func (e *InventoryRecoveryExecutor) Recover(ctx context.Context, inventory Actua
 			actualPointer = &copy
 		}
 		plan := PlanRecovery(storedPointer, actualPointer)
+		var actionErr error
+		var actionStarted time.Time
+		if e.operationLogger != nil {
+			e.operationLogger.recoveryPlan(ctx, plan, actualPointer)
+			actionStarted = e.operationLogger.clock.Now()
+		}
 		switch plan.Action {
 		case RecoveryActionNoOp:
 		case RecoveryActionWake:
 			_ = e.wake(plan.SandboxID)
 		case RecoveryActionRecordAnomaly:
 			if actualPointer != nil {
-				failures = errors.Join(failures, e.anomalies.Execute(ctx, plan, *actualPointer, scanStartedAt))
+				actionErr = e.anomalies.Execute(ctx, plan, *actualPointer, scanStartedAt)
 			}
 		case RecoveryActionRepairMetadata:
-			_, actionErr := e.metadata.Execute(ctx, plan, *actualPointer)
-			failures = errors.Join(failures, actionErr)
+			_, actionErr = e.metadata.Execute(ctx, plan, *actualPointer)
 		case RecoveryActionImport:
-			_, actionErr := e.orphans.Execute(ctx, plan, *actualPointer, e.expectation)
-			failures = errors.Join(failures, actionErr)
+			_, actionErr = e.orphans.Execute(ctx, plan, *actualPointer, e.expectation)
 		default:
-			failures = errors.Join(failures, fmt.Errorf("unknown recovery action %q", plan.Action))
+			actionErr = fmt.Errorf("unknown recovery action %q", plan.Action)
+		}
+		failures = errors.Join(failures, actionErr)
+		if e.operationLogger != nil {
+			e.operationLogger.recoveryResult(ctx, plan, actionStarted, actionErr)
 		}
 	}
 	return failures

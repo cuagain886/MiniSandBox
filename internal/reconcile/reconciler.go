@@ -33,19 +33,20 @@ const (
 
 // Reconciler 将单个 sandbox 的期望状态幂等收敛到 runtime 实际状态。
 type Reconciler struct {
-	store          store.Store
-	runtime        runtimeport.Runtime
-	probe          RunnerProbe
-	shutdown       RunnerShutdown
-	locks          *KeyedLock
-	clock          Clock
-	random         Random
-	retryMin       time.Duration
-	retryMax       time.Duration
-	createLimiter  runtimeport.Limiter
-	deleteLimiter  runtimeport.Limiter
-	availability   runtimeport.OperationAvailability
-	leaseProjector LeaseProjector
+	store           store.Store
+	runtime         runtimeport.Runtime
+	probe           RunnerProbe
+	shutdown        RunnerShutdown
+	locks           *KeyedLock
+	clock           Clock
+	random          Random
+	retryMin        time.Duration
+	retryMax        time.Duration
+	createLimiter   runtimeport.Limiter
+	deleteLimiter   runtimeport.Limiter
+	availability    runtimeport.OperationAvailability
+	leaseProjector  LeaseProjector
+	operationLogger *OperationLogger
 }
 
 // LeaseProjector 把 Store 当前租约幂等投影到受管 runtime directory。
@@ -90,6 +91,11 @@ func (r *Reconciler) SetLeaseProjector(projector LeaseProjector) {
 	r.leaseProjector = projector
 }
 
+// SetOperationLogger 为 worker 装配只读安全日志；必须在 worker 启动前调用。
+func (r *Reconciler) SetOperationLogger(logger *OperationLogger) {
+	r.operationLogger = logger
+}
+
 // NewWithRetry 创建使用显式时间、随机源和退避边界的状态收敛器。
 func NewWithRetry(s store.Store, r runtimeport.Runtime, probe RunnerProbe, clock Clock, random Random, retryMin, retryMax time.Duration) (*Reconciler, error) {
 	if clock == nil || random == nil || retryMin <= 0 || retryMax < retryMin {
@@ -132,7 +138,11 @@ func NewWithShutdownRetryAndLimits(s store.Store, r runtimeport.Runtime, probe R
 //
 // 同一 ID 先通过 keyed lock 串行化，再从 Store 重读最新 revision；内存 wake
 // 携带的旧 snapshot 从不参与状态决策。
-func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) error {
+func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) (resultErr error) {
+	if r.operationLogger != nil {
+		started := r.operationLogger.reconcileStart(ctx, sandboxID)
+		defer func() { r.operationLogger.reconcileResult(ctx, sandboxID, started, resultErr) }()
+	}
 	unlock, err := r.locks.LockContext(ctx, sandboxID)
 	if err != nil {
 		return err
@@ -482,15 +492,35 @@ func (r *Reconciler) recordFailure(
 			if errors.Is(updateErr, domain.ErrConflict) {
 				_, _ = r.store.Get(ctx, sandbox.ID)
 			}
+			if r.operationLogger != nil {
+				result := "persist_failure"
+				if errors.Is(updateErr, domain.ErrConflict) {
+					result = "cas_conflict"
+				}
+				r.operationLogger.retryDecision(ctx, sandbox.ID, operation, sandbox.RetryAttempt+1,
+					delay, classification.ErrorClass, result)
+			}
 			return errors.Join(failureErr, fmt.Errorf("schedule sandbox retry: %w", updateErr))
+		}
+		if r.operationLogger != nil {
+			r.operationLogger.retryDecision(ctx, sandbox.ID, operation, sandbox.RetryAttempt+1,
+				delay, classification.ErrorClass, "scheduled")
 		}
 		return failureErr
 	}
 	if decision.Action == RetryActionImmediateReread {
 		_, _ = r.store.Get(ctx, sandbox.ID)
+		if r.operationLogger != nil {
+			r.operationLogger.retryDecision(ctx, sandbox.ID, operation, sandbox.RetryAttempt, 0,
+				classification.ErrorClass, "reread")
+		}
 		return failureErr
 	}
 	if classification.ErrorClass == RetryErrorShutdown {
+		if r.operationLogger != nil {
+			r.operationLogger.retryDecision(ctx, sandbox.ID, operation, sandbox.RetryAttempt, 0,
+				classification.ErrorClass, "canceled")
+		}
 		return failureErr
 	}
 	_, updateErr := r.store.UpdateObserved(ctx, store.ObservedUpdate{
@@ -506,6 +536,10 @@ func (r *Reconciler) recordFailure(
 			"record sandbox failure: %w",
 			updateErr,
 		))
+	}
+	if r.operationLogger != nil {
+		r.operationLogger.retryDecision(ctx, sandbox.ID, operation, sandbox.RetryAttempt+1, 0,
+			classification.ErrorClass, "terminal")
 	}
 	return failureErr
 }
