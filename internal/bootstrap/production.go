@@ -59,8 +59,14 @@ func productionFactories() factories {
 			runtime runtimeport.Runtime, queue *reconcile.WakeQueue) (workerHandle, error) {
 			return startProductionWorkerWithMetrics(ctx, cfg, paths, sandboxStore, runtime, queue, reliabilityMetrics)
 		},
-		startMaintenance: startProductionMaintenance,
-		recover:          recoverProductionState,
+		startMaintenance: func(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime,
+			queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (workerHandle, error) {
+			return startProductionMaintenanceWithMetrics(ctx, cfg, sandboxStore, runtime, queue, readiness, reliabilityMetrics)
+		},
+		recover: func(ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
+			runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness) error {
+			return recoverProductionStateWithMetrics(ctx, cfg, paths, sandboxStore, runtime, queue, readiness, reliabilityMetrics)
+		},
 		startHTTP: func(cfg config.Config, build controlapi.BuildInfo, sandboxStore store.Store, runtime runtimeport.Runtime,
 			queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (httpHandle, error) {
 			return startProductionHTTPWithMetrics(cfg, build, sandboxStore, runtime, queue, readiness, reliabilityMetrics, executionMetrics)
@@ -72,6 +78,10 @@ const maxCandidateScanPages = 10_000
 
 // startProductionMaintenance 启动周期 candidate scanner 与幂等记录 GC。
 func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (workerHandle, error) {
+	return startProductionMaintenanceWithMetrics(ctx, cfg, sandboxStore, runtime, queue, readiness, nil)
+}
+
+func startProductionMaintenanceWithMetrics(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness, metrics *observabilitymetrics.ReliabilityMetrics) (workerHandle, error) {
 	ttlStore, ok := sandboxStore.(reconcile.TTLRecoveryStore)
 	if !ok {
 		return nil, errors.New("sandbox store does not provide TTL recovery")
@@ -85,6 +95,9 @@ func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxS
 	// coordinator 和 scheduler 必须共享同一 index；重建 coordinator 后再恢复，
 	// 且 Recover 返回前绝不启动 timer loop。
 	ttlExpiration = reconcile.NewTTLExpirationCoordinator(ttlStore, ttlScheduler, reconcile.SystemClock{}, queue.Wake)
+	if metrics != nil {
+		ttlExpiration.SetMetrics(metrics)
+	}
 	ttlRecovery, err := reconcile.NewTTLRecovery(ttlStore, ttlScheduler, ttlExpiration, cfg.Reconcile.PageSize, maxCandidateScanPages)
 	if err != nil {
 		return nil, err
@@ -321,6 +334,13 @@ func recoverProductionState(
 	queue *reconcile.WakeQueue,
 	readiness *controlapi.Readiness,
 ) error {
+	return recoverProductionStateWithMetrics(ctx, cfg, datadir.Paths{}, sandboxStore, runtime, queue, readiness, nil)
+}
+
+func recoverProductionStateWithMetrics(
+	ctx context.Context, cfg config.Config, _ datadir.Paths, sandboxStore store.Store, runtime runtimeport.Runtime,
+	queue *reconcile.WakeQueue, readiness *controlapi.Readiness, metrics *observabilitymetrics.ReliabilityMetrics,
+) error {
 	inventory, ok := runtime.(runtimeport.RecoveryInventory)
 	if !ok {
 		return errors.New("sandbox runtime does not provide complete recovery inventory")
@@ -359,6 +379,9 @@ func recoverProductionState(
 			return err
 		}
 		executor.SetOperationLogger(operationLogger)
+		if metrics != nil {
+			executor.SetMetrics(metrics)
+		}
 		return executor.Recover(ctx, actual, scanStartedAt)
 	}
 	stages.RecoverTTL = func(ctx context.Context) error {
@@ -371,6 +394,9 @@ func recoverProductionState(
 			_ = expiration.ExpireEntry(ctx, entry)
 		})
 		expiration = reconcile.NewTTLExpirationCoordinator(ttlStore, scheduler, reconcile.SystemClock{}, queue.Wake)
+		if metrics != nil {
+			expiration.SetMetrics(metrics)
+		}
 		recovery, err := reconcile.NewTTLRecovery(ttlStore, scheduler, expiration, cfg.Reconcile.PageSize, maxCandidateScanPages)
 		if err != nil {
 			return err

@@ -27,7 +27,14 @@ type TTLExpirationCoordinator struct {
 	validator *TTLDueValidator
 	index     TTLIndex
 	wake      TTLWake
+	metrics   TTLExpirationMetrics
 }
+
+// TTLExpirationMetrics 只在 expiry intent 首次成功提交后递增。
+type TTLExpirationMetrics interface{ ObserveLeaseExpired() }
+
+// SetMetrics 为到期协调器装配低基数计数端口。
+func (c *TTLExpirationCoordinator) SetMetrics(metrics TTLExpirationMetrics) { c.metrics = metrics }
 
 // NewTTLExpirationCoordinator 创建不直接访问 Runtime 的 TTL 到期协调器。
 func NewTTLExpirationCoordinator(store TTLExpirationStore, index TTLIndex, clock Clock, wake TTLWake) *TTLExpirationCoordinator {
@@ -51,6 +58,9 @@ func (c *TTLExpirationCoordinator) ExpireEntry(ctx context.Context, entry TTLHea
 			ExpectedExpiresAt: entry.ExpectedExpiresAt.UTC(), Now: validated.CheckedAt,
 		})
 		if err == nil {
+			if c.metrics != nil {
+				c.metrics.ObserveLeaseExpired()
+			}
 			c.index.Remove(updated.ID)
 			if c.wake != nil {
 				_ = c.wake(updated.ID)

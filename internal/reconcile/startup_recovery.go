@@ -108,11 +108,17 @@ type InventoryRecoveryExecutor struct {
 	wake            RecoveryWake
 	expectation     DriftExpectation
 	operationLogger *OperationLogger
+	metrics         interface{ ObserveOrphan(string) }
 }
 
 // SetOperationLogger 为每个 startup recovery plan 装配只读安全日志。
 func (e *InventoryRecoveryExecutor) SetOperationLogger(logger *OperationLogger) {
 	e.operationLogger = logger
+}
+
+// SetMetrics 为成功持久化的 anomaly observation 装配低基数计数端口。
+func (e *InventoryRecoveryExecutor) SetMetrics(metrics interface{ ObserveOrphan(string) }) {
+	e.metrics = metrics
 }
 
 // NewInventoryRecoveryExecutor 装配 Store/anomaly/import/wake 边界，trusted orphan 策略由显式开关控制。
@@ -171,7 +177,13 @@ func (e *InventoryRecoveryExecutor) Recover(ctx context.Context, inventory Actua
 				}, snapshot)
 			}
 		}
-		failures = errors.Join(failures, e.anomalies.RecordUnscoped(ctx, inventory.UnscopedAnomalies, scanStartedAt))
+		unscopedErr := e.anomalies.RecordUnscoped(ctx, inventory.UnscopedAnomalies, scanStartedAt)
+		if unscopedErr == nil && e.metrics != nil {
+			for _, anomaly := range inventory.UnscopedAnomalies {
+				e.metrics.ObserveOrphan(string(runtimeAnomalyClassification(anomaly)))
+			}
+		}
+		failures = errors.Join(failures, unscopedErr)
 	}
 	resolvedAt := time.Now().UTC()
 	_, resolveErr := FinalizeAnomalyScan(ctx, e.anomalies.repository, inventory,
@@ -202,6 +214,15 @@ func (e *InventoryRecoveryExecutor) Recover(ctx context.Context, inventory Actua
 		case RecoveryActionRecordAnomaly:
 			if actualPointer != nil {
 				actionErr = e.anomalies.Execute(ctx, plan, *actualPointer, scanStartedAt)
+				if actionErr == nil && e.metrics != nil {
+					anomalies := actualPointer.Anomalies
+					if len(anomalies) == 0 {
+						anomalies = []ActualAnomaly{{Code: ActualAnomalyResourceDamaged, Detail: "INCOMPLETE_BUNDLE"}}
+					}
+					for _, anomaly := range anomalies {
+						e.metrics.ObserveOrphan(string(runtimeAnomalyClassification(anomaly)))
+					}
+				}
 			}
 		case RecoveryActionRepairMetadata:
 			_, actionErr = e.metadata.Execute(ctx, plan, *actualPointer)
