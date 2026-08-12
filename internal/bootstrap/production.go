@@ -15,6 +15,7 @@ import (
 	"minisandbox/internal/datadir"
 	"minisandbox/internal/domain"
 	"minisandbox/internal/observability/logging"
+	observabilitymetrics "minisandbox/internal/observability/metrics"
 	"minisandbox/internal/reconcile"
 	"minisandbox/internal/runnerauth"
 	"minisandbox/internal/runnerbootstrap"
@@ -28,6 +29,15 @@ import (
 
 // productionFactories 返回只使用仓库真实 adapter 的启动依赖。
 func productionFactories() factories {
+	registry := observabilitymetrics.NewRegistry()
+	reliabilityMetrics, err := observabilitymetrics.NewReliabilityMetrics(registry)
+	if err != nil {
+		panic(err)
+	}
+	executionMetrics, err := observabilitymetrics.NewExecutionCounters(registry)
+	if err != nil {
+		panic(err)
+	}
 	return factories{
 		readiness: func() *controlapi.Readiness {
 			return &controlapi.Readiness{}
@@ -44,11 +54,17 @@ func productionFactories() factories {
 		artifacts: func() (dockerruntime.ArtifactProvider, error) {
 			return dockerruntime.NewEmbeddedArtifactProvider()
 		},
-		openRuntime:      openProductionRuntime,
-		startWorker:      startProductionWorker,
+		openRuntime: openProductionRuntime,
+		startWorker: func(ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
+			runtime runtimeport.Runtime, queue *reconcile.WakeQueue) (workerHandle, error) {
+			return startProductionWorkerWithMetrics(ctx, cfg, paths, sandboxStore, runtime, queue, reliabilityMetrics)
+		},
 		startMaintenance: startProductionMaintenance,
 		recover:          recoverProductionState,
-		startHTTP:        startProductionHTTP,
+		startHTTP: func(cfg config.Config, build controlapi.BuildInfo, sandboxStore store.Store, runtime runtimeport.Runtime,
+			queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (httpHandle, error) {
+			return startProductionHTTPWithMetrics(cfg, build, sandboxStore, runtime, queue, readiness, reliabilityMetrics, executionMetrics)
+		},
 	}
 }
 
@@ -209,6 +225,13 @@ func startProductionWorker(
 	runtime runtimeport.Runtime,
 	queue *reconcile.WakeQueue,
 ) (workerHandle, error) {
+	return startProductionWorkerWithMetrics(ctx, cfg, paths, sandboxStore, runtime, queue, nil)
+}
+
+func startProductionWorkerWithMetrics(
+	ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
+	runtime runtimeport.Runtime, queue *reconcile.WakeQueue, metrics *observabilitymetrics.ReliabilityMetrics,
+) (workerHandle, error) {
 	masterKey, err := runnerauth.LoadMasterKey(cfg.Security.RunnerMasterKeyFile)
 	if err != nil {
 		return nil, err
@@ -218,8 +241,16 @@ func startProductionWorker(
 	if err != nil {
 		return nil, err
 	}
+	var probe reconcile.RunnerProbe = factory
+	if metrics != nil {
+		probe, err = reconcile.NewMetricsRunnerProbe(factory, metrics)
+		if err != nil {
+			factory.Close()
+			return nil, err
+		}
+	}
 	reconciler, err := reconcile.NewWithShutdownRetryAndLimits(
-		sandboxStore, runtime, factory, factory,
+		sandboxStore, runtime, probe, factory,
 		reconcile.SystemClock{}, reconcile.CryptoRandom{}, cfg.Reconcile.RetryMin, cfg.Reconcile.RetryMax,
 		reconcile.OperationLimits{
 			MaxConcurrentCreates: cfg.Limits.MaxConcurrentCreates,
@@ -241,6 +272,9 @@ func startProductionWorker(
 		return nil, err
 	}
 	reconciler.SetOperationLogger(operationLogger)
+	if metrics != nil {
+		reconciler.SetMetrics(metrics)
+	}
 	leaseWriter, err := runtimeport.NewLeaseManifestWriter(paths.RunRoot)
 	if err != nil {
 		factory.Close()
@@ -376,6 +410,14 @@ func startProductionHTTP(
 	queue *reconcile.WakeQueue,
 	readiness *controlapi.Readiness,
 ) (httpHandle, error) {
+	return startProductionHTTPWithMetrics(cfg, build, sandboxStore, runtime, queue, readiness, nil, nil)
+}
+
+func startProductionHTTPWithMetrics(
+	cfg config.Config, build controlapi.BuildInfo, sandboxStore store.Store, runtime runtimeport.Runtime,
+	queue *reconcile.WakeQueue, readiness *controlapi.Readiness, reliabilityMetrics *observabilitymetrics.ReliabilityMetrics,
+	executionMetrics *observabilitymetrics.ExecutionCounters,
+) (httpHandle, error) {
 	lifecycleService := application.NewSandboxServiceWithCreatePolicy(
 		sandboxStore,
 		application.NewRandomIDGenerator(),
@@ -398,6 +440,13 @@ func startProductionHTTP(
 	lifecycle, err := application.NewLoggingSandboxService(lifecycleService, safeLogger, application.SystemClock{})
 	if err != nil {
 		return nil, err
+	}
+	var lifecycleAPI controlapi.LifecycleService = lifecycle
+	if reliabilityMetrics != nil {
+		lifecycleAPI, err = application.NewMetricsLifecycleService(lifecycle, reliabilityMetrics)
+		if err != nil {
+			return nil, err
+		}
 	}
 	masterKey, err := runnerauth.LoadMasterKey(cfg.Security.RunnerMasterKeyFile)
 	if err != nil {
@@ -428,13 +477,21 @@ func startProductionHTTP(
 		runnerFactory.Close()
 		return nil, err
 	}
+	var executionAPI controlapi.ExecutionService = execution
+	if executionMetrics != nil {
+		executionAPI, err = application.NewMetricsExecutionService(execution, executionMetrics)
+		if err != nil {
+			runnerFactory.Close()
+			return nil, err
+		}
+	}
 	server := &http.Server{
 		Addr: cfg.Server.ListenAddress,
 		Handler: controlapi.NewRouter(
 			build,
 			controlapi.RouterDependencies{
-				Lifecycle:       lifecycle,
-				Execution:       execution,
+				Lifecycle:       lifecycleAPI,
+				Execution:       executionAPI,
 				SSEWriteTimeout: cfg.Runner.SSEWriteTimeout,
 				Readiness:       readiness,
 			},

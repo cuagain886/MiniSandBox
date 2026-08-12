@@ -22,6 +22,25 @@ type OperationCounters struct {
 	docker    *prometheus.CounterVec
 }
 
+// ReliabilityMetrics 组合 P3-083 counters 与 P3-085 timing，使生产装配只注入一个窄对象。
+type ReliabilityMetrics struct {
+	*OperationCounters
+	*TimingMetrics
+}
+
+// NewReliabilityMetrics 在同一独立 registry 注册 reliability counter 与 timing collectors。
+func NewReliabilityMetrics(registry *Registry) (*ReliabilityMetrics, error) {
+	counters, err := NewOperationCounters(registry)
+	if err != nil {
+		return nil, err
+	}
+	timing, err := NewTimingMetrics(registry)
+	if err != nil {
+		return nil, err
+	}
+	return &ReliabilityMetrics{OperationCounters: counters, TimingMetrics: timing}, nil
+}
+
 // NewOperationCounters 构造并一次性注册全部 P3-083 collector；任一冲突都会整体返回错误。
 func NewOperationCounters(registry *Registry) (*OperationCounters, error) {
 	counters := &OperationCounters{

@@ -47,6 +47,17 @@ type Reconciler struct {
 	availability    runtimeport.OperationAvailability
 	leaseProjector  LeaseProjector
 	operationLogger *OperationLogger
+	metrics         ReconcileMetrics
+}
+
+// ReconcileMetrics 是 reconciler 依赖的低基数 attempt、retry 与 duration 观察端口。
+type ReconcileMetrics interface {
+	// ObserveReconcile 记录一次实际 attempt 的固定 operation/result。
+	ObserveReconcile(operation, result string)
+	// ObserveRetryScheduled 仅记录已成功持久化的新 retry。
+	ObserveRetryScheduled(operation, errorCode string)
+	// ObserveReconcileDuration 记录 attempt 的秒数。
+	ObserveReconcileDuration(operation string, seconds float64)
 }
 
 // LeaseProjector 把 Store 当前租约幂等投影到受管 runtime directory。
@@ -96,6 +107,9 @@ func (r *Reconciler) SetOperationLogger(logger *OperationLogger) {
 	r.operationLogger = logger
 }
 
+// SetMetrics 为 reconciler 装配只接收固定枚举的指标端口；必须在 worker 启动前调用。
+func (r *Reconciler) SetMetrics(metrics ReconcileMetrics) { r.metrics = metrics }
+
 // NewWithRetry 创建使用显式时间、随机源和退避边界的状态收敛器。
 func NewWithRetry(s store.Store, r runtimeport.Runtime, probe RunnerProbe, clock Clock, random Random, retryMin, retryMax time.Duration) (*Reconciler, error) {
 	if clock == nil || random == nil || retryMin <= 0 || retryMax < retryMin {
@@ -139,6 +153,21 @@ func NewWithShutdownRetryAndLimits(s store.Store, r runtimeport.Runtime, probe R
 // 同一 ID 先通过 keyed lock 串行化，再从 Store 重读最新 revision；内存 wake
 // 携带的旧 snapshot 从不参与状态决策。
 func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) (resultErr error) {
+	metricStarted := time.Now()
+	metricOperation := "recover"
+	if r.metrics != nil {
+		defer func() {
+			if errors.Is(resultErr, context.Canceled) || errors.Is(resultErr, domain.ErrConflict) || errors.Is(resultErr, domain.ErrLeaseConflict) {
+				return
+			}
+			result := "converged"
+			if resultErr != nil {
+				result = "error"
+			}
+			r.metrics.ObserveReconcile(metricOperation, result)
+			r.metrics.ObserveReconcileDuration(metricOperation, time.Since(metricStarted).Seconds())
+		}()
+	}
 	if r.operationLogger != nil {
 		started := r.operationLogger.reconcileStart(ctx, sandboxID)
 		defer func() { r.operationLogger.reconcileResult(ctx, sandboxID, started, resultErr) }()
@@ -152,6 +181,13 @@ func (r *Reconciler) Reconcile(ctx context.Context, sandboxID string) (resultErr
 	sandbox, err := r.store.Get(ctx, sandboxID)
 	if err != nil {
 		return fmt.Errorf("read sandbox for reconcile: %w", err)
+	}
+	if sandbox.DesiredState == domain.DesiredTerminated {
+		metricOperation = "delete"
+	} else if sandbox.ObservedState == domain.StateRunning {
+		metricOperation = "health"
+	} else {
+		metricOperation = "create"
 	}
 	sandbox, err = r.expireLeaseIfDue(ctx, sandbox)
 	if err != nil {
@@ -506,6 +542,9 @@ func (r *Reconciler) recordFailure(
 			r.operationLogger.retryDecision(ctx, sandbox.ID, operation, sandbox.RetryAttempt+1,
 				delay, classification.ErrorClass, "scheduled")
 		}
+		if r.metrics != nil {
+			r.metrics.ObserveRetryScheduled(string(operation), retryMetricErrorCode(failure.Reason))
+		}
 		return failureErr
 	}
 	if decision.Action == RetryActionImmediateReread {
@@ -542,6 +581,19 @@ func (r *Reconciler) recordFailure(
 			classification.ErrorClass, "terminal")
 	}
 	return failureErr
+}
+
+func retryMetricErrorCode(reason string) string {
+	switch reason {
+	case runtimeport.FailureReasonCleanupPending:
+		return "cleanup_pending"
+	case domain.SandboxReasonRunnerUnhealthy:
+		return "runner_unhealthy"
+	case runtimeport.FailureReasonRuntimeUnavailable:
+		return "runtime_unavailable"
+	default:
+		return "internal_error"
+	}
 }
 
 // cleanupPendingFailure 强制把未完成的资源删除映射为可重试清理状态。
