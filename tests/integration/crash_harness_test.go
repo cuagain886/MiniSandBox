@@ -69,10 +69,11 @@ func (h *dockerHarness) writeCrashConfig(t *testing.T, address string) (string, 
 	return configPath, key
 }
 
-func startCrashSandboxd(t *testing.T, binary, configPath, address, crashpoint, socket string, key runnerauth.MasterKey, runRoot string) *crashSandboxd {
+func startCrashSandboxd(t *testing.T, binary, configPath, address, crashpoint, socket string, key runnerauth.MasterKey, runRoot string, extraEnv ...string) *crashSandboxd {
 	t.Helper()
 	command := exec.Command(binary, "-config", configPath)
 	command.Env = append(os.Environ(), "MINISANDBOX_TEST_CRASHPOINT="+crashpoint, "MINISANDBOX_TEST_CRASHPOINT_SOCKET="+socket)
+	command.Env = append(command.Env, extraEnv...)
 	if err := command.Start(); err != nil {
 		t.Fatalf("start crash sandboxd: %v", err)
 	}
@@ -93,6 +94,24 @@ func (s *crashSandboxd) kill(t *testing.T) {
 		}
 	case <-time.After(10 * time.Second):
 		t.Fatal("SIGKILL sandboxd timed out")
+	}
+}
+
+func (s *crashSandboxd) stop(t *testing.T) {
+	t.Helper()
+	if s.command.ProcessState != nil {
+		return
+	}
+	if err := s.command.Process.Signal(os.Interrupt); err != nil {
+		t.Fatalf("stop sandboxd: %v", err)
+	}
+	select {
+	case err := <-s.done:
+		if err != nil {
+			t.Fatalf("sandboxd shutdown: %v", err)
+		}
+	case <-time.After(15 * time.Second):
+		t.Fatal("sandboxd shutdown timed out")
 	}
 }
 

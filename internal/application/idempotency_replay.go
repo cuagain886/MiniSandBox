@@ -6,6 +6,7 @@ import (
 
 	"minisandbox/internal/domain"
 	storeport "minisandbox/internal/store"
+	"minisandbox/internal/testcrashpoint"
 )
 
 // IdempotentCreateOutcome 是 application 向后续 HTTP adapter 提供的精确创建结果。
@@ -35,7 +36,9 @@ func (s *SandboxService) CommitIdempotentCreate(
 		return IdempotentCreateOutcome{}, fmt.Errorf("commit idempotent sandbox creation: %w", err)
 	}
 	if !result.Replayed && s.waker != nil {
-		s.waker.Wake(result.Sandbox.ID)
+		if !testcrashpoint.Drop("wake.create") {
+			s.waker.Wake(result.Sandbox.ID)
+		}
 	}
 	return IdempotentCreateOutcome{
 		SandboxID:  result.Sandbox.ID,
@@ -63,7 +66,9 @@ func (s *SandboxService) CommitNonIdempotentCreate(
 		return IdempotentCreateOutcome{}, fmt.Errorf("commit non-idempotent sandbox creation: %w", err)
 	}
 	if s.waker != nil {
-		s.waker.Wake(created.ID)
+		if !testcrashpoint.Drop("wake.create") {
+			s.waker.Wake(created.ID)
+		}
 	}
 	return IdempotentCreateOutcome{
 		SandboxID:  created.ID,

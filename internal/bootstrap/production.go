@@ -26,6 +26,7 @@ import (
 	dockerruntime "minisandbox/internal/runtime/docker"
 	"minisandbox/internal/store"
 	sqlitestore "minisandbox/internal/store/sqlite"
+	"minisandbox/internal/testcrashpoint"
 )
 
 // productionFactories 返回只使用仓库真实 adapter 的启动依赖。
@@ -132,6 +133,9 @@ func startProductionMaintenanceWithMetricsAndGauges(ctx context.Context, cfg con
 		return nil, err
 	}
 	scanner, err := reconcile.NewCandidateScanner(sweeper, func(_ context.Context, id string) error {
+		if testcrashpoint.Drop("scanner.wake") {
+			return errors.New("test scanner wake dropped")
+		}
 		queue.Wake(id)
 		return nil
 	})

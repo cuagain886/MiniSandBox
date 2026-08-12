@@ -8,6 +8,7 @@ import (
 
 	"minisandbox/internal/domain"
 	"minisandbox/internal/store"
+	"minisandbox/internal/testcrashpoint"
 )
 
 const (
@@ -133,7 +134,9 @@ func (s *SandboxService) Create(
 	}
 	// Wake 只能出现在持久化成功之后；它没有返回值，防止队列关闭把已经落库
 	// 的创建意图改写为客户端失败并诱发重复创建。
-	s.waker.Wake(sandbox.ID)
+	if !testcrashpoint.Drop("wake.create") {
+		s.waker.Wake(sandbox.ID)
+	}
 	return sandbox, nil
 }
 
@@ -174,7 +177,9 @@ func (s *SandboxService) Delete(
 			current.Revision,
 		)
 		if err == nil {
-			s.waker.Wake(updated.ID)
+			if !testcrashpoint.Drop("wake.delete") {
+				s.waker.Wake(updated.ID)
+			}
 			return updated, nil
 		}
 		if !errors.Is(err, domain.ErrConflict) || attempt == 1 {
