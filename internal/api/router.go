@@ -54,6 +54,10 @@ type RouterDependencies struct {
 	SSEWriteTimeout time.Duration
 	// Readiness 保存启动依赖的并发安全就绪状态；nil 等价于全部未就绪。
 	Readiness *Readiness
+	// Metrics 非 nil 时注册固定 GET /metrics；调用方必须已包装 admin 鉴权。
+	Metrics http.Handler
+	// Diagnostics 非 nil 时注册固定 GET /v1/admin/diagnostics；调用方必须已包装 admin 鉴权。
+	Diagnostics http.Handler
 }
 
 // NewRouter 创建 sandboxd 的根 HTTP handler，并注册中间件与全部公开路由。
@@ -80,6 +84,12 @@ func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler
 	mux.HandleFunc("GET /readyz", readinessHandler(deps.Readiness))
 	registerLifecycleRoutes(mux, deps.Lifecycle)
 	registerExecutionRoutes(mux, deps.Execution, deps.SSEWriteTimeout)
+	if deps.Metrics != nil {
+		mux.Handle("GET /metrics", deps.Metrics)
+	}
+	if deps.Diagnostics != nil {
+		mux.Handle("GET /v1/admin/diagnostics", deps.Diagnostics)
+	}
 	return requestIDMiddleware(mux)
 }
 

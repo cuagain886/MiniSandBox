@@ -21,6 +21,11 @@ type DiagnosticsRuntime interface {
 	Diagnostics(context.Context) (RuntimeDiagnostics, error)
 }
 
+// DiagnosticsRunner 是 runner 聚合健康信息的有界只读端口。
+type DiagnosticsRunner interface {
+	Diagnostics(context.Context) (RunnerDiagnostics, error)
+}
+
 // DiagnosticsScheduler 是内存 queue/worker 安全摘要端口。
 type DiagnosticsScheduler interface{ Diagnostics() SchedulerDiagnostics }
 
@@ -29,6 +34,12 @@ type RuntimeDiagnostics struct {
 	ManagedSandboxes  int `json:"managed_sandboxes"`
 	OutboundSandboxes int `json:"outbound_sandboxes"`
 	DriftedSandboxes  int `json:"drifted_sandboxes"`
+}
+
+// RunnerDiagnostics 只包含 runner 聚合可用性计数，不包含 sandbox 身份、socket 或错误详情。
+type RunnerDiagnostics struct {
+	Ready       int `json:"ready"`
+	Unavailable int `json:"unavailable"`
 }
 
 // SchedulerDiagnostics 只包含 reconcile queue 与 worker 当前计数。
@@ -49,6 +60,7 @@ type DiagnosticsSnapshot struct {
 	GeneratedAt time.Time          `json:"generated_at"`
 	Store       DiagnosticsSection `json:"store"`
 	Runtime     DiagnosticsSection `json:"runtime"`
+	Runner      DiagnosticsSection `json:"runner"`
 	Scheduler   DiagnosticsSection `json:"scheduler"`
 	Anomalies   DiagnosticsSection `json:"anomalies"`
 }
@@ -57,27 +69,47 @@ type DiagnosticsSnapshot struct {
 type DiagnosticsService struct {
 	store     DiagnosticsStore
 	runtime   DiagnosticsRuntime
+	runner    DiagnosticsRunner
 	scheduler DiagnosticsScheduler
 	timeout   time.Duration
 	now       func() time.Time
 }
 
 // NewDiagnosticsService 创建每 section 使用独立 timeout 的只读服务。
-func NewDiagnosticsService(store DiagnosticsStore, runtime DiagnosticsRuntime, scheduler DiagnosticsScheduler, timeout time.Duration, now func() time.Time) (*DiagnosticsService, error) {
+func NewDiagnosticsService(store DiagnosticsStore, runtime DiagnosticsRuntime, scheduler DiagnosticsScheduler, timeout time.Duration, now func() time.Time, runner ...DiagnosticsRunner) (*DiagnosticsService, error) {
 	if store == nil || runtime == nil || scheduler == nil || timeout <= 0 || now == nil {
 		return nil, fmt.Errorf("diagnostics dependencies: %w", domain.ErrInvalid)
 	}
-	return &DiagnosticsService{store: store, runtime: runtime, scheduler: scheduler, timeout: timeout, now: now}, nil
+	var runnerPort DiagnosticsRunner
+	if len(runner) > 0 {
+		runnerPort = runner[0]
+	}
+	return &DiagnosticsService{store: store, runtime: runtime, runner: runnerPort, scheduler: scheduler, timeout: timeout, now: now}, nil
 }
 
 // Snapshot 聚合固定 allowlist 字段；部分失败不会阻断其他 section。
 func (s *DiagnosticsService) Snapshot(ctx context.Context) DiagnosticsSnapshot {
-	result := DiagnosticsSnapshot{GeneratedAt: s.now().UTC(), Store: unavailableSection(), Runtime: unavailableSection(), Scheduler: availableSection(), Anomalies: unavailableSection()}
+	result := DiagnosticsSnapshot{GeneratedAt: s.now().UTC(), Store: unavailableSection(), Runtime: unavailableSection(), Runner: unavailableSection(), Scheduler: availableSection(), Anomalies: unavailableSection()}
 	scheduler := s.scheduler.Diagnostics()
 	result.Scheduler.Counts = map[string]int{"queue_depth": nonNegativeInt(scheduler.QueueDepth), "active_workers": nonNegativeInt(scheduler.ActiveWorkers)}
 	var wait sync.WaitGroup
 	var mu sync.Mutex
 	wait.Add(3)
+	if s.runner != nil {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			sectionCtx, cancel := context.WithTimeout(ctx, s.timeout)
+			defer cancel()
+			runner, err := s.runner.Diagnostics(sectionCtx)
+			if err != nil {
+				return
+			}
+			mu.Lock()
+			result.Runner = DiagnosticsSection{Status: "available", Counts: map[string]int{"ready": nonNegativeInt(runner.Ready), "unavailable": nonNegativeInt(runner.Unavailable)}}
+			mu.Unlock()
+		}()
+	}
 	go func() {
 		defer wait.Done()
 		sectionCtx, cancel := context.WithTimeout(ctx, s.timeout)

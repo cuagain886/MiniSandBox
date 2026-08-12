@@ -29,6 +29,9 @@ func (f *diagnosticsFake) ListActiveRuntimeAnomalies(context.Context) ([]storepo
 func (f *diagnosticsFake) Diagnostics(context.Context) (RuntimeDiagnostics, error) {
 	return RuntimeDiagnostics{ManagedSandboxes: 2, OutboundSandboxes: 1}, f.runtimeErr
 }
+func (f *diagnosticsFake) RunnerDiagnostics(context.Context) (RunnerDiagnostics, error) {
+	return RunnerDiagnostics{Ready: 1}, nil
+}
 func (f *diagnosticsFake) DiagnosticsScheduler() SchedulerDiagnostics { return f.scheduler }
 
 type diagnosticsSchedulerFake struct{ value SchedulerDiagnostics }
@@ -61,5 +64,28 @@ func TestDiagnosticsSnapshotDoesNotMutateObservedState(t *testing.T) {
 	_ = service.Snapshot(context.Background())
 	if fake.revision != 7 {
 		t.Fatalf("revision changed: %d", fake.revision)
+	}
+}
+
+type diagnosticsRunnerFake struct{ err error }
+
+func (f diagnosticsRunnerFake) Diagnostics(context.Context) (RunnerDiagnostics, error) {
+	return RunnerDiagnostics{Ready: 2, Unavailable: 1}, f.err
+}
+
+// TestDiagnosticsSnapshotIncludesIndependentRunnerSection 验证 runner 聚合故障不会污染其他只读 section。
+func TestDiagnosticsSnapshotIncludesIndependentRunnerSection(t *testing.T) {
+	fake := &diagnosticsFake{}
+	runner := diagnosticsRunnerFake{}
+	service, _ := NewDiagnosticsService(fake, fake, diagnosticsSchedulerFake{}, time.Second, time.Now, runner)
+	snapshot := service.Snapshot(context.Background())
+	if snapshot.Runner.Status != "available" || snapshot.Runner.Counts["ready"] != 2 || snapshot.Runner.Counts["unavailable"] != 1 {
+		t.Fatalf("runner section: %#v", snapshot.Runner)
+	}
+	runner.err = errors.New("runner socket path secret")
+	service, _ = NewDiagnosticsService(fake, fake, diagnosticsSchedulerFake{}, time.Second, time.Now, runner)
+	snapshot = service.Snapshot(context.Background())
+	if snapshot.Runner.Status != "unavailable" || snapshot.Store.Status != "available" {
+		t.Fatalf("partial runner failure: %#v", snapshot)
 	}
 }

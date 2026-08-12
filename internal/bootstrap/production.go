@@ -9,6 +9,7 @@ import (
 	"sync"
 	"time"
 
+	"minisandbox/internal/adminauth"
 	controlapi "minisandbox/internal/api"
 	"minisandbox/internal/application"
 	"minisandbox/internal/config"
@@ -38,6 +39,10 @@ func productionFactories() factories {
 	if err != nil {
 		panic(err)
 	}
+	snapshotGauges, err := observabilitymetrics.NewSnapshotGauges(registry, time.Now)
+	if err != nil {
+		panic(err)
+	}
 	return factories{
 		readiness: func() *controlapi.Readiness {
 			return &controlapi.Readiness{}
@@ -59,11 +64,11 @@ func productionFactories() factories {
 		},
 		startWorker: func(ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
 			runtime runtimeport.Runtime, queue *reconcile.WakeQueue) (workerHandle, error) {
-			return startProductionWorkerWithMetrics(ctx, cfg, paths, sandboxStore, runtime, queue, reliabilityMetrics)
+			return startProductionWorkerWithMetricsAndGauges(ctx, cfg, paths, sandboxStore, runtime, queue, reliabilityMetrics, snapshotGauges)
 		},
 		startMaintenance: func(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime,
 			queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (workerHandle, error) {
-			return startProductionMaintenanceWithMetrics(ctx, cfg, sandboxStore, runtime, queue, readiness, reliabilityMetrics)
+			return startProductionMaintenanceWithMetricsAndGauges(ctx, cfg, sandboxStore, runtime, queue, readiness, reliabilityMetrics, snapshotGauges)
 		},
 		recover: func(ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
 			runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness) error {
@@ -71,7 +76,7 @@ func productionFactories() factories {
 		},
 		startHTTP: func(cfg config.Config, build controlapi.BuildInfo, sandboxStore store.Store, runtime runtimeport.Runtime,
 			queue *reconcile.WakeQueue, readiness *controlapi.Readiness) (httpHandle, error) {
-			return startProductionHTTPWithMetrics(cfg, build, sandboxStore, runtime, queue, readiness, reliabilityMetrics, executionMetrics)
+			return startProductionHTTPWithAdmin(cfg, build, sandboxStore, runtime, queue, readiness, reliabilityMetrics, executionMetrics, registry, snapshotGauges)
 		},
 	}
 }
@@ -84,6 +89,18 @@ func startProductionMaintenance(ctx context.Context, cfg config.Config, sandboxS
 }
 
 func startProductionMaintenanceWithMetrics(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness, metrics *observabilitymetrics.ReliabilityMetrics) (workerHandle, error) {
+	return startProductionMaintenanceWithMetricsAndGauges(ctx, cfg, sandboxStore, runtime, queue, readiness, metrics, nil)
+}
+
+func startProductionMaintenanceWithMetricsAndGauges(ctx context.Context, cfg config.Config, sandboxStore store.Store, runtime runtimeport.Runtime, queue *reconcile.WakeQueue, readiness *controlapi.Readiness, metrics *observabilitymetrics.ReliabilityMetrics, gauges *observabilitymetrics.SnapshotGauges) (workerHandle, error) {
+	var snapshotSource observabilitymetrics.SnapshotSource
+	if gauges != nil {
+		var ok bool
+		snapshotSource, ok = sandboxStore.(observabilitymetrics.SnapshotSource)
+		if !ok {
+			return nil, errors.New("sandbox store does not provide metrics snapshots")
+		}
+	}
 	ttlStore, ok := sandboxStore.(reconcile.TTLRecoveryStore)
 	if !ok {
 		return nil, errors.New("sandbox store does not provide TTL recovery")
@@ -163,11 +180,31 @@ func startProductionMaintenanceWithMetrics(ctx context.Context, cfg config.Confi
 	go func() {
 		defer close(handle.done)
 		var wait sync.WaitGroup
-		wait.Add(4)
+		workers := 4
+		if gauges != nil {
+			workers++
+		}
+		wait.Add(workers)
 		go func() { defer wait.Done(); ttlScheduler.Run(maintenanceCtx) }()
 		go func() { defer wait.Done(); loop.Run(maintenanceCtx) }()
 		go func() { defer wait.Done(); gc.Run(maintenanceCtx) }()
 		go func() { defer wait.Done(); health.Run(maintenanceCtx) }()
+		if gauges != nil {
+			go func() {
+				defer wait.Done()
+				ticker := time.NewTicker(cfg.Reconcile.Interval)
+				defer ticker.Stop()
+				for {
+					gauges.UpdateQueueDepth(queue.Len())
+					_ = gauges.SampleStore(maintenanceCtx, snapshotSource, min(2*time.Second, cfg.Reconcile.Interval), 100000)
+					select {
+					case <-maintenanceCtx.Done():
+						return
+					case <-ticker.C:
+					}
+				}
+			}()
+		}
 		wait.Wait()
 	}()
 	return handle, nil
@@ -255,6 +292,14 @@ func startProductionWorkerWithMetrics(
 	ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
 	runtime runtimeport.Runtime, queue *reconcile.WakeQueue, metrics *observabilitymetrics.ReliabilityMetrics,
 ) (workerHandle, error) {
+	return startProductionWorkerWithMetricsAndGauges(ctx, cfg, paths, sandboxStore, runtime, queue, metrics, nil)
+}
+
+func startProductionWorkerWithMetricsAndGauges(
+	ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
+	runtime runtimeport.Runtime, queue *reconcile.WakeQueue, metrics *observabilitymetrics.ReliabilityMetrics,
+	gauges *observabilitymetrics.SnapshotGauges,
+) (workerHandle, error) {
 	masterKey, err := runnerauth.LoadMasterKey(cfg.Security.RunnerMasterKeyFile)
 	if err != nil {
 		return nil, err
@@ -304,11 +349,20 @@ func startProductionWorkerWithMetrics(
 		return nil, err
 	}
 	reconciler.SetLeaseProjector(leaseWriter)
+	reconcileTask := reconciler.Reconcile
+	if gauges != nil {
+		reconcileTask = func(ctx context.Context, sandboxID string) error {
+			gauges.UpdateQueueDepth(queue.Len())
+			gauges.WorkerStarted()
+			defer gauges.WorkerFinished()
+			return reconciler.Reconcile(ctx, sandboxID)
+		}
+	}
 	worker, err := reconcile.NewWorkerPool(
 		queue,
 		cfg.Reconcile.MaxConcurrent,
 		cfg.Reconcile.Timeout,
-		reconciler.Reconcile,
+		reconcileTask,
 		func(err error) {
 			failure := runtimeport.ClassifyError(err)
 			slog.Warn(
@@ -454,6 +508,12 @@ func startProductionHTTPWithMetrics(
 	queue *reconcile.WakeQueue, readiness *controlapi.Readiness, reliabilityMetrics *observabilitymetrics.ReliabilityMetrics,
 	executionMetrics *observabilitymetrics.ExecutionCounters,
 ) (httpHandle, error) {
+	return startProductionHTTPWithAdmin(cfg, build, sandboxStore, runtime, queue, readiness, reliabilityMetrics, executionMetrics, nil, nil)
+}
+
+func startProductionHTTPWithAdmin(cfg config.Config, build controlapi.BuildInfo, sandboxStore store.Store, runtime runtimeport.Runtime,
+	queue *reconcile.WakeQueue, readiness *controlapi.Readiness, reliabilityMetrics *observabilitymetrics.ReliabilityMetrics,
+	executionMetrics *observabilitymetrics.ExecutionCounters, registry *observabilitymetrics.Registry, gauges *observabilitymetrics.SnapshotGauges) (httpHandle, error) {
 	lifecycleService := application.NewSandboxServiceWithCreatePolicy(
 		sandboxStore,
 		application.NewRandomIDGenerator(),
@@ -521,17 +581,34 @@ func startProductionHTTPWithMetrics(
 			return nil, err
 		}
 	}
+	deps := controlapi.RouterDependencies{Lifecycle: lifecycleAPI, Execution: executionAPI, SSEWriteTimeout: cfg.Runner.SSEWriteTimeout, Readiness: readiness}
+	if cfg.Admin.Enabled {
+		token, loadErr := adminauth.LoadToken(cfg.Admin.TokenFile)
+		if loadErr != nil {
+			runnerFactory.Close()
+			return nil, loadErr
+		}
+		authenticate := observabilitymetrics.AuthMiddleware(token.Middleware)
+		if registry == nil {
+			runnerFactory.Close()
+			return nil, errors.New("metrics registry is not configured")
+		}
+		deps.Metrics = observabilitymetrics.NewHandler(registry.Gatherer(), authenticate, min(5*time.Second, cfg.Server.ShutdownTimeout), 2)
+		diagnosticsStore, ok := sandboxStore.(application.DiagnosticsStore)
+		if !ok {
+			runnerFactory.Close()
+			return nil, errors.New("sandbox store does not provide diagnostics snapshots")
+		}
+		diagnostics, diagnosticsErr := application.NewDiagnosticsService(diagnosticsStore, runtimeDiagnosticsAdapter{runtime: runtime}, schedulerDiagnosticsAdapter{queue: queue, gauges: gauges}, min(2*time.Second, cfg.Server.ShutdownTimeout), time.Now, runnerDiagnosticsAdapter{store: diagnosticsStore, factory: runnerFactory})
+		if diagnosticsErr != nil {
+			runnerFactory.Close()
+			return nil, diagnosticsErr
+		}
+		deps.Diagnostics = token.Middleware(controlapi.NewDiagnosticsHandler(diagnostics))
+	}
 	server := &http.Server{
-		Addr: cfg.Server.ListenAddress,
-		Handler: controlapi.NewRouter(
-			build,
-			controlapi.RouterDependencies{
-				Lifecycle:       lifecycleAPI,
-				Execution:       executionAPI,
-				SSEWriteTimeout: cfg.Runner.SSEWriteTimeout,
-				Readiness:       readiness,
-			},
-		),
+		Addr:              cfg.Server.ListenAddress,
+		Handler:           controlapi.NewRouter(build, deps),
 		ReadHeaderTimeout: cfg.Server.ShutdownTimeout,
 	}
 	listener, err := net.Listen("tcp", cfg.Server.ListenAddress)
@@ -553,6 +630,64 @@ func startProductionHTTPWithMetrics(
 		close(handle.done)
 	}()
 	return handle, nil
+}
+
+type runtimeDiagnosticsAdapter struct{ runtime runtimeport.Runtime }
+
+func (a runtimeDiagnosticsAdapter) Diagnostics(ctx context.Context) (application.RuntimeDiagnostics, error) {
+	inventory, ok := a.runtime.(runtimeport.RecoveryInventory)
+	if !ok {
+		return application.RuntimeDiagnostics{}, errors.New("runtime inventory unavailable")
+	}
+	containers, err := inventory.InventoryManagedContainers(ctx)
+	if err != nil {
+		return application.RuntimeDiagnostics{}, err
+	}
+	seen, outbound := map[string]struct{}{}, map[string]struct{}{}
+	for _, item := range containers {
+		seen[item.SandboxID] = struct{}{}
+		if item.Role == runtimeport.ContainerRoleEgress {
+			outbound[item.SandboxID] = struct{}{}
+		}
+	}
+	return application.RuntimeDiagnostics{ManagedSandboxes: len(seen), OutboundSandboxes: len(outbound)}, nil
+}
+
+type runnerDiagnosticsAdapter struct {
+	store   application.DiagnosticsStore
+	factory *runnerclient.Factory
+}
+
+func (a runnerDiagnosticsAdapter) Diagnostics(ctx context.Context) (application.RunnerDiagnostics, error) {
+	records, err := a.store.ListAll(ctx)
+	if err != nil {
+		return application.RunnerDiagnostics{}, err
+	}
+	result := application.RunnerDiagnostics{}
+	for _, record := range records {
+		if record.ObservedState != domain.StateRunning {
+			continue
+		}
+		if err := a.factory.Probe(ctx, record.ID, runnerbootstrap.CurrentProtocolVersion); err != nil {
+			result.Unavailable++
+			continue
+		}
+		result.Ready++
+	}
+	return result, nil
+}
+
+type schedulerDiagnosticsAdapter struct {
+	queue  *reconcile.WakeQueue
+	gauges *observabilitymetrics.SnapshotGauges
+}
+
+func (a schedulerDiagnosticsAdapter) Diagnostics() application.SchedulerDiagnostics {
+	if a.gauges != nil {
+		queueDepth, activeWorkers := a.gauges.SchedulerSnapshot()
+		return application.SchedulerDiagnostics{QueueDepth: queueDepth, ActiveWorkers: activeWorkers}
+	}
+	return application.SchedulerDiagnostics{QueueDepth: a.queue.Len()}
 }
 
 // outboundExecutionAdmission 在每次创建 outbound execution 前，把 runner 自报的 netns

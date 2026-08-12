@@ -89,6 +89,35 @@ func (g *SnapshotGauges) UpdateScheduler(queueDepth, activeWorkers int) {
 	g.workers.Store(int64(activeWorkers))
 }
 
+// UpdateQueueDepth 原子发布当前待处理队列深度；负值按零处理。
+func (g *SnapshotGauges) UpdateQueueDepth(queueDepth int) {
+	if queueDepth < 0 {
+		queueDepth = 0
+	}
+	g.queue.Store(int64(queueDepth))
+}
+
+// WorkerStarted 原子记录一个 reconcile worker 开始处理任务。
+func (g *SnapshotGauges) WorkerStarted() { g.workers.Add(1) }
+
+// WorkerFinished 原子记录一个 reconcile worker 完成任务，且不会把计数降为负数。
+func (g *SnapshotGauges) WorkerFinished() {
+	for {
+		current := g.workers.Load()
+		if current <= 0 || g.workers.CompareAndSwap(current, current-1) {
+			return
+		}
+	}
+}
+
+// SchedulerSnapshot 返回 diagnostics 可安全读取的内存计数，不触发 Store I/O。
+func (g *SnapshotGauges) SchedulerSnapshot() (queueDepth, activeWorkers int) {
+	if g == nil {
+		return 0, 0
+	}
+	return int(g.queue.Load()), int(g.workers.Load())
+}
+
 // SampleStore 在独立 timeout 内生成完整快照；失败或超限保留旧值。
 func (g *SnapshotGauges) SampleStore(ctx context.Context, source SnapshotSource, timeout time.Duration, maxRows int) error {
 	if source == nil || timeout <= 0 || maxRows <= 0 {
