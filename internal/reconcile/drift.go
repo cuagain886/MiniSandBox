@@ -143,12 +143,18 @@ func sameDriftSet(actual []string, expected ...string) bool {
 	for _, value := range expected {
 		wanted[strings.TrimPrefix(strings.ToUpper(value), "CAP_")] = struct{}{}
 	}
+	seen := make(map[string]struct{}, len(actual))
 	for _, value := range actual {
-		if _, ok := wanted[strings.TrimPrefix(strings.ToUpper(value), "CAP_")]; !ok {
+		normalized := strings.TrimPrefix(strings.ToUpper(value), "CAP_")
+		if _, ok := wanted[normalized]; !ok {
 			return false
 		}
+		if _, duplicate := seen[normalized]; duplicate {
+			return false
+		}
+		seen[normalized] = struct{}{}
 	}
-	return true
+	return len(seen) == len(wanted)
 }
 
 const driftRecordCASAttempts = 3

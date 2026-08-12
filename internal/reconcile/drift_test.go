@@ -91,6 +91,15 @@ func TestCompareSandboxDriftOutboundProfile(t *testing.T) {
 	}
 }
 
+// TestCompareSandboxDriftRejectsDuplicateCapabilities 验证等长重复集合不能掩盖缺失 capability。
+func TestCompareSandboxDriftRejectsDuplicateCapabilities(t *testing.T) {
+	stored, actual, expected := driftFixture(false)
+	actual.Main.CapAdd = []string{"CHOWN", "CHOWN", "SETGID", "KILL"}
+	if got := CompareSandboxDrift(stored, actual, expected); !containsDrift(got, DriftPrivilegeProfile) {
+		t.Fatalf("duplicate capability accepted: %v", got)
+	}
+}
+
 type driftTestStore struct {
 	record    domain.Sandbox
 	updates   []storeport.ObservedUpdate
