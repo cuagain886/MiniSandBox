@@ -7,6 +7,7 @@ import (
 
 	"minisandbox/internal/domain"
 	storeport "minisandbox/internal/store"
+	"minisandbox/internal/testcrashpoint"
 )
 
 const renewCASAttempts = 3
@@ -28,11 +29,18 @@ func (s *SandboxService) Renew(ctx context.Context, command RenewSandbox) (domai
 		if decision.NoOp {
 			return current, nil
 		}
+		testcrashpoint.Hit("renew.before-store-cas")
 		updated, err := s.store.Renew(ctx, storeport.RenewUpdate{
 			ID: current.ID, ExpectedRevision: current.Revision,
 			Now: decision.Now, ExpiresAt: decision.RequestedExpiresAt,
 		})
 		if err == nil {
+			testcrashpoint.Hit("renew.after-store-cas")
+			// Store 是租约事实源；提交后的 wake 只负责尽快刷新 lease.json。即使通知丢失，
+			// 旧 timer 的 Store 复核和周期 scanner 仍会按新 expiry 恢复正确调度。
+			if s.waker != nil && !testcrashpoint.Drop("wake.renew") {
+				s.waker.Wake(updated.ID)
+			}
 			return updated, nil
 		}
 		if !errors.Is(err, domain.ErrConflict) {

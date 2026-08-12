@@ -3,12 +3,30 @@ package application
 import (
 	"context"
 	"errors"
+	"sync"
 	"testing"
 	"time"
 
 	"minisandbox/internal/domain"
 	storeport "minisandbox/internal/store"
 )
+
+type renewRecordingWaker struct {
+	mu  sync.Mutex
+	ids []string
+}
+
+func (w *renewRecordingWaker) Wake(id string) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.ids = append(w.ids, id)
+}
+
+func (w *renewRecordingWaker) snapshot() []string {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return append([]string(nil), w.ids...)
+}
 
 type renewTestStore struct {
 	storeport.Store
@@ -48,6 +66,8 @@ func TestRenewSandboxSuccess(t *testing.T) {
 	record := activeRenewRecord("renew-ok", currentExpiry, 12)
 	store := &renewTestStore{records: []domain.Sandbox{record}}
 	service := renewServiceForTest(store, now)
+	waker := &renewRecordingWaker{}
+	service.waker = waker
 	got, err := service.Renew(context.Background(), RenewSandbox{SandboxID: record.ID, ExpiresAt: requested})
 	if err != nil || got.ExpiresAt == nil || !got.ExpiresAt.Equal(requested) || len(store.renewCalls) != 1 {
 		t.Fatalf("renew: got=%#v err=%v calls=%#v", got, err, store.renewCalls)
@@ -55,6 +75,24 @@ func TestRenewSandboxSuccess(t *testing.T) {
 	call := store.renewCalls[0]
 	if call.ExpectedRevision != 12 || !call.Now.Equal(now) || !call.ExpiresAt.Equal(requested) {
 		t.Fatalf("renew call: %#v", call)
+	}
+	if got := waker.snapshot(); len(got) != 1 || got[0] != record.ID {
+		t.Fatalf("renew wake: %v", got)
+	}
+}
+
+// TestRenewSandboxEqualExpiryDoesNotWake 验证相同 expiry 是真正 no-op，不制造 revision 或 reconcile 噪声。
+func TestRenewSandboxEqualExpiryDoesNotWake(t *testing.T) {
+	now := time.Unix(100, 0).UTC()
+	expiresAt := now.Add(time.Hour)
+	store := &renewTestStore{records: []domain.Sandbox{activeRenewRecord("renew-noop", expiresAt, 3)}}
+	waker := &renewRecordingWaker{}
+	service := renewServiceForTest(store, now)
+	service.waker = waker
+
+	got, err := service.Renew(context.Background(), RenewSandbox{SandboxID: "renew-noop", ExpiresAt: expiresAt})
+	if err != nil || got.Revision != 3 || len(store.renewCalls) != 0 || len(waker.snapshot()) != 0 {
+		t.Fatalf("equal renew: got=%#v err=%v writes=%d wakes=%v", got, err, len(store.renewCalls), waker.snapshot())
 	}
 }
 
