@@ -39,6 +39,12 @@ type RecoveryPlan struct {
 	Action RecoveryAction
 	// Reason 是不含原始资源细节的稳定分类。
 	Reason string
+	// ExpectedStoreRevision 是规划时读取的 revision，仅用于诊断陈旧计划；CAS 执行仍会重读最新记录。
+	ExpectedStoreRevision uint64
+	// ExpectedSpecHash 绑定规划时的 Store 规格，防止执行时覆盖已变化记录的 metadata。
+	ExpectedSpecHash string
+	// ExpectedRuntimeID 绑定规划时可信主容器 ID，防止复用陈旧 observation。
+	ExpectedRuntimeID string
 }
 
 // PlanRecovery 将 Store 权威记录与 Actual 只读快照映射为单一 typed action。
@@ -47,8 +53,13 @@ func PlanRecovery(stored *domain.Sandbox, actual *ActualResourceSnapshot) Recove
 	plan := RecoveryPlan{Action: RecoveryActionNoOp, Reason: recoveryPlanReasonStable}
 	if stored != nil {
 		plan.SandboxID = stored.ID
+		plan.ExpectedStoreRevision = stored.Revision
+		plan.ExpectedSpecHash = stored.SpecHash
 	} else if actual != nil {
 		plan.SandboxID = actual.SandboxID
+	}
+	if actual != nil && actual.Main != nil {
+		plan.ExpectedRuntimeID = actual.Main.ContainerID
 	}
 	if stored == nil && actual == nil {
 		return plan
