@@ -78,12 +78,12 @@ func (r *Runtime) Ensure(
 	); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
-	volume, err := ensureWorkspaceVolume(
-		ctx,
-		r.engine,
-		sandbox.ID,
-		sandbox.SpecHash,
-	)
+	var volume WorkspaceVolumeResult
+	if sandbox.ExpiresAt != nil {
+		volume, err = ensureWorkspaceVolume(ctx, r.engine, sandbox.ID, sandbox.SpecHash, *sandbox.ExpiresAt)
+	} else {
+		volume, err = ensureWorkspaceVolume(ctx, r.engine, sandbox.ID, sandbox.SpecHash)
+	}
 	journal.volumeCreated = volume.CreatedByThisCall
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)

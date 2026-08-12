@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	mobymount "github.com/moby/moby/api/types/mount"
 	mobyclient "github.com/moby/moby/client"
@@ -102,6 +103,21 @@ func TestBuildContainerCreateOptionsAppliesSecurityBoundary(t *testing.T) {
 	}
 	if options.NetworkingConfig != nil || options.Image != "" {
 		t.Fatalf("unexpected create shortcut config: %#v", options)
+	}
+}
+
+// TestBuildContainerCreateOptionsCarriesCreationExpirySnapshot 验证新主容器写入 v2 创建租约兜底。
+func TestBuildContainerCreateOptionsCarriesCreationExpirySnapshot(t *testing.T) {
+	sandbox := testDockerSandbox()
+	expiresAt := time.Date(2030, 1, 2, 3, 4, 5, 0, time.UTC)
+	sandbox.ExpiresAt = &expiresAt
+	options, err := buildContainerCreateOptions(sandbox, testResourceNames(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	metadata, err := ParseLabels(options.Config.Labels)
+	if err != nil || metadata.ExpiresAt == nil || !metadata.ExpiresAt.Equal(expiresAt) {
+		t.Fatalf("creation expiry: %#v/%v", metadata, err)
 	}
 }
 

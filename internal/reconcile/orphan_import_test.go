@@ -123,6 +123,63 @@ func TestOrphanImportExecutorPrefersRenewedManifestAndHonorsDisable(t *testing.T
 	}
 }
 
+// TestOrphanImportExecutorImportsExpiredManifestIntoDeletePath 验证 manifest 明确过期时导入删除意图而非直接删除。
+func TestOrphanImportExecutorImportsExpiredManifestIntoDeletePath(t *testing.T) {
+	now, actual, plan, expected := orphanImportFixture(t)
+	for _, expiry := range []time.Time{now.Add(-time.Second), now} {
+		candidate := cloneActualSnapshot(actual)
+		candidate.Directory.Manifest.ExpiresAt = expiry
+		store := &orphanImportTestStore{}
+		wakes := 0
+		executor := mustOrphanImportExecutor(t, store, now, func(string) bool { wakes++; return true }, true)
+		result, err := executor.Execute(context.Background(), plan, candidate, expected)
+		if err != nil || wakes != 1 || result.Sandbox.DesiredState != domain.DesiredTerminated ||
+			result.Sandbox.ObservedState != domain.StateStopping || result.Sandbox.Reason != domain.SandboxReasonOrphanExpired {
+			t.Fatalf("expiry=%v result=%#v wakes=%d err=%v", expiry, result, wakes, err)
+		}
+	}
+}
+
+// TestOrphanImportExecutorUsesV2CreationFallbackButNotV1 验证仅 v2 可在 manifest 缺失时使用创建 expiry。
+func TestOrphanImportExecutorUsesV2CreationFallbackButNotV1(t *testing.T) {
+	now, actual, _, expected := orphanImportFixture(t)
+	actual.Directory.Manifest = nil
+	expired := now.Add(-time.Second)
+	actual.Main.CreationExpiresAt = &expired
+	plan := PlanRecovery(nil, &actual)
+	if plan.Action != RecoveryActionImport {
+		t.Fatalf("v2 fallback plan: %#v", plan)
+	}
+	store := &orphanImportTestStore{}
+	executor := mustOrphanImportExecutor(t, store, now, func(string) bool { return true }, true)
+	result, err := executor.Execute(context.Background(), plan, actual, expected)
+	if err != nil || result.Sandbox.DesiredState != domain.DesiredTerminated {
+		t.Fatalf("v2 fallback: %#v/%v", result, err)
+	}
+
+	v1 := cloneActualSnapshot(actual)
+	v1.Main.SchemaVersion = 1
+	if got := PlanRecovery(nil, &v1); got.Action != RecoveryActionAnomaly {
+		t.Fatalf("v1 fallback was trusted: %#v", got)
+	}
+}
+
+// TestOrphanImportExecutorRepeatsExpiredRecoveryIdempotently 验证过期 orphan 重复恢复只重读同一删除记录。
+func TestOrphanImportExecutorRepeatsExpiredRecoveryIdempotently(t *testing.T) {
+	now, actual, plan, expected := orphanImportFixture(t)
+	actual.Directory.Manifest.ExpiresAt = now
+	store := &orphanImportTestStore{}
+	executor := mustOrphanImportExecutor(t, store, now, func(string) bool { return true }, true)
+	first, err := executor.Execute(context.Background(), plan, actual, expected)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := executor.Execute(context.Background(), plan, actual, expected)
+	if err != nil || !second.Replayed || first.Sandbox.DesiredState != domain.DesiredTerminated || second.Sandbox.ID != first.Sandbox.ID {
+		t.Fatalf("expired replay: first=%#v second=%#v err=%v", first, second, err)
+	}
+}
+
 func orphanImportFixture(t *testing.T) (time.Time, ActualResourceSnapshot, RecoveryPlan, DriftExpectation) {
 	t.Helper()
 	now := time.Unix(100, 0).UTC()

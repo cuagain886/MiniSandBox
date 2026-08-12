@@ -307,9 +307,9 @@ func (s *Store) CreateNonIdempotent(ctx context.Context, request storeport.NonId
 // ImportRecovered 在独占事务中原子导入一条已验证 orphan，不触碰幂等表或准入计数。
 func (s *Store) ImportRecovered(ctx context.Context, request storeport.RecoveredImportRequest) (domain.Sandbox, error) {
 	sandbox := request.Sandbox
-	if sandbox.ID == "" || sandbox.Origin != domain.SandboxOriginRecoveredOrphan ||
-		sandbox.DesiredState != domain.DesiredRunning || sandbox.ObservedState != domain.StateCreating ||
-		sandbox.Reason != domain.SandboxReasonOrphanImported || sandbox.RuntimeID == "" ||
+	validActive := sandbox.DesiredState == domain.DesiredRunning && sandbox.ObservedState == domain.StateCreating && sandbox.Reason == domain.SandboxReasonOrphanImported
+	validExpired := sandbox.DesiredState == domain.DesiredTerminated && sandbox.ObservedState == domain.StateStopping && sandbox.Reason == domain.SandboxReasonOrphanExpired
+	if sandbox.ID == "" || sandbox.Origin != domain.SandboxOriginRecoveredOrphan || (!validActive && !validExpired) || sandbox.RuntimeID == "" ||
 		sandbox.SpecHash == "" || sandbox.Spec.Hash() != sandbox.SpecHash || sandbox.ExpiresAt == nil ||
 		sandbox.CreatedAt.IsZero() || sandbox.UpdatedAt.IsZero() || sandbox.LastTransitionAt.IsZero() {
 		return domain.Sandbox{}, fmt.Errorf("validate recovered import: %w", domain.ErrInvalid)

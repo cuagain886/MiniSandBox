@@ -15,8 +15,6 @@ var (
 	ErrOrphanImportDisabled = errors.New("trusted orphan import is disabled")
 	// ErrOrphanLeaseUnknown 表示 bundle 无法证明当前租约，必须转 anomaly。
 	ErrOrphanLeaseUnknown = errors.New("trusted orphan lease is unknown")
-	// ErrTrustedOrphanExpired 表示可信 bundle 已明确过期，交由 P3-070 删除分支处理。
-	ErrTrustedOrphanExpired = errors.New("trusted orphan lease is expired")
 )
 
 // OrphanImportStore 是可信 orphan 原子导入及唯一冲突重读所需能力。
@@ -33,7 +31,7 @@ type OrphanImportResult struct {
 	Replayed bool
 }
 
-// OrphanImportExecutor 验证完整 bundle 后原子导入未过期 orphan。
+// OrphanImportExecutor 验证完整 bundle 后原子导入 orphan，并按权威 expiry 选择运行或删除路径。
 type OrphanImportExecutor struct {
 	store   OrphanImportStore
 	clock   Clock
@@ -49,7 +47,7 @@ func NewOrphanImportExecutor(store OrphanImportStore, clock Clock, wake Recovery
 	return &OrphanImportExecutor{store: store, clock: clock, wake: wake, enabled: enabled}, nil
 }
 
-// Execute 导入完整可信、租约已知且未过期的 orphan；不完整 bundle 不会触发 Store 写入或 runtime 动作。
+// Execute 导入完整可信且租约已知的 orphan；已过期记录进入普通删除路径，不完整 bundle 不写 Store。
 func (e *OrphanImportExecutor) Execute(ctx context.Context, plan RecoveryPlan, actual ActualResourceSnapshot, expected DriftExpectation) (OrphanImportResult, error) {
 	if e == nil || e.store == nil || e.clock == nil || e.wake == nil || plan.Action != RecoveryActionImport ||
 		plan.SandboxID == "" || plan.SandboxID != actual.SandboxID {
@@ -70,14 +68,15 @@ func (e *OrphanImportExecutor) Execute(ctx context.Context, plan RecoveryPlan, a
 		return OrphanImportResult{}, err
 	}
 	now := e.clock.Now().UTC()
+	desired, observed, reason := domain.DesiredRunning, domain.StateCreating, domain.SandboxReasonOrphanImported
 	if !now.Before(expiresAt) {
-		return OrphanImportResult{}, ErrTrustedOrphanExpired
+		desired, observed, reason = domain.DesiredTerminated, domain.StateStopping, domain.SandboxReasonOrphanExpired
 	}
-	message, _ := domain.SandboxReasonPublicMessage(domain.SandboxReasonOrphanImported)
+	message, _ := domain.SandboxReasonPublicMessage(reason)
 	record := domain.Sandbox{
 		ID: actual.SandboxID, Spec: spec, SpecHash: spec.Hash(), RuntimeID: actual.Main.ContainerID,
-		DesiredState: domain.DesiredRunning, ObservedState: domain.StateCreating,
-		Reason: domain.SandboxReasonOrphanImported, Message: message,
+		DesiredState: desired, ObservedState: observed,
+		Reason: reason, Message: message,
 		CreatedAt: actual.Main.CreatedAt.UTC(), UpdatedAt: now, LastTransitionAt: now,
 		ExpiresAt: timePointer(expiresAt), Origin: domain.SandboxOriginRecoveredOrphan,
 	}
@@ -94,7 +93,8 @@ func (e *OrphanImportExecutor) Execute(ctx context.Context, plan RecoveryPlan, a
 		return OrphanImportResult{}, fmt.Errorf("execute orphan import: reread conflict: %w", readErr)
 	}
 	if existing.Origin != domain.SandboxOriginRecoveredOrphan || existing.SpecHash != record.SpecHash ||
-		existing.RuntimeID != record.RuntimeID || existing.ExpiresAt == nil || !existing.ExpiresAt.Equal(expiresAt) {
+		existing.RuntimeID != record.RuntimeID || existing.DesiredState != record.DesiredState ||
+		existing.ExpiresAt == nil || !existing.ExpiresAt.Equal(expiresAt) {
 		return OrphanImportResult{}, fmt.Errorf("execute orphan import: ID belongs to another record: %w", domain.ErrConflict)
 	}
 	_ = e.wake(existing.ID)

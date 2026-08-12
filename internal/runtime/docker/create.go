@@ -76,6 +76,7 @@ func buildContainerCreateOptionsWithEgress(
 		SpecHash:              sandbox.SpecHash,
 		Workspace:             names.Workspace,
 		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
+		ExpiresAt:             sandbox.ExpiresAt,
 	})
 	if err != nil {
 		return mobyclient.ContainerCreateOptions{}, err
@@ -171,6 +172,7 @@ func ensureStoppedContainerWithEgress(
 		SpecHash:              sandbox.SpecHash,
 		Workspace:             names.Workspace,
 		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
+		ExpiresAt:             sandbox.ExpiresAt,
 	}
 
 	inspection, err := engine.ContainerInspect(

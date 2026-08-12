@@ -73,6 +73,19 @@ func TestImportRecoveredRejectsUntrustedShapeAndExistingAPIRecord(t *testing.T) 
 	}
 }
 
+// TestImportRecoveredAcceptsExpiredDeleteShape 验证过期 orphan 可原子进入普通删除状态机。
+func TestImportRecoveredAcceptsExpiredDeleteShape(t *testing.T) {
+	store := migrateTestStore(t)
+	sandbox := recoveredImportSandbox()
+	sandbox.DesiredState, sandbox.ObservedState = domain.DesiredTerminated, domain.StateStopping
+	sandbox.Reason = domain.SandboxReasonOrphanExpired
+	sandbox.Message, _ = domain.SandboxReasonPublicMessage(sandbox.Reason)
+	got, err := store.ImportRecovered(context.Background(), storeport.RecoveredImportRequest{Sandbox: sandbox})
+	if err != nil || got.DesiredState != domain.DesiredTerminated || got.ObservedState != domain.StateStopping || got.Reason != domain.SandboxReasonOrphanExpired {
+		t.Fatalf("expired import: %#v/%v", got, err)
+	}
+}
+
 func recoveredImportSandbox() domain.Sandbox {
 	now := time.Unix(100, 0).UTC()
 	expires := now.Add(time.Hour)

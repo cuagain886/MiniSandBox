@@ -83,6 +83,10 @@ func mapManagedContainerInspection(container mobycontainer.InspectResponse) runt
 		return observation
 	}
 	observation.SandboxID, observation.Role = metadata.SandboxID, runtimeport.ContainerRoleMain
+	if metadata.ExpiresAt != nil {
+		expiresAt := metadata.ExpiresAt.UTC()
+		observation.CreationExpiresAt = &expiresAt
+	}
 	observation.Name = strings.TrimPrefix(container.Name, "/")
 	if observation.Name != containerName(metadata.SandboxID) {
 		observation.DiscoveryIssue = runtimeport.DiscoveryProfileInvalid

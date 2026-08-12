@@ -136,7 +136,8 @@ func validRecoveryStoredState(sandbox domain.Sandbox) bool {
 }
 
 func trustedImportBundle(actual *ActualResourceSnapshot) bool {
-	return trustedRunningBundle(actual) && actual.Directory.Manifest != nil
+	return trustedRunningBundle(actual) && (actual.Directory.Manifest != nil ||
+		actual.Main.SchemaVersion == 2 && actual.Main.CreationExpiresAt != nil)
 }
 
 func trustedRunningBundle(actual *ActualResourceSnapshot) bool {

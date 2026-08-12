@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	mobycontainer "github.com/moby/moby/api/types/container"
@@ -127,6 +128,19 @@ func TestInventoryManagedContainersReturnsSafeInspectAnomaly(t *testing.T) {
 	got, err := (&Runtime{engine: engine}).InventoryManagedContainers(context.Background())
 	if err != nil || len(got) != 1 || got[0].DiscoveryIssue != runtimeport.DiscoveryInspectUnavailable {
 		t.Fatalf("inspect anomaly: %#v/%v", got, err)
+	}
+}
+
+// TestMapManagedContainerInspectionProjectsV2CreationTimes 验证恢复只得到规范 UTC 创建时间和 expiry 快照。
+func TestMapManagedContainerInspectionProjectsV2CreationTimes(t *testing.T) {
+	container := inventoryMainContainer(t)
+	createdAt := time.Date(2029, 1, 2, 3, 4, 5, 0, time.UTC)
+	expiresAt := createdAt.Add(time.Hour)
+	container.Created = createdAt.Format(time.RFC3339Nano)
+	container.Config.Labels[LabelExpiresAt] = expiresAt.Format(time.RFC3339Nano)
+	observation := mapManagedContainerInspection(container)
+	if !observation.CreatedAt.Equal(createdAt) || observation.CreationExpiresAt == nil || !observation.CreationExpiresAt.Equal(expiresAt) {
+		t.Fatalf("creation projection: %#v", observation)
 	}
 }
 

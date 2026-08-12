@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"time"
 
 	"github.com/containerd/errdefs"
 	mobyvolume "github.com/moby/moby/api/types/volume"
@@ -86,6 +87,7 @@ func ensureWorkspaceVolume(
 	engine Engine,
 	sandboxID string,
 	specHash string,
+	creationExpiry ...time.Time,
 ) (WorkspaceVolumeResult, error) {
 	name := workspaceName(sandboxID)
 	expected := ManagedLabels{
@@ -93,6 +95,10 @@ func ensureWorkspaceVolume(
 		SpecHash:              specHash,
 		Workspace:             name,
 		RunnerProtocolVersion: runnerbootstrap.CurrentProtocolVersion,
+	}
+	if len(creationExpiry) > 0 {
+		expiresAt := creationExpiry[0].UTC()
+		expected.ExpiresAt = &expiresAt
 	}
 	labels, err := EncodeLabels(expected)
 	if err != nil {
