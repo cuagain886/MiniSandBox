@@ -24,7 +24,10 @@ func (r *Reconciler) recoverRunning(ctx context.Context, sandbox domain.Sandbox,
 	if err != nil {
 		return r.recordFailure(ctx, sandbox, err, sandbox.RuntimeID, RetryOperationRecover)
 	}
-	if actual.State != runtimeport.ActualRunning || actual.SpecHash != sandbox.SpecHash {
+	if actual.SpecHash != "" && actual.SpecHash != sandbox.SpecHash {
+		return r.recordRunningSpecDrift(ctx, sandbox)
+	}
+	if actual.State != runtimeport.ActualRunning {
 		if sandbox.Spec.Network.Outbound {
 			return r.replaceRunningCompute(ctx, sandbox, replacer)
 		}
@@ -51,6 +54,23 @@ func (r *Reconciler) recoverRunning(ctx context.Context, sandbox domain.Sandbox,
 		return r.handleRunningProbeFailure(ctx, sandbox, replacer, err)
 	}
 	return r.recordRunningHealth(ctx, sandbox, true)
+}
+
+// recordRunningSpecDrift 把 Inspect 已确认的摘要漂移冻结为永久诊断状态；该路径不得调用
+// Ensure/ReplaceCompute，否则会用 Store 期望静默覆盖需要人工调查的实际资源。
+func (r *Reconciler) recordRunningSpecDrift(ctx context.Context, sandbox domain.Sandbox) error {
+	message, _ := domain.SandboxReasonPublicMessage(domain.SandboxReasonSpecDrift)
+	_, err := r.store.UpdateObserved(ctx, store.ObservedUpdate{
+		ID: sandbox.ID, ExpectedRevision: sandbox.Revision, State: domain.StateFailed,
+		Reason: domain.SandboxReasonSpecDrift, Message: message, RuntimeID: sandbox.RuntimeID,
+	})
+	if err != nil {
+		if errors.Is(err, domain.ErrConflict) {
+			return r.honorConcurrentDelete(ctx, sandbox.ID)
+		}
+		return fmt.Errorf("record running spec drift: %w", err)
+	}
+	return nil
 }
 
 func (r *Reconciler) handleRunningProbeFailure(ctx context.Context, sandbox domain.Sandbox, replacer runtimeport.ComputeReplacer, cause error) error {
