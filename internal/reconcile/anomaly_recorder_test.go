@@ -27,6 +27,10 @@ func (r *anomalyRecordingRepository) ListActiveRuntimeAnomalies(context.Context)
 	return nil, nil
 }
 
+func (r *anomalyRecordingRepository) ResolveRuntimeAnomaliesNotObserved(context.Context, storeport.RuntimeAnomalyResolution) (int, error) {
+	return 0, nil
+}
+
 // TestRecordActualAnomaliesClassifiesSafeFacts 验证 inventory 异常映射到固定分类且摘要不回显底层值。
 func TestRecordActualAnomaliesClassifiesSafeFacts(t *testing.T) {
 	repository := &anomalyRecordingRepository{}

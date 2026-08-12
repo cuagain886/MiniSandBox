@@ -130,6 +130,57 @@ func TestRuntimeAnomalyRepositoryRejectsUnsafeFields(t *testing.T) {
 	}
 }
 
+// TestRuntimeAnomalyResolutionHandlesDisappearPresentAndReappear 验证完整扫描只解决消失事实且重新出现会恢复 active。
+func TestRuntimeAnomalyResolutionHandlesDisappearPresentAndReappear(t *testing.T) {
+	database := migrateTestStore(t)
+	started := time.Date(2026, 8, 12, 3, 0, 0, 0, time.UTC)
+	present := anomalyObservation("sandbox:present", storeport.RuntimeAnomalyIncompleteBundle, started)
+	disappeared := anomalyObservation("sandbox:disappeared", storeport.RuntimeAnomalyUnknownSchema, started)
+	for _, observation := range []storeport.RuntimeAnomalyObservation{present, disappeared} {
+		if _, err := database.ObserveRuntimeAnomaly(context.Background(), observation); err != nil {
+			t.Fatal(err)
+		}
+	}
+	resolved, err := database.ResolveRuntimeAnomaliesNotObserved(context.Background(), storeport.RuntimeAnomalyResolution{
+		ActiveResourceKeys: []string{present.ResourceKey}, ScanStartedAt: started, ResolvedAt: started.Add(time.Minute),
+	})
+	if err != nil || resolved != 1 {
+		t.Fatalf("resolve disappeared: count=%d err=%v", resolved, err)
+	}
+	active, err := database.ListActiveRuntimeAnomalies(context.Background())
+	if err != nil || len(active) != 1 || active[0].ResourceKey != present.ResourceKey {
+		t.Fatalf("active after resolve: %#v err=%v", active, err)
+	}
+	disappeared.ObservedAt = started.Add(2 * time.Minute)
+	if _, err := database.ObserveRuntimeAnomaly(context.Background(), disappeared); err != nil {
+		t.Fatal(err)
+	}
+	active, err = database.ListActiveRuntimeAnomalies(context.Background())
+	if err != nil || len(active) != 2 {
+		t.Fatalf("reappearance did not reactivate: %#v err=%v", active, err)
+	}
+}
+
+// TestRuntimeAnomalyResolutionDoesNotOverrideNewerScan 验证旧扫描不会解决扫描开始后并发重现的事实。
+func TestRuntimeAnomalyResolutionDoesNotOverrideNewerScan(t *testing.T) {
+	database := migrateTestStore(t)
+	started := time.Date(2026, 8, 12, 4, 0, 0, 0, time.UTC)
+	observation := anomalyObservation("sandbox:concurrent-generation", storeport.RuntimeAnomalyIncompleteBundle, started.Add(time.Second))
+	if _, err := database.ObserveRuntimeAnomaly(context.Background(), observation); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := database.ResolveRuntimeAnomaliesNotObserved(context.Background(), storeport.RuntimeAnomalyResolution{
+		ScanStartedAt: started, ResolvedAt: started.Add(time.Minute),
+	})
+	if err != nil || resolved != 0 {
+		t.Fatalf("newer generation resolved: count=%d err=%v", resolved, err)
+	}
+	active, err := database.ListActiveRuntimeAnomalies(context.Background())
+	if err != nil || len(active) != 1 {
+		t.Fatalf("newer observation missing: %#v err=%v", active, err)
+	}
+}
+
 func anomalyObservation(key string, classification storeport.RuntimeAnomalyClassification, observedAt time.Time) storeport.RuntimeAnomalyObservation {
 	return storeport.RuntimeAnomalyObservation{
 		ResourceKey: key, ResourceType: storeport.RuntimeAnomalySandboxBundle,

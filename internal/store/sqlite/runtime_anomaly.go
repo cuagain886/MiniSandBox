@@ -64,6 +64,72 @@ func (s *Store) ListActiveRuntimeAnomalies(ctx context.Context) ([]storeport.Run
 	return result, nil
 }
 
+// ResolveRuntimeAnomaliesNotObserved 在独占事务中标记完整扫描已经确认消失的异常，不物理删除历史行。
+func (s *Store) ResolveRuntimeAnomaliesNotObserved(ctx context.Context, resolution storeport.RuntimeAnomalyResolution) (int, error) {
+	if resolution.ScanStartedAt.IsZero() || resolution.ResolvedAt.IsZero() || resolution.ResolvedAt.Before(resolution.ScanStartedAt) {
+		return 0, fmt.Errorf("%w: invalid runtime anomaly resolution", domain.ErrInvalid)
+	}
+	activeKeys := make(map[string]struct{}, len(resolution.ActiveResourceKeys))
+	for _, key := range resolution.ActiveResourceKeys {
+		if err := validateRuntimeAnomalyResourceKey(key); err != nil {
+			return 0, err
+		}
+		activeKeys[key] = struct{}{}
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return 0, fmt.Errorf("acquire runtime anomaly resolution connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return 0, fmt.Errorf("begin runtime anomaly resolution: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	rows, err := conn.QueryContext(ctx, `SELECT resource_key FROM runtime_anomalies
+		WHERE resolved_at IS NULL AND last_seen_at <= ? ORDER BY resource_key`, resolution.ScanStartedAt.UTC().Format(time.RFC3339Nano))
+	if err != nil {
+		return 0, fmt.Errorf("select runtime anomalies for resolution: %w", err)
+	}
+	candidates := make([]string, 0)
+	for rows.Next() {
+		var key string
+		if err := rows.Scan(&key); err != nil {
+			_ = rows.Close()
+			return 0, fmt.Errorf("scan runtime anomaly resolution key: %w", err)
+		}
+		if _, stillActive := activeKeys[key]; !stillActive {
+			candidates = append(candidates, key)
+		}
+	}
+	if err := rows.Close(); err != nil {
+		return 0, fmt.Errorf("close runtime anomaly resolution rows: %w", err)
+	}
+	resolved := 0
+	for _, key := range candidates {
+		result, err := conn.ExecContext(ctx, `UPDATE runtime_anomalies SET resolved_at = ?
+			WHERE resource_key = ? AND resolved_at IS NULL AND last_seen_at <= ?`,
+			resolution.ResolvedAt.UTC().Format(time.RFC3339Nano), key, resolution.ScanStartedAt.UTC().Format(time.RFC3339Nano))
+		if err != nil {
+			return 0, fmt.Errorf("resolve runtime anomaly: %w", err)
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return 0, fmt.Errorf("count resolved runtime anomaly: %w", err)
+		}
+		resolved += int(changed)
+	}
+	if err := s.commitImmediate(ctx, conn); err != nil {
+		return 0, fmt.Errorf("commit runtime anomaly resolution: %w", err)
+	}
+	committed = true
+	return resolved, nil
+}
+
 func (s *Store) runtimeAnomalyByKey(ctx context.Context, resourceKey string) (storeport.RuntimeAnomaly, error) {
 	anomaly, err := scanRuntimeAnomaly(s.db.QueryRowContext(ctx, `SELECT resource_key, resource_type, classification,
 		safe_fingerprint, first_seen_at, last_seen_at, observation_count, resolved_at
@@ -106,18 +172,25 @@ func scanRuntimeAnomaly(scanner runtimeAnomalyScanner) (storeport.RuntimeAnomaly
 }
 
 func validateRuntimeAnomalyObservation(observation storeport.RuntimeAnomalyObservation) error {
-	if len(observation.ResourceKey) < 1 || len(observation.ResourceKey) > 256 {
-		return fmt.Errorf("%w: invalid runtime anomaly resource key", domain.ErrInvalid)
-	}
-	for _, value := range observation.ResourceKey {
-		if !(unicode.IsLetter(value) && value <= unicode.MaxASCII || unicode.IsDigit(value) || strings.ContainsRune("._:-", value)) {
-			return fmt.Errorf("%w: invalid runtime anomaly resource key", domain.ErrInvalid)
-		}
+	if err := validateRuntimeAnomalyResourceKey(observation.ResourceKey); err != nil {
+		return err
 	}
 	if !validRuntimeAnomalyResourceType(observation.ResourceType) || !validRuntimeAnomalyClassification(observation.Classification) ||
 		len(observation.SafeFingerprint) != 64 || strings.Trim(observation.SafeFingerprint, "0123456789abcdef") != "" ||
 		observation.ObservedAt.IsZero() {
 		return fmt.Errorf("%w: invalid runtime anomaly observation", domain.ErrInvalid)
+	}
+	return nil
+}
+
+func validateRuntimeAnomalyResourceKey(resourceKey string) error {
+	if len(resourceKey) < 1 || len(resourceKey) > 256 {
+		return fmt.Errorf("%w: invalid runtime anomaly resource key", domain.ErrInvalid)
+	}
+	for _, value := range resourceKey {
+		if !(unicode.IsLetter(value) && value <= unicode.MaxASCII || unicode.IsDigit(value) || strings.ContainsRune("._:-", value)) {
+			return fmt.Errorf("%w: invalid runtime anomaly resource key", domain.ErrInvalid)
+		}
 	}
 	return nil
 }

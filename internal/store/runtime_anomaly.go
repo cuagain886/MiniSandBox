@@ -76,4 +76,16 @@ type RuntimeAnomalyRepository interface {
 	ObserveRuntimeAnomaly(context.Context, RuntimeAnomalyObservation) (RuntimeAnomaly, error)
 	// ListActiveRuntimeAnomalies 返回未解决异常，按 ResourceKey 稳定排序。
 	ListActiveRuntimeAnomalies(context.Context) ([]RuntimeAnomaly, error)
+	// ResolveRuntimeAnomaliesNotObserved 只解决完整扫描未见且末次观测不晚于扫描起点的 active 异常。
+	ResolveRuntimeAnomaliesNotObserved(context.Context, RuntimeAnomalyResolution) (int, error)
+}
+
+// RuntimeAnomalyResolution 描述一次完整 inventory 扫描结束后的异常收尾边界。
+type RuntimeAnomalyResolution struct {
+	// ActiveResourceKeys 是本轮仍观察到的异常事实键；调用方不得传入 raw runtime 标识。
+	ActiveResourceKeys []string
+	// ScanStartedAt 是扫描代际的 UTC 时间边界；更晚观测到的事实不能被旧扫描解决。
+	ScanStartedAt time.Time
+	// ResolvedAt 是完整扫描成功结束的 UTC 时间，必须不早于 ScanStartedAt。
+	ResolvedAt time.Time
 }
