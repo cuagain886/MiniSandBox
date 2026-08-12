@@ -304,6 +304,44 @@ func (s *Store) CreateNonIdempotent(ctx context.Context, request storeport.NonId
 	return created, nil
 }
 
+// ImportRecovered 在独占事务中原子导入一条已验证 orphan，不触碰幂等表或准入计数。
+func (s *Store) ImportRecovered(ctx context.Context, request storeport.RecoveredImportRequest) (domain.Sandbox, error) {
+	sandbox := request.Sandbox
+	if sandbox.ID == "" || sandbox.Origin != domain.SandboxOriginRecoveredOrphan ||
+		sandbox.DesiredState != domain.DesiredRunning || sandbox.ObservedState != domain.StateCreating ||
+		sandbox.Reason != domain.SandboxReasonOrphanImported || sandbox.RuntimeID == "" ||
+		sandbox.SpecHash == "" || sandbox.Spec.Hash() != sandbox.SpecHash || sandbox.ExpiresAt == nil ||
+		sandbox.CreatedAt.IsZero() || sandbox.UpdatedAt.IsZero() || sandbox.LastTransitionAt.IsZero() {
+		return domain.Sandbox{}, fmt.Errorf("validate recovered import: %w", domain.ErrInvalid)
+	}
+	conn, err := s.db.Conn(ctx)
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("acquire recovered import connection: %w", err)
+	}
+	defer conn.Close()
+	if _, err := conn.ExecContext(ctx, "BEGIN IMMEDIATE"); err != nil {
+		return domain.Sandbox{}, fmt.Errorf("begin recovered import: %w", err)
+	}
+	committed := false
+	defer func() {
+		if !committed {
+			_, _ = conn.ExecContext(context.Background(), "ROLLBACK")
+		}
+	}()
+	if err := insertAtomicSandbox(ctx, conn, sandbox); err != nil {
+		return domain.Sandbox{}, err
+	}
+	created, err := scanSandbox(conn.QueryRowContext(ctx, selectSandboxByIDQuery, sandbox.ID))
+	if err != nil {
+		return domain.Sandbox{}, fmt.Errorf("read recovered import: %w", err)
+	}
+	if err := s.commitImmediate(ctx, conn); err != nil {
+		return domain.Sandbox{}, fmt.Errorf("commit recovered import: %w", err)
+	}
+	committed = true
+	return created, nil
+}
+
 // CreateIdempotent 在独占写事务中原子创建 sandbox 与首次 202 响应记录。
 //
 // 事务先检查 scope/key，避免为已存在身份生成孤立 sandbox；任何 sandbox、

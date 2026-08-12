@@ -1,5 +1,7 @@
 package runtime
 
+import "time"
+
 // ActualState 表示容器运行时中资源的粗粒度实际状态。
 type ActualState string
 
@@ -57,6 +59,10 @@ const (
 type ManagedContainerObservation struct {
 	// ContainerID 是 Docker 分配的内部 ID，只用于受管资源关联。
 	ContainerID string
+	// CreatedAt 是 Docker 返回并成功解析为 UTC 的容器创建时间；无法验证时为零值。
+	CreatedAt time.Time
+	// CreationExpiresAt 是 schema v2 创建 label 的租约快照；缺失或旧 schema 时为 nil。
+	CreationExpiresAt *time.Time
 	// SandboxID 是经过 labels 校验的规范 sandbox ID；损坏项可为空。
 	SandboxID string
 	// Role 区分主容器与 egress sidecar。

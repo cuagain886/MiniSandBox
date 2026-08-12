@@ -171,6 +171,18 @@ type NonIdempotentCreateRequest struct {
 	MaxSandboxes int
 }
 
+// RecoveredImportRequest 描述一个已经通过完整 runtime bundle 验证的 orphan 原子导入。
+type RecoveredImportRequest struct {
+	// Sandbox 必须使用 recovered_orphan 来源、完整租约和可信 runtime identity。
+	Sandbox domain.Sandbox
+}
+
+// RecoveredImporter 是可信 orphan 导入使用的独立 Store 扩展端口。
+type RecoveredImporter interface {
+	// ImportRecovered 以 ID 唯一约束原子插入记录；已存在时返回 domain.ErrConflict 且不覆盖。
+	ImportRecovered(context.Context, RecoveredImportRequest) (domain.Sandbox, error)
+}
+
 // IdempotentCreateResult 描述首次创建或后续精确重放结果。
 type IdempotentCreateResult struct {
 	// Sandbox 是首次创建后的 domain snapshot；重放时至少包含稳定 ID。

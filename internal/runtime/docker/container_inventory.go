@@ -5,6 +5,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	cerrdefs "github.com/containerd/errdefs"
 	mobycontainer "github.com/moby/moby/api/types/container"
@@ -49,6 +50,9 @@ func (r *Runtime) InventoryManagedContainers(ctx context.Context) ([]runtimeport
 
 func mapManagedContainerInspection(container mobycontainer.InspectResponse) runtimeport.ManagedContainerObservation {
 	observation := runtimeport.ManagedContainerObservation{ContainerID: container.ID}
+	if createdAt, err := time.Parse(time.RFC3339Nano, container.Created); err == nil {
+		observation.CreatedAt = createdAt.UTC()
+	}
 	if container.Config == nil || container.HostConfig == nil || container.State == nil {
 		observation.DiscoveryIssue = runtimeport.DiscoveryProfileInvalid
 		return observation
