@@ -18,6 +18,7 @@ import (
 	runtimeport "minisandbox/internal/runtime"
 	dockerruntime "minisandbox/internal/runtime/docker"
 	"minisandbox/internal/store"
+	"minisandbox/internal/testcrashpoint"
 )
 
 // Options 保存启动 sandboxd 所需的命令行输入和构建信息。
@@ -216,6 +217,7 @@ func run(ctx context.Context, options Options, factory factories) error {
 			closeResource("sandbox store", sandboxStore),
 		)
 	}
+	testcrashpoint.Hit("bootstrap.http-ready")
 
 	var runErr error
 	select {
