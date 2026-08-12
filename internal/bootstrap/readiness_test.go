@@ -70,6 +70,8 @@ func TestRunAdvancesReadinessAfterEachSuccessfulStage(t *testing.T) {
 	originalRecovery := factory.recover
 	factory.recover = func(
 		ctx context.Context,
+		cfg config.Config,
+		paths datadir.Paths,
 		sandboxStore store.Store,
 		runtime runtimeport.Runtime,
 		queue *reconcile.WakeQueue,
@@ -79,10 +81,11 @@ func TestRunAdvancesReadinessAfterEachSuccessfulStage(t *testing.T) {
 			Store:    true,
 			Docker:   true,
 			Artifact: true,
-			Worker:   true,
 		})
 		return originalRecovery(
 			ctx,
+			cfg,
+			paths,
 			sandboxStore,
 			runtime,
 			queue,

@@ -268,30 +268,82 @@ func startProductionWorker(
 // recoverProductionState 执行一次启动对账并只记录安全诊断码。
 func recoverProductionState(
 	ctx context.Context,
+	cfg config.Config,
+	_ datadir.Paths,
 	sandboxStore store.Store,
 	runtime runtimeport.Runtime,
 	queue *reconcile.WakeQueue,
 	readiness *controlapi.Readiness,
 ) error {
-	service, err := reconcile.NewRecoveryService(
-		sandboxStore,
-		runtime,
-		queue,
-		readiness,
-		func(diagnostic reconcile.RecoveryDiagnostic) {
-			slog.Warn(
-				"sandbox recovery diagnostic",
-				"code",
-				diagnostic.Code,
-				"sandbox_id",
-				diagnostic.SandboxID,
-			)
-		},
-	)
+	inventory, ok := runtime.(runtimeport.RecoveryInventory)
+	if !ok {
+		return errors.New("sandbox runtime does not provide complete recovery inventory")
+	}
+	network, ok := runtime.(runtimeport.EgressRecoveryBootstrap)
+	if !ok {
+		return errors.New("sandbox runtime does not provide egress recovery bootstrap")
+	}
+	expectations, ok := runtime.(runtimeport.RecoveryExpectationProvider)
+	if !ok {
+		return errors.New("sandbox runtime does not provide recovery expectations")
+	}
+	anomalies, ok := sandboxStore.(store.RuntimeAnomalyRepository)
+	if !ok {
+		return errors.New("sandbox store does not provide runtime anomaly repository")
+	}
+	stages := reconcile.StartupRecoveryStages{}
+	stages.Recover = func(ctx context.Context, actual reconcile.ActualResourceInventory, scanStartedAt time.Time) error {
+		expected, err := expectations.RecoveryExpectation(ctx)
+		if err != nil {
+			return err
+		}
+		executor, err := reconcile.NewInventoryRecoveryExecutor(
+			sandboxStore, anomalies, reconcile.SystemClock{}, queue.Wake,
+			cfg.Recovery.ImportTrustedOrphans, reconcile.DriftExpectation{EgressPolicyHash: expected.EgressPolicyHash},
+		)
+		if err != nil {
+			return err
+		}
+		return executor.Recover(ctx, actual, scanStartedAt)
+	}
+	stages.RecoverTTL = func(ctx context.Context) error {
+		ttlStore, ok := sandboxStore.(reconcile.TTLRecoveryStore)
+		if !ok {
+			return errors.New("sandbox store does not provide TTL recovery")
+		}
+		var expiration *reconcile.TTLExpirationCoordinator
+		scheduler := reconcile.NewTTLScheduler(reconcile.SystemClock{}, func(ctx context.Context, entry reconcile.TTLHeapEntry) {
+			_ = expiration.ExpireEntry(ctx, entry)
+		})
+		expiration = reconcile.NewTTLExpirationCoordinator(ttlStore, scheduler, reconcile.SystemClock{}, queue.Wake)
+		recovery, err := reconcile.NewTTLRecovery(ttlStore, scheduler, expiration, cfg.Reconcile.PageSize, maxCandidateScanPages)
+		if err != nil {
+			return err
+		}
+		return recovery.Recover(ctx)
+	}
+	stages.QueueDue = func(ctx context.Context) error {
+		sweeper, err := reconcile.NewCandidateSweeper(sandboxStore, cfg.Reconcile.PageSize, maxCandidateScanPages,
+			cfg.Reconcile.Timeout, cfg.Reconcile.RunningCheckInterval)
+		if err != nil {
+			return err
+		}
+		scanner, err := reconcile.NewCandidateScanner(sweeper, func(_ context.Context, id string) error {
+			queue.Wake(id)
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		_, err = scanner.ScanOnce(ctx, time.Now().UTC())
+		return err
+	}
+	coordinator, err := reconcile.NewStartupRecoveryCoordinator(network, inventory, stages, cfg.Reconcile.Timeout)
 	if err != nil {
 		return err
 	}
-	return service.Run(ctx)
+	readiness.SetRecovery(false)
+	return coordinator.Run(ctx)
 }
 
 // startProductionHTTP 绑定端口后启动真实生命周期 API。

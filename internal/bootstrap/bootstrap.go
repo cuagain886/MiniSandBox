@@ -82,6 +82,8 @@ type factories struct {
 	) (workerHandle, error)
 	recover func(
 		context.Context,
+		config.Config,
+		datadir.Paths,
 		store.Store,
 		runtimeport.Runtime,
 		*reconcile.WakeQueue,
@@ -153,6 +155,23 @@ func run(ctx context.Context, options Options, factory factories) error {
 	readiness.SetDocker(true)
 
 	queue := reconcile.NewWakeQueue()
+	if err := factory.recover(
+		ctx,
+		cfg,
+		paths,
+		sandboxStore,
+		runtime,
+		queue,
+		readiness,
+	); err != nil {
+		return errors.Join(
+			fmt.Errorf("recover sandbox state: %w", err),
+			closeResource("sandbox runtime", runtime),
+			closeResource("sandbox store", sandboxStore),
+		)
+	}
+	// recovery 可以先把 due ID 合并进未消费的 queue；worker 只有在 inventory、导入、TTL 和 queue
+	// 门禁全部成功后才启动，避免恢复未完成时并发修改 runtime。
 	worker, err := factory.startWorker(
 		ctx,
 		cfg,
@@ -169,21 +188,6 @@ func run(ctx context.Context, options Options, factory factories) error {
 		)
 	}
 	readiness.SetWorker(true)
-	if err := factory.recover(
-		ctx,
-		sandboxStore,
-		runtime,
-		queue,
-		readiness,
-	); err != nil {
-		return errors.Join(
-			fmt.Errorf("recover sandbox state: %w", err),
-			closeWithTimeout(cfg, "reconcile worker", worker),
-			closeResource("sandbox runtime", runtime),
-			closeResource("sandbox store", sandboxStore),
-		)
-	}
-	readiness.SetRecovery(true)
 	maintenance, err := factory.startMaintenance(ctx, cfg, sandboxStore, runtime, queue, readiness)
 	if err != nil {
 		return errors.Join(
@@ -193,6 +197,8 @@ func run(ctx context.Context, options Options, factory factories) error {
 			closeResource("sandbox store", sandboxStore),
 		)
 	}
+	// maintenance 构造会同步重建 TTL heap；只有 inventory、恢复动作、due queue 与该步骤全部完成后才可 ready。
+	readiness.SetRecovery(true)
 	server, err := factory.startHTTP(
 		cfg,
 		options.Build,
