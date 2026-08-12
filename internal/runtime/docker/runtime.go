@@ -150,6 +150,12 @@ type Runtime struct {
 	availability     runtimeport.OperationAvailability
 	egressLocksMu    sync.Mutex
 	egressLocks      map[string]*egressAttachLock
+	metrics          DockerOperationMetrics
+}
+
+// DockerOperationMetrics 只接受固定 operation/result，不接收资源 ID 或原始错误。
+type DockerOperationMetrics interface {
+	ObserveDocker(operation, result string)
 }
 
 // RunnerBootstrapProvider 为单个 sandbox 在受管 runtime 目录准备可信配置与一次性凭据。
@@ -191,6 +197,8 @@ type RuntimeOptions struct {
 	ImagePullLimiter runtimeport.Limiter
 	// Availability 是依赖健康监测控制的全局操作门禁；nil 保持兼容测试装配。
 	Availability runtimeport.OperationAvailability
+	// Metrics 在真实 Engine 操作返回点接收固定低基数结果；nil 表示禁用。
+	Metrics DockerOperationMetrics
 }
 
 // New 创建 Docker client 并立即探测 daemon。
@@ -277,6 +285,7 @@ func (r *Runtime) applyOptions(options RuntimeOptions) {
 	r.bootstrap = options.Bootstrap
 	r.imagePullLimiter = options.ImagePullLimiter
 	r.availability = options.Availability
+	r.metrics = options.Metrics
 	r.bootstrapCloser, _ = options.Bootstrap.(io.Closer)
 	if options.Egress != nil {
 		copy := *options.Egress
@@ -301,12 +310,27 @@ func (r *Runtime) SetAvailable(available bool) {
 }
 
 // ProbeDependency 执行不改变资源状态的轻量 Docker Ping。
-func (r *Runtime) ProbeDependency(ctx context.Context) error {
+func (r *Runtime) ProbeDependency(ctx context.Context) (resultErr error) {
+	defer func() { r.observeDocker("ping", resultErr) }()
 	_, err := r.engine.Ping(ctx, mobyclient.PingOptions{})
 	if err != nil {
 		return runtimeUnavailable(err)
 	}
 	return nil
+}
+
+func (r *Runtime) observeDocker(operation string, err error) {
+	if r == nil || r.metrics == nil {
+		return
+	}
+	result := "success"
+	if err != nil {
+		result = "terminal_error"
+		if runtimeport.ClassifyError(err).Retryable {
+			result = "retryable_error"
+		}
+	}
+	r.metrics.ObserveDocker(operation, result)
 }
 
 // Close 释放 Docker client 资源。

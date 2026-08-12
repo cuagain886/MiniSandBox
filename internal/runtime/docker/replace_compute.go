@@ -15,7 +15,8 @@ import (
 const runnerCredentialFileName = "runner-token"
 
 // ReplaceCompute 只替换 sandbox 的计算成员并保留 workspace volume 与 lease.json。
-func (r *Runtime) ReplaceCompute(ctx context.Context, sandbox domain.Sandbox) (runtimeport.ActualSandbox, error) {
+func (r *Runtime) ReplaceCompute(ctx context.Context, sandbox domain.Sandbox) (actualResult runtimeport.ActualSandbox, resultErr error) {
+	defer func() { r.observeDocker("replace_compute", resultErr) }()
 	if _, err := r.validateEnsureInput(sandbox); err != nil {
 		return runtimeport.ActualSandbox{}, err
 	}

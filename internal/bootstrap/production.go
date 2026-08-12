@@ -54,7 +54,9 @@ func productionFactories() factories {
 		artifacts: func() (dockerruntime.ArtifactProvider, error) {
 			return dockerruntime.NewEmbeddedArtifactProvider()
 		},
-		openRuntime: openProductionRuntime,
+		openRuntime: func(ctx context.Context, cfg config.Config, paths datadir.Paths, artifacts dockerruntime.ArtifactProvider) (managedRuntime, error) {
+			return openProductionRuntimeWithMetrics(ctx, cfg, paths, artifacts, reliabilityMetrics)
+		},
 		startWorker: func(ctx context.Context, cfg config.Config, paths datadir.Paths, sandboxStore store.Store,
 			runtime runtimeport.Runtime, queue *reconcile.WakeQueue) (workerHandle, error) {
 			return startProductionWorkerWithMetrics(ctx, cfg, paths, sandboxStore, runtime, queue, reliabilityMetrics)
@@ -193,6 +195,13 @@ func openProductionRuntime(
 	paths datadir.Paths,
 	artifacts dockerruntime.ArtifactProvider,
 ) (managedRuntime, error) {
+	return openProductionRuntimeWithMetrics(ctx, cfg, paths, artifacts, nil)
+}
+
+func openProductionRuntimeWithMetrics(
+	ctx context.Context, cfg config.Config, paths datadir.Paths, artifacts dockerruntime.ArtifactProvider,
+	metrics *observabilitymetrics.ReliabilityMetrics,
+) (managedRuntime, error) {
 	stager, err := runnerstage.New(cfg)
 	if err != nil {
 		return nil, err
@@ -221,6 +230,7 @@ func openProductionRuntime(
 			Bootstrap:        stager,
 			ImagePullLimiter: imagePullLimiter,
 			Availability:     availability,
+			Metrics:          metrics,
 		},
 	)
 	if err != nil {

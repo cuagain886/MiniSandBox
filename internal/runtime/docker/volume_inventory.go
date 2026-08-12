@@ -12,7 +12,8 @@ import (
 )
 
 // InventoryManagedVolumes 枚举并逐项复核 MiniSandbox workspace 卷，不挂载卷也不读取卷内内容。
-func (r *Runtime) InventoryManagedVolumes(ctx context.Context) ([]runtimeport.ManagedVolumeObservation, error) {
+func (r *Runtime) InventoryManagedVolumes(ctx context.Context) (observations []runtimeport.ManagedVolumeObservation, resultErr error) {
+	defer func() { r.observeDocker("inventory", resultErr) }()
 	filters := make(mobyclient.Filters).Add("label", LabelManaged+"="+labelManagedValue)
 	listed, err := r.engine.VolumeList(ctx, mobyclient.VolumeListOptions{Filters: filters})
 	if err != nil {

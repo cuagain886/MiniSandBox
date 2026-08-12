@@ -17,7 +17,8 @@ import (
 func (r *Runtime) Ensure(
 	ctx context.Context,
 	sandbox domain.Sandbox,
-) (runtimeport.ActualSandbox, error) {
+) (actualResult runtimeport.ActualSandbox, resultErr error) {
+	defer func() { r.observeDocker("ensure_sandbox", resultErr) }()
 	names, err := r.validateEnsureInput(sandbox)
 	if err != nil {
 		return runtimeport.ActualSandbox{}, err

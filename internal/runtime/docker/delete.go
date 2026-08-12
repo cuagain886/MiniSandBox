@@ -19,7 +19,8 @@ const defaultContainerStopTimeout = 10 * time.Second
 //
 // 三个步骤均按 best-effort 执行并使用 errors.Join 保留所有未完成项；重复
 // 调用会由各原子 helper 从实际状态继续。只有三类资源均确认不存在才返回 nil。
-func (r *Runtime) Delete(ctx context.Context, sandboxID string) error {
+func (r *Runtime) Delete(ctx context.Context, sandboxID string) (resultErr error) {
+	defer func() { r.observeDocker("delete_sandbox", resultErr) }()
 	if r == nil || r.engine == nil {
 		return errors.New("docker runtime is not initialized")
 	}

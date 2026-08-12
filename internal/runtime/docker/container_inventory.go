@@ -18,7 +18,8 @@ import (
 
 // InventoryManagedContainers 枚举并逐个 inspect 全部 running/stopped 受管容器。
 // 单项损坏返回安全 anomaly observation；list 后已消失的容器直接忽略。
-func (r *Runtime) InventoryManagedContainers(ctx context.Context) ([]runtimeport.ManagedContainerObservation, error) {
+func (r *Runtime) InventoryManagedContainers(ctx context.Context) (observations []runtimeport.ManagedContainerObservation, resultErr error) {
+	defer func() { r.observeDocker("inventory", resultErr) }()
 	filters := make(mobyclient.Filters).Add("label", LabelManaged+"="+labelManagedValue)
 	listed, err := r.engine.ContainerList(ctx, mobyclient.ContainerListOptions{All: true, Filters: filters})
 	if err != nil {

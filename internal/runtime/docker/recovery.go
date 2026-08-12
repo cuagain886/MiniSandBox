@@ -15,7 +15,8 @@ func (r *Runtime) InventoryRuntimeDirectories(context.Context) ([]runtimeport.Ru
 }
 
 // EnsureRecoveryEgressNetwork 在启用 outbound 时先幂等保证服务级 bridge；已有漂移网络会 fail closed。
-func (r *Runtime) EnsureRecoveryEgressNetwork(ctx context.Context) error {
+func (r *Runtime) EnsureRecoveryEgressNetwork(ctx context.Context) (resultErr error) {
+	defer func() { r.observeDocker("ensure_network", resultErr) }()
 	if r.egressConfig == nil {
 		return nil
 	}
