@@ -14,6 +14,7 @@ import (
 	"minisandbox/internal/config"
 	"minisandbox/internal/datadir"
 	"minisandbox/internal/domain"
+	"minisandbox/internal/observability/logging"
 	"minisandbox/internal/reconcile"
 	"minisandbox/internal/runnerauth"
 	"minisandbox/internal/runnerbootstrap"
@@ -355,7 +356,7 @@ func startProductionHTTP(
 	queue *reconcile.WakeQueue,
 	readiness *controlapi.Readiness,
 ) (httpHandle, error) {
-	lifecycle := application.NewSandboxServiceWithCreatePolicy(
+	lifecycleService := application.NewSandboxServiceWithCreatePolicy(
 		sandboxStore,
 		application.NewRandomIDGenerator(),
 		application.SystemClock{},
@@ -370,6 +371,14 @@ func startProductionHTTP(
 			MaximumTTL: cfg.Limits.MaximumTTL, MaxSandboxes: cfg.Limits.MaxSandboxes,
 		},
 	)
+	safeLogger, err := logging.New(slog.Default())
+	if err != nil {
+		return nil, err
+	}
+	lifecycle, err := application.NewLoggingSandboxService(lifecycleService, safeLogger, application.SystemClock{})
+	if err != nil {
+		return nil, err
+	}
 	masterKey, err := runnerauth.LoadMasterKey(cfg.Security.RunnerMasterKeyFile)
 	if err != nil {
 		return nil, err
