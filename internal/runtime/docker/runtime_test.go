@@ -39,6 +39,10 @@ type fakeEngine struct {
 		context.Context,
 		mobyclient.ContainerListOptions,
 	) (mobyclient.ContainerListResult, error)
+	volumeListFunc func(
+		context.Context,
+		mobyclient.VolumeListOptions,
+	) (mobyclient.VolumeListResult, error)
 	containerCreateFunc func(
 		context.Context,
 		mobyclient.ContainerCreateOptions,
@@ -179,6 +183,17 @@ func (f *fakeEngine) ContainerList(
 		return mobyclient.ContainerListResult{}, nil
 	}
 	return f.containerListFunc(ctx, options)
+}
+
+// VolumeList 调用测试注入函数；未配置时返回空列表成功。
+func (f *fakeEngine) VolumeList(
+	ctx context.Context,
+	options mobyclient.VolumeListOptions,
+) (mobyclient.VolumeListResult, error) {
+	if f.volumeListFunc == nil {
+		return mobyclient.VolumeListResult{}, nil
+	}
+	return f.volumeListFunc(ctx, options)
 }
 
 // ContainerCreate 调用测试注入函数；未配置时返回零值成功。

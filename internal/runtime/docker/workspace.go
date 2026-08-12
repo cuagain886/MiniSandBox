@@ -98,6 +98,8 @@ func ensureWorkspaceVolume(
 	if err != nil {
 		return WorkspaceVolumeResult{}, fmt.Errorf("prepare workspace volume labels: %w", err)
 	}
+	// 新建卷显式声明资源职责；reader 仍接受没有该扩展 label 的旧卷，避免升级时误报。
+	labels[LabelResourceRole] = resourceRoleWorkspace
 
 	inspection, err := engine.VolumeInspect(
 		ctx,

@@ -25,6 +25,7 @@ const (
 	resourceRoleEgressNetwork = "egress-network"
 	resourceRoleEgressSidecar = "egress-sidecar"
 	resourceRoleMain          = "main"
+	resourceRoleWorkspace     = "workspace"
 )
 
 var egressNetworkLabels = map[string]string{

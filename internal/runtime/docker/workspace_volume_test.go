@@ -98,7 +98,9 @@ func TestEnsureWorkspaceVolumeCreatesMissingVolume(t *testing.T) {
 	if captured.Name != testWorkspace {
 		t.Fatalf("create name: got %q, want %q", captured.Name, testWorkspace)
 	}
-	if !reflect.DeepEqual(captured.Labels, validTestLabels(t)) {
+	expectedLabels := validTestLabels(t)
+	expectedLabels[LabelResourceRole] = resourceRoleWorkspace
+	if !reflect.DeepEqual(captured.Labels, expectedLabels) {
 		t.Fatalf("create labels: %#v", captured.Labels)
 	}
 	if captured.Driver != "" ||

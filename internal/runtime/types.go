@@ -27,6 +27,8 @@ const (
 	DiscoveryInspectUnavailable = "INSPECT_UNAVAILABLE"
 	// DiscoveryProfileInvalid 表示容器名称、网络、mount 或安全 profile 无法安全解析。
 	DiscoveryProfileInvalid = "PROFILE_INVALID"
+	// DiscoveryDuplicateResource 表示同一 sandbox ID 声明了多个同职责受管资源，恢复流程不得任选其一。
+	DiscoveryDuplicateResource = "DUPLICATE_RESOURCE"
 )
 
 // ContainerResourceRole 是受管容器在 sandbox bundle 中的唯一职责。
@@ -82,6 +84,20 @@ type ManagedContainerObservation struct {
 	// CapDrop 是容器显式移除的 capability 名称副本。
 	CapDrop []string
 	// DiscoveryIssue 是单项损坏时的稳定安全诊断码。
+	DiscoveryIssue string
+}
+
+// ManagedVolumeObservation 是 workspace 卷盘点产生的只读安全事实，不包含挂载点或卷内内容。
+type ManagedVolumeObservation struct {
+	// VolumeName 是 Docker 返回并经过安全复制的卷名称。
+	VolumeName string
+	// SandboxID 是 labels 中通过规范校验的 sandbox ID；损坏项可为空。
+	SandboxID string
+	// SchemaVersion 是受支持的恢复 label schema 版本。
+	SchemaVersion int
+	// SpecHash 是卷所属 resolved spec 的 SHA-256 摘要。
+	SpecHash string
+	// DiscoveryIssue 是单项损坏、重复或 inspect 故障对应的稳定诊断码。
 	DiscoveryIssue string
 }
 

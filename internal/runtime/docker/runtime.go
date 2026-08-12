@@ -53,6 +53,11 @@ type Engine interface {
 		context.Context,
 		mobyclient.ContainerListOptions,
 	) (mobyclient.ContainerListResult, error)
+	// VolumeList 按受管 label 枚举 workspace 卷；调用方仍须逐项 inspect 并重新校验身份。
+	VolumeList(
+		context.Context,
+		mobyclient.VolumeListOptions,
+	) (mobyclient.VolumeListResult, error)
 	// ContainerCreate 创建尚未启动的 sandbox 容器。
 	ContainerCreate(
 		context.Context,
