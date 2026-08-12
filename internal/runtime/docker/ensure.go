@@ -7,6 +7,7 @@ import (
 
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
+	"minisandbox/internal/testcrashpoint"
 )
 
 // Ensure 按固定顺序幂等保证 sandbox 的 Docker 资源达到 running。
@@ -59,6 +60,7 @@ func (r *Runtime) Ensure(
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
+	testcrashpoint.Hit("create.runtime-directory")
 	// 名称计算和目录创建必须指向同一个受管路径，避免未来改动造成 bind
 	// mount 与 runner probe 使用不同目录。
 	if paths.Directory != names.RuntimeDirectory ||
@@ -89,11 +91,13 @@ func (r *Runtime) Ensure(
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
+	testcrashpoint.Hit("create.workspace-volume")
 	container, err := ensureStoppedContainerWithEgress(ctx, r.engine, sandbox, names, readyEgress)
 	journal.containerCreated = container.CreatedByThisCall
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
+	testcrashpoint.Hit("create.container")
 	if err := copyArtifacts(
 		ctx,
 		r.engine,
@@ -103,6 +107,7 @@ func (r *Runtime) Ensure(
 	); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
+	testcrashpoint.Hit("create.artifact-copy")
 	// Docker Desktop/WSL 会在创建容器时才建立 bind source 映射；在此之后发布
 	// 一次性材料，既保证首次启动可见，也缩短 token 在宿主机上的静态暴露窗口。
 	if r.bootstrap != nil {
@@ -113,6 +118,7 @@ func (r *Runtime) Ensure(
 	if err := startContainer(ctx, r.engine, container.ContainerID); err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)
 	}
+	testcrashpoint.Hit("create.container-start")
 	actual, err = r.Inspect(ctx, sandbox.ID)
 	if err != nil {
 		return runtimeport.ActualSandbox{}, ensureFailure(ctx, r, journal, err)

@@ -13,6 +13,7 @@ import (
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
 	"minisandbox/internal/store"
+	"minisandbox/internal/testcrashpoint"
 )
 
 const (
@@ -310,6 +311,8 @@ func (r *Reconciler) reconcileRunning(
 	} else if err := r.probe.Probe(ctx, waiting.ID, actual.RunnerProtocolVersion); err != nil {
 		return r.failRunning(ctx, waiting, err, RetryOperationStart)
 	}
+	testcrashpoint.Hit("create.runner-ready")
+	testcrashpoint.Hit("create.before-running-cas")
 	running, err := r.store.ResetRetry(ctx, store.RetryResetUpdate{
 		Observed: store.ObservedUpdate{
 			ID: waiting.ID, ExpectedRevision: waiting.Revision, State: domain.StateRunning,
@@ -320,6 +323,7 @@ func (r *Reconciler) reconcileRunning(
 	if err != nil {
 		return fmt.Errorf("mark sandbox running: %w", err)
 	}
+	testcrashpoint.Hit("create.after-running-cas")
 	if err := r.projectLease(running); err != nil {
 		return r.recordFailure(ctx, running, err, running.RuntimeID, RetryOperationRecover)
 	}

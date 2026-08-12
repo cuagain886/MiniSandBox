@@ -35,6 +35,7 @@ func (s *SandboxService) CommitIdempotentCreate(
 	if err != nil {
 		return IdempotentCreateOutcome{}, fmt.Errorf("commit idempotent sandbox creation: %w", err)
 	}
+	testcrashpoint.Hit("create.store-commit")
 	if !result.Replayed && s.waker != nil {
 		if !testcrashpoint.Drop("wake.create") {
 			s.waker.Wake(result.Sandbox.ID)
@@ -65,6 +66,7 @@ func (s *SandboxService) CommitNonIdempotentCreate(
 	if err != nil {
 		return IdempotentCreateOutcome{}, fmt.Errorf("commit non-idempotent sandbox creation: %w", err)
 	}
+	testcrashpoint.Hit("create.store-commit")
 	if s.waker != nil {
 		if !testcrashpoint.Drop("wake.create") {
 			s.waker.Wake(created.ID)
