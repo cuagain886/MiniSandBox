@@ -29,6 +29,18 @@ const (
 	DiscoveryProfileInvalid = "PROFILE_INVALID"
 	// DiscoveryDuplicateResource 表示同一 sandbox ID 声明了多个同职责受管资源，恢复流程不得任选其一。
 	DiscoveryDuplicateResource = "DUPLICATE_RESOURCE"
+	// DiscoveryDirectoryNameInvalid 表示 run root 中存在不属于规范 sandbox ID 的顶层条目。
+	DiscoveryDirectoryNameInvalid = "DIRECTORY_NAME_INVALID"
+	// DiscoveryDirectoryUnsafe 表示受管目录是链接、重解析点或非目录对象。
+	DiscoveryDirectoryUnsafe = "DIRECTORY_UNSAFE"
+	// DiscoveryDirectoryInspectUnavailable 表示顶层受管目录无法安全检查。
+	DiscoveryDirectoryInspectUnavailable = "DIRECTORY_INSPECT_UNAVAILABLE"
+	// DiscoveryManifestUnsafe 表示 lease manifest 是链接、非普通文件或权限/所有者不安全。
+	DiscoveryManifestUnsafe = "MANIFEST_UNSAFE"
+	// DiscoveryManifestInvalid 表示 lease manifest 超限、格式错误、版本未知或身份不一致。
+	DiscoveryManifestInvalid = "MANIFEST_INVALID"
+	// DiscoveryManifestUnavailable 表示 lease manifest 在安全读取时发生非消失型故障。
+	DiscoveryManifestUnavailable = "MANIFEST_UNAVAILABLE"
 )
 
 // ContainerResourceRole 是受管容器在 sandbox bundle 中的唯一职责。
@@ -98,6 +110,20 @@ type ManagedVolumeObservation struct {
 	// SpecHash 是卷所属 resolved spec 的 SHA-256 摘要。
 	SpecHash string
 	// DiscoveryIssue 是单项损坏、重复或 inspect 故障对应的稳定诊断码。
+	DiscoveryIssue string
+}
+
+// RuntimeDirectoryObservation 是 run root 顶层目录及可选 lease manifest 的安全只读投影。
+type RuntimeDirectoryObservation struct {
+	// SandboxID 是由目录名验证得到的规范 ID；未知条目保持为空，避免传播任意名称。
+	SandboxID string
+	// DirectoryPresent 表示对应顶层条目存在且已验证为真实目录。
+	DirectoryPresent bool
+	// ManifestPresent 表示固定 lease.json 存在；损坏文件同样为 true。
+	ManifestPresent bool
+	// Manifest 是验证成功后的值副本；缺失或损坏时为 nil。
+	Manifest *LeaseManifest
+	// DiscoveryIssue 是目录或 manifest 的稳定安全诊断码，不包含宿主机路径。
 	DiscoveryIssue string
 }
 
