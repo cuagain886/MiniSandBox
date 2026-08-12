@@ -23,7 +23,7 @@ func TestPlanRecoveryCoversStoreActualMatrix(t *testing.T) {
 					want = RecoveryActionNoOp
 				}
 				if desired == domain.DesiredRunning && state == domain.StateTerminated {
-					want = RecoveryActionAnomaly
+					want = RecoveryActionRecordAnomaly
 				}
 				if plan.Action != want {
 					t.Fatalf("plan: %#v, want %s", plan, want)
@@ -53,12 +53,12 @@ func TestPlanRecoveryImportsOnlyCompleteTrustedOrphan(t *testing.T) {
 	}
 	partial := complete
 	partial.Workspace = nil
-	if got := PlanRecovery(nil, &partial); got.Action != RecoveryActionAnomaly || got.Reason != recoveryPlanReasonPartialOrphan {
+	if got := PlanRecovery(nil, &partial); got.Action != RecoveryActionRecordAnomaly || got.Reason != recoveryPlanReasonPartialOrphan {
 		t.Fatalf("partial orphan: %#v", got)
 	}
 	unknownSchema := complete
 	unknownSchema.Anomalies = []ActualAnomaly{{Code: ActualAnomalyResourceDamaged, Detail: runtimeport.DiscoverySchemaUnsupported}}
-	if got := PlanRecovery(nil, &unknownSchema); got.Action != RecoveryActionAnomaly || got.Reason != recoveryPlanReasonActualAnomaly {
+	if got := PlanRecovery(nil, &unknownSchema); got.Action != RecoveryActionRecordAnomaly || got.Reason != recoveryPlanReasonActualAnomaly {
 		t.Fatalf("unknown schema: %#v", got)
 	}
 }
@@ -72,7 +72,7 @@ func TestPlanRecoveryRepairsMetadataBeforeWakeAndNeverOverlooksDrift(t *testing.
 		t.Fatalf("metadata: %#v", got)
 	}
 	stored.SpecHash = strings.Repeat("b", 64)
-	if got := PlanRecovery(&stored, &actual); got.Action != RecoveryActionAnomaly || got.Reason != recoveryPlanReasonSpecDrift {
+	if got := PlanRecovery(&stored, &actual); got.Action != RecoveryActionRecordAnomaly || got.Reason != recoveryPlanReasonSpecDrift {
 		t.Fatalf("drift: %#v", got)
 	}
 }
@@ -94,12 +94,12 @@ func TestPlanRecoveryIsPure(t *testing.T) {
 func TestPlanRecoveryRejectsInvalidStateAndIdentity(t *testing.T) {
 	stored := recoveryPlanSandbox(domain.DesiredState("Unknown"), domain.StatePending)
 	actual := recoveryPlanActual()
-	if got := PlanRecovery(&stored, &actual); got.Action != RecoveryActionAnomaly || got.Reason != recoveryPlanReasonStateInvalid {
+	if got := PlanRecovery(&stored, &actual); got.Action != RecoveryActionRecordAnomaly || got.Reason != recoveryPlanReasonStateInvalid {
 		t.Fatalf("invalid state: %#v", got)
 	}
 	stored = recoveryPlanSandbox(domain.DesiredRunning, domain.StateRunning)
 	actual.SandboxID = "10010203-0405-4607-8809-0a0b0c0d0e0f"
-	if got := PlanRecovery(&stored, &actual); got.Action != RecoveryActionAnomaly || got.Reason != recoveryPlanReasonIdentityConflict {
+	if got := PlanRecovery(&stored, &actual); got.Action != RecoveryActionRecordAnomaly || got.Reason != recoveryPlanReasonIdentityConflict {
 		t.Fatalf("identity: %#v", got)
 	}
 }

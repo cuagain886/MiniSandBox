@@ -63,6 +63,9 @@ func runtimeAnomalyResourceType(resource string) storeport.RuntimeAnomalyResourc
 }
 
 func runtimeAnomalyClassification(anomaly ActualAnomaly) storeport.RuntimeAnomalyClassification {
+	if anomaly.Detail == "SCHEMA_UNSUPPORTED" || anomaly.Detail == "SCHEMA_UNKNOWN" {
+		return storeport.RuntimeAnomalyUnknownSchema
+	}
 	switch anomaly.Code {
 	case ActualAnomalyDuplicateMain, ActualAnomalyDuplicateEgress, ActualAnomalyDuplicateWorkspace, ActualAnomalyDuplicateDirectory:
 		return storeport.RuntimeAnomalyDuplicateResource

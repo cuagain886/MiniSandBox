@@ -14,8 +14,10 @@ const (
 	RecoveryActionRepairMetadata RecoveryAction = "REPAIR_METADATA"
 	// RecoveryActionImport 表示完整可信 orphan bundle 可以进入受限导入流程。
 	RecoveryActionImport RecoveryAction = "IMPORT"
-	// RecoveryActionAnomaly 表示必须隔离并报告，不能猜测、导入或改写。
-	RecoveryActionAnomaly RecoveryAction = "ANOMALY"
+	// RecoveryActionRecordAnomaly 表示只允许记录安全异常，不能猜测、导入或改写 runtime。
+	RecoveryActionRecordAnomaly RecoveryAction = "RECORD_ANOMALY"
+	// RecoveryActionAnomaly 是旧内部名称的兼容别名；新代码应使用 RecoveryActionRecordAnomaly。
+	RecoveryActionAnomaly = RecoveryActionRecordAnomaly
 )
 
 const (
