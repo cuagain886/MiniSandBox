@@ -4,6 +4,7 @@ package integration
 
 import (
 	"net"
+	"net/http"
 	"os"
 	"path/filepath"
 	"testing"
@@ -50,7 +51,14 @@ func TestDeleteCrashPointMatrix(t *testing.T) {
 			requestDone := make(chan struct{})
 			go func() {
 				defer close(requestDone)
-				submitSandboxDelete(t, crashed.baseURL, sandbox.ID)
+				request, err := http.NewRequest(http.MethodDelete, crashed.baseURL+"/v1/sandboxes/"+sandbox.ID, nil)
+				if err != nil {
+					return
+				}
+				response, err := http.DefaultClient.Do(request)
+				if err == nil {
+					_ = response.Body.Close()
+				}
 			}()
 			waitCrashpoint(t, listener, point)
 			crashed.kill(t)
