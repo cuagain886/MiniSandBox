@@ -152,6 +152,7 @@ func driftFixture(outbound bool) (domain.Sandbox, ActualResourceSnapshot, DriftE
 		ContainerID: "main", SandboxID: actualTestID, Role: runtimeport.ContainerRoleMain, Name: "minisandbox-" + actualTestID,
 		ImageReference: spec.Image, PlatformOS: "linux", PlatformArch: "amd64", State: runtimeport.ActualRunning,
 		SchemaVersion: 2, SpecHash: stored.SpecHash, RunnerProtocolVersion: 1, Workspace: "workspace", WorkspaceDestination: domain.WorkspaceMountPath,
+		NetworkMode:    "none",
 		CPUQuotaMillis: 500, MemoryMiB: 256, PIDs: 64, ResourceProfileValid: true,
 		ProcessProfileValid: true, MountProfileValid: true, NamespaceProfileValid: true, PortProfileValid: true, DeviceProfileValid: true,
 		NoNewPrivileges: true, CapDrop: []string{"ALL"}, CapAdd: []string{"CHOWN", "SETUID", "SETGID", "KILL"}, RestartPolicy: "no",
