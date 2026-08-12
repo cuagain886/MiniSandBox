@@ -116,7 +116,7 @@ func IDAttr(field Field, id SafeID) (Attr, error) {
 	if want == "" || id.kind != want || id.value == "" {
 		return Attr{}, fmt.Errorf("invalid ID log attribute")
 	}
-	return Attr{value: slog.Any(string(field), id)}, nil
+	return Attr{value: slog.String(string(field), id.value)}, nil
 }
 
 // ValueAttr 为固定字符串字段生成 attribute。
@@ -173,8 +173,9 @@ func (l *Logger) Log(ctx context.Context, level slog.Level, message SafeValue, a
 	if l == nil || l.logger == nil || message.value == "" {
 		return
 	}
-	values := make([]any, 0, len(attrs))
-	for _, attr := range attrs {
+	allAttrs := append(ContextAttrs(ctx), attrs...)
+	values := make([]any, 0, len(allAttrs))
+	for _, attr := range allAttrs {
 		if attr.value.Key != "" {
 			values = append(values, attr.value)
 		}
