@@ -1,6 +1,16 @@
 package sdk
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+)
+
+// defaultPollInterval 是 SDK 内置等待方法的默认轮询间隔。
+//
+// 该值面向本机控制面延迟调优；调用方需要更长或更短的节奏时应通过
+// context deadline 控制总时长，SDK 不暴露轮询参数。
+const defaultPollInterval = 250 * time.Millisecond
 
 // CreateOption 是 Client.Create 支持的可选创建语义。
 type CreateOption func(*createOptions)
@@ -70,4 +80,43 @@ func (s *Sandbox) Info(ctx context.Context) (SandboxInfo, error) {
 		return SandboxInfo{}, err
 	}
 	return newSandboxInfo(sandbox), nil
+}
+
+// WaitRunning 轮询 sandbox 状态直到进入 Running 并返回该时刻的信息。
+//
+// sandbox 进入 Failed、或未经过 Running 直接进入 Terminated（例如 TTL 已
+// 过期）时立即失败；达到 Running 前中止清理的 Stopping 状态继续等待终态
+// 判定。总时长由调用方的 context deadline 控制，SDK 不内置超时。
+func (s *Sandbox) WaitRunning(ctx context.Context) (SandboxInfo, error) {
+	ticker := time.NewTicker(defaultPollInterval)
+	defer ticker.Stop()
+	for {
+		info, err := s.Info(ctx)
+		if err != nil {
+			return SandboxInfo{}, err
+		}
+		switch info.State {
+		case SandboxStateRunning:
+			return info, nil
+		case SandboxStateFailed:
+			return SandboxInfo{}, fmt.Errorf(
+				"minisandbox: sandbox %s failed before Running: %s: %s",
+				s.id,
+				info.Reason,
+				info.Message,
+			)
+		case SandboxStateTerminated:
+			return SandboxInfo{}, fmt.Errorf(
+				"minisandbox: sandbox %s terminated before Running: %s: %s",
+				s.id,
+				info.Reason,
+				info.Message,
+			)
+		}
+		select {
+		case <-ctx.Done():
+			return SandboxInfo{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
 }
