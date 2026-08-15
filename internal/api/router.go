@@ -61,6 +61,8 @@ type RouterDependencies struct {
 	// Files 提供 workspace 文件与 capabilities 用例；nil 时对应路由保持
 	// NOT_IMPLEMENTED 占位。
 	Files FilesService
+	// PTY 提供交互终端桥接用例；nil 时 PTY 路由保持 NOT_IMPLEMENTED 占位。
+	PTY PTYService
 }
 
 // NewRouter 创建 sandboxd 的根 HTTP handler，并注册中间件与全部公开路由。
@@ -88,6 +90,11 @@ func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler
 	registerLifecycleRoutes(mux, deps.Lifecycle)
 	registerExecutionRoutes(mux, deps.Execution, deps.SSEWriteTimeout)
 	registerFilesRoutes(mux, deps.Files)
+	if deps.PTY != nil {
+		mux.Handle("GET /v1/sandboxes/{sandbox_id}/pty", NewSandboxPTYHandler(deps.PTY))
+	} else {
+		mux.Handle("GET /v1/sandboxes/{sandbox_id}/pty", notImplemented("pty"))
+	}
 	if deps.Metrics != nil {
 		mux.Handle("GET /metrics", deps.Metrics)
 	}

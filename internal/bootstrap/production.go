@@ -590,7 +590,12 @@ func startProductionHTTPWithAdmin(cfg config.Config, build controlapi.BuildInfo,
 		runnerFactory.Close()
 		return nil, err
 	}
-	deps := controlapi.RouterDependencies{Lifecycle: lifecycleAPI, Execution: executionAPI, SSEWriteTimeout: cfg.Runner.SSEWriteTimeout, Readiness: readiness, Files: filesService}
+	ptyService, err := application.NewPTYService(sandboxStore, applicationPTYDialer{factory: runnerFactory})
+	if err != nil {
+		runnerFactory.Close()
+		return nil, err
+	}
+	deps := controlapi.RouterDependencies{Lifecycle: lifecycleAPI, Execution: executionAPI, SSEWriteTimeout: cfg.Runner.SSEWriteTimeout, Readiness: readiness, Files: filesService, PTY: ptyService}
 	if cfg.Admin.Enabled {
 		token, loadErr := adminauth.LoadToken(cfg.Admin.TokenFile)
 		if loadErr != nil {

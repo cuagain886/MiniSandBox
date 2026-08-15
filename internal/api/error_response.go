@@ -225,6 +225,20 @@ func mapError(err error) errorMapping {
 			message:   "Workspace file exceeds the configured size limit.",
 			retryable: false,
 		}
+	case errors.Is(err, domain.ErrPTYUnavailable):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodePTYUnavailable),
+			message:   "Sandbox PTY capability is unavailable.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrPTYLimitReached):
+		return errorMapping{
+			status:    http.StatusTooManyRequests,
+			code:      string(protocol.ErrorCodePTYLimitReached),
+			message:   "PTY session limit has been reached.",
+			retryable: true,
+		}
 	case errors.Is(err, domain.ErrOutboundNotAllowed):
 		return errorMapping{
 			status:    http.StatusForbidden,

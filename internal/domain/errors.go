@@ -63,4 +63,8 @@ var (
 	ErrFileConflict = errors.New("workspace file conflict")
 	// ErrFileTooLarge 表示上传或下载超过配置上限。
 	ErrFileTooLarge = errors.New("workspace file too large")
+	// ErrPTYUnavailable 表示当前 sandbox 未提供 PTY 能力。
+	ErrPTYUnavailable = errors.New("pty capability unavailable")
+	// ErrPTYLimitReached 表示当前 sandbox 的 PTY 并发上限已满。
+	ErrPTYLimitReached = errors.New("pty session limit reached")
 )
