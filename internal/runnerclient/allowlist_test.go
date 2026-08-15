@@ -15,7 +15,7 @@ func TestClientExportsOnlyNamedRunnerOperations(t *testing.T) {
 	}
 	sort.Strings(methods)
 	want := []string{
-		"Cancel", "Capabilities", "Delete", "DirectoryList", "Download",
+		"Cancel", "Capabilities", "Delete", "DialPTY", "DirectoryList", "Download",
 		"ExecuteBackground", "ExecuteForeground", "FileStat", "GoString",
 		"Health", "Logs", "Mkdir", "Move", "Shutdown", "Status", "String",
 		"Upload",
