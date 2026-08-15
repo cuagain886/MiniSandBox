@@ -1,10 +1,9 @@
-// Package main 提供只依赖公开 Go SDK 的 MiniSandbox 端到端验收程序。
+// Package main 提供只依赖公开 Go SDK 高层接口的 MiniSandbox 端到端验收程序。
 // 它验证调用方可见的核心闭环，不替代网络隔离、进程残留和崩溃恢复安全测试。
 package main
 
 import (
 	"context"
-	"encoding/base64"
 	"errors"
 	"fmt"
 	"net/http"
@@ -12,15 +11,12 @@ import (
 	"strings"
 	"time"
 
-	"minisandbox/pkg/protocol"
 	"minisandbox/sdk/go"
 )
 
 const (
 	defaultBaseURL = "http://127.0.0.1:8080"
 	defaultImage   = "debian:bookworm-slim"
-	pollInterval   = 250 * time.Millisecond
-	waitTimeout    = 90 * time.Second
 )
 
 func main() {
@@ -28,7 +24,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nSDK 验收失败: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("\n7/7 PASS：Go SDK 核心功能验收通过")
+	fmt.Println("\n10/10 PASS：Go SDK 核心功能验收通过")
 }
 
 func run() error {
@@ -39,13 +35,30 @@ func run() error {
 	image := environmentOrDefault("MINISANDBOX_IMAGE", defaultImage)
 	client := sdk.NewClient(baseURL, &http.Client{Timeout: 15 * time.Second})
 
+	fmt.Printf("MiniSandbox SDK 验收：server=%s image=%s\n", baseURL, image)
+
+	// S10 是环境预检，先于所有资源操作执行。
+	if err := client.Health(ctx); err != nil {
+		return fmt.Errorf("S10 health: %w", err)
+	}
+	readiness, err := client.Readiness(ctx)
+	if err != nil {
+		return fmt.Errorf("S10 readiness: %w", err)
+	}
+	if !readiness.Ready {
+		components := make([]string, 0, len(readiness.Components))
+		for _, component := range readiness.Components {
+			components = append(components, fmt.Sprintf("%s=%v", component.Name, component.Ready))
+		}
+		return fmt.Errorf("S10 服务未就绪: %s", strings.Join(components, " "))
+	}
+	pass("S10", "Health 存活且 Readiness 组件全部就绪", "")
+
 	ttl := 10 * time.Minute
 	createRequest := sdk.CreateSandboxRequest{Image: image, TTL: &ttl}
 	idempotencyKey := fmt.Sprintf("sdk-acceptance-%d", time.Now().UTC().UnixNano())
-	createOptions := sdk.CreateSandboxOptions{IdempotencyKey: idempotencyKey}
 
-	fmt.Printf("MiniSandbox SDK 验收：server=%s image=%s\n", baseURL, image)
-	sandbox, err := client.CreateSandboxWithOptions(ctx, createRequest, createOptions)
+	sandbox, err := client.Create(ctx, createRequest, sdk.WithIdempotencyKey(idempotencyKey))
 	if err != nil {
 		return fmt.Errorf("S01 创建 sandbox: %w", err)
 	}
@@ -54,37 +67,37 @@ func run() error {
 		if cleanupNeeded {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cleanupCancel()
-			_ = client.DeleteSandbox(cleanupCtx, sandbox.ID)
+			_ = sandbox.Delete(cleanupCtx)
 		}
 	}()
 
-	sandbox, err = waitSandboxState(ctx, client, sandbox.ID, protocol.SandboxStateRunning)
+	runningInfo, err := sandbox.WaitRunning(ctx)
 	if err != nil {
 		return fmt.Errorf("S01 等待 Running: %w", err)
 	}
-	if sandbox.ExpiresAt.IsZero() || !sandbox.ExpiresAt.After(time.Now()) {
-		return fmt.Errorf("S01 sandbox expiry 无效: %s", sandbox.ExpiresAt)
+	if runningInfo.ExpiresAt.IsZero() || !runningInfo.ExpiresAt.After(time.Now()) {
+		return fmt.Errorf("S01 sandbox expiry 无效: %s", runningInfo.ExpiresAt)
 	}
-	pass("S01", "创建 sandbox 并进入 Running", sandbox.ID)
+	pass("S01", "创建 sandbox 并进入 Running", sandbox.ID())
 
-	replayed, err := client.CreateSandboxWithOptions(ctx, createRequest, createOptions)
+	replayed, err := client.Create(ctx, createRequest, sdk.WithIdempotencyKey(idempotencyKey))
 	if err != nil {
 		return fmt.Errorf("S02 幂等重放: %w", err)
 	}
-	if replayed.ID != sandbox.ID {
-		return fmt.Errorf("S02 幂等重放创建了不同 sandbox: %s != %s", replayed.ID, sandbox.ID)
+	if replayed.ID() != sandbox.ID() {
+		return fmt.Errorf("S02 幂等重放创建了不同 sandbox: %s != %s", replayed.ID(), sandbox.ID())
 	}
 	conflictingTTL := 11 * time.Minute
-	_, err = client.CreateSandboxWithOptions(ctx, sdk.CreateSandboxRequest{
+	_, err = client.Create(ctx, sdk.CreateSandboxRequest{
 		Image: image,
 		TTL:   &conflictingTTL,
-	}, createOptions)
-	if err := expectResponseError(err, http.StatusConflict, string(protocol.ErrorCodeIdempotencyConflict)); err != nil {
+	}, sdk.WithIdempotencyKey(idempotencyKey))
+	if err := expectResponseError(err, http.StatusConflict, "IDEMPOTENCY_CONFLICT"); err != nil {
 		return fmt.Errorf("S02 幂等冲突: %w", err)
 	}
-	pass("S02", "幂等重放返回同一资源，不同请求返回 409", sandbox.ID)
+	pass("S02", "幂等重放返回同一资源，不同请求返回 409", sandbox.ID())
 
-	execution, err := client.StartBackgroundExecution(ctx, sandbox.ID, sdk.ExecuteRequest{
+	execution, err := sandbox.StartExecution(ctx, sdk.ExecuteRequest{
 		Argv: []string{
 			"/bin/sh", "-c",
 			"printf 'sdk-stdout'; printf 'sdk-stderr' >&2",
@@ -94,285 +107,188 @@ func run() error {
 	if err != nil {
 		return fmt.Errorf("S03 创建 execution: %w", err)
 	}
-	status, err := waitExecutionTerminal(ctx, client, sandbox.ID, execution.ExecutionID)
+	terminalInfo, err := execution.Wait(ctx)
 	if err != nil {
 		return fmt.Errorf("S03 等待 execution 终态: %w", err)
 	}
-	if status.State != protocol.ExecutionStateExited ||
-		status.TerminalEvent == nil ||
-		status.TerminalEvent.Type != protocol.EventExited ||
-		status.TerminalEvent.ExitCode == nil ||
-		*status.TerminalEvent.ExitCode != 0 {
-		return fmt.Errorf("S03 非预期终态: state=%s event=%#v", status.State, status.TerminalEvent)
+	if terminalInfo.State != sdk.ExecutionStateExited ||
+		terminalInfo.TerminalEvent == nil ||
+		terminalInfo.TerminalEvent.Type != sdk.EventExited ||
+		terminalInfo.TerminalEvent.ExitCode != 0 {
+		return fmt.Errorf("S03 非预期终态: %+v", terminalInfo)
 	}
-	stdout, stderr, err := readCompleteLogs(ctx, client, sandbox.ID, execution.ExecutionID)
-	if err != nil {
+	var stdout, stderr strings.Builder
+	logs := execution.Logs(ctx, 0)
+	for logs.Next() {
+		event := logs.Event()
+		switch event.Type {
+		case sdk.EventStdout:
+			stdout.Write(event.Data)
+		case sdk.EventStderr:
+			stderr.Write(event.Data)
+		}
+	}
+	if err := logs.Err(); err != nil {
 		return fmt.Errorf("S03 读取日志: %w", err)
 	}
-	if stdout != "sdk-stdout" || stderr != "sdk-stderr" {
-		return fmt.Errorf("S03 输出不匹配: stdout=%q stderr=%q", stdout, stderr)
+	if stdout.String() != "sdk-stdout" || stderr.String() != "sdk-stderr" {
+		return fmt.Errorf("S03 输出不匹配: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
-	pass("S03", "命令退出码、stdout/stderr 和日志游标正确", execution.ExecutionID)
+	pass("S03", "命令退出码、stdout/stderr 日志自动解码正确", execution.ID())
 
-	cancellable, err := client.StartBackgroundExecution(ctx, sandbox.ID, sdk.ExecuteRequest{
+	cancellable, err := sandbox.StartExecution(ctx, sdk.ExecuteRequest{
 		Argv:    []string{"/bin/sh", "-c", "sleep 30 & wait"},
 		Timeout: 60 * time.Second,
 	})
 	if err != nil {
 		return fmt.Errorf("S04 创建待取消 execution: %w", err)
 	}
-	if err := waitExecutionRunning(ctx, client, sandbox.ID, cancellable.ExecutionID); err != nil {
-		return fmt.Errorf("S04 等待 execution Running: %w", err)
-	}
-	if err := client.CancelExecution(ctx, sandbox.ID, cancellable.ExecutionID); err != nil {
-		return fmt.Errorf("S04 取消 execution: %w", err)
-	}
-	cancelled, err := waitExecutionTerminal(ctx, client, sandbox.ID, cancellable.ExecutionID)
+	cancelledInfo, err := cancellable.CancelAndWait(ctx)
 	if err != nil {
-		return fmt.Errorf("S04 等待取消终态: %w", err)
+		return fmt.Errorf("S04 取消并等待终态: %w", err)
 	}
-	if cancelled.State != protocol.ExecutionStateCancelled ||
-		cancelled.TerminalEvent == nil ||
-		cancelled.TerminalEvent.Type != protocol.EventCancelled {
-		return fmt.Errorf("S04 非预期取消终态: state=%s event=%#v", cancelled.State, cancelled.TerminalEvent)
+	if cancelledInfo.State != sdk.ExecutionStateCancelled ||
+		cancelledInfo.TerminalEvent == nil ||
+		cancelledInfo.TerminalEvent.Type != sdk.EventCancelled {
+		return fmt.Errorf("S04 非预期取消终态: %+v", cancelledInfo)
 	}
-	if err := client.CancelExecution(ctx, sandbox.ID, cancellable.ExecutionID); err != nil {
+	if _, err := cancellable.CancelAndWait(ctx); err != nil {
 		return fmt.Errorf("S04 重复取消: %w", err)
 	}
-	pass("S04", "长任务取消并保持稳定 Cancelled 终态", cancellable.ExecutionID)
+	pass("S04", "长任务取消并保持稳定 Cancelled 终态", cancellable.ID())
 
-	previousExpiry := sandbox.ExpiresAt
+	previousExpiry := runningInfo.ExpiresAt
 	requestedExpiry := previousExpiry.Add(5 * time.Minute)
-	renewed, err := client.RenewSandbox(ctx, sandbox.ID, sdk.RenewSandboxRequest{ExpiresAt: requestedExpiry})
+	renewedInfo, err := sandbox.Renew(ctx, requestedExpiry)
 	if err != nil {
 		return fmt.Errorf("S05 续期: %w", err)
 	}
-	if !renewed.ExpiresAt.Equal(requestedExpiry) {
-		return fmt.Errorf("S05 续期结果不匹配: got=%s want=%s", renewed.ExpiresAt, requestedExpiry)
+	if !renewedInfo.ExpiresAt.Equal(requestedExpiry) {
+		return fmt.Errorf("S05 续期结果不匹配: got=%s want=%s", renewedInfo.ExpiresAt, requestedExpiry)
 	}
-	replayedRenew, err := client.RenewSandbox(ctx, sandbox.ID, sdk.RenewSandboxRequest{ExpiresAt: requestedExpiry})
+	replayedRenew, err := sandbox.Renew(ctx, requestedExpiry)
 	if err != nil || !replayedRenew.ExpiresAt.Equal(requestedExpiry) {
 		return fmt.Errorf("S05 续期重放: expiry=%s err=%w", replayedRenew.ExpiresAt, err)
 	}
-	_, err = client.RenewSandbox(ctx, sandbox.ID, sdk.RenewSandboxRequest{ExpiresAt: previousExpiry})
-	if err := expectResponseError(err, http.StatusConflict, string(protocol.ErrorCodeLeaseConflict)); err != nil {
+	_, err = sandbox.Renew(ctx, previousExpiry)
+	if err := expectResponseError(err, http.StatusConflict, "LEASE_CONFLICT"); err != nil {
 		return fmt.Errorf("S05 拒绝缩短租约: %w", err)
 	}
-	sandbox = renewed
-	pass("S05", "续期、幂等重放和拒绝缩短租约", sandbox.ExpiresAt.Format(time.RFC3339))
+	pass("S05", "续期、幂等重放和拒绝缩短租约", renewedInfo.ExpiresAt.Format(time.RFC3339))
 
-	_, err = client.GetSandbox(ctx, "00000000-0000-4000-8000-000000000000")
+	result, err := sandbox.Run(ctx, sdk.ExecuteRequest{
+		Argv: []string{
+			"/bin/sh", "-c",
+			"printf 'run-stdout'; printf 'run-stderr' >&2",
+		},
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("S08 Run 正常执行: %w", err)
+	}
+	if result.ExitCode != 0 || string(result.Stdout) != "run-stdout" ||
+		string(result.Stderr) != "run-stderr" {
+		return fmt.Errorf("S08 Run 结果不匹配: %+v", result)
+	}
+	nonzero, err := sandbox.Run(ctx, sdk.ExecuteRequest{
+		Argv:    []string{"/bin/sh", "-c", "exit 7"},
+		Timeout: 10 * time.Second,
+	})
+	var exitError *sdk.ExitError
+	if !errors.As(err, &exitError) || exitError.ExitCode != 7 {
+		return fmt.Errorf("S08 Run 非零退出: got %v, want ExitError(7)", err)
+	}
+	if nonzero.ExitCode != 7 || nonzero.State != sdk.ExecutionStateExited {
+		return fmt.Errorf("S08 非零退出结果不完整: %+v", nonzero)
+	}
+	pass("S08", "Run 一次调用收集输出并区分退出码", result.ExecutionID)
+
+	stream, err := sandbox.ExecuteStream(ctx, sdk.ExecuteRequest{
+		Argv: []string{
+			"/bin/sh", "-c",
+			"printf 'sse-stdout'; printf 'sse-stderr' >&2",
+		},
+		Timeout: 10 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("S09 前台 SSE 执行: %w", err)
+	}
+	var streamStdout, streamStderr strings.Builder
+	terminated := false
+	for stream.Next() {
+		event := stream.Event()
+		switch event.Type {
+		case sdk.EventStdout:
+			streamStdout.Write(event.Data)
+		case sdk.EventStderr:
+			streamStderr.Write(event.Data)
+		case sdk.EventExited:
+			terminated = event.ExitCode == 0
+		}
+	}
+	if err := stream.Err(); err != nil {
+		return fmt.Errorf("S09 前台 SSE 流: %w", err)
+	}
+	if !terminated || streamStdout.String() != "sse-stdout" || streamStderr.String() != "sse-stderr" {
+		return fmt.Errorf(
+			"S09 SSE 输出不匹配: terminated=%v stdout=%q stderr=%q",
+			terminated,
+			streamStdout.String(),
+			streamStderr.String(),
+		)
+	}
+	pass("S09", "前台 SSE 边执行边解码输出", "")
+
+	_, err = client.Sandbox("00000000-0000-4000-8000-000000000000").Info(ctx)
 	if err := expectResponseError(err, http.StatusNotFound, ""); err != nil {
 		return fmt.Errorf("S06 404 错误模型: %w", err)
 	}
 	cancelledContext, cancelRequest := context.WithCancel(ctx)
 	cancelRequest()
-	_, err = client.GetSandbox(cancelledContext, sandbox.ID)
+	_, err = client.Sandbox(sandbox.ID()).Info(cancelledContext)
 	if !errors.Is(err, context.Canceled) {
 		return fmt.Errorf("S06 context 取消: got %v, want context.Canceled", err)
 	}
 	invalidTTL := 30 * time.Second
-	_, err = client.CreateSandboxWithOptions(ctx, sdk.CreateSandboxRequest{
+	_, err = client.Create(ctx, sdk.CreateSandboxRequest{
 		Image: image,
 		TTL:   &invalidTTL,
-	}, sdk.CreateSandboxOptions{})
+	})
 	if err == nil {
 		return errors.New("S06 非法 TTL 未被 SDK 拒绝")
 	}
-	_, err = client.StartBackgroundExecution(ctx, sandbox.ID, sdk.ExecuteRequest{
+	_, err = sandbox.StartExecution(ctx, sdk.ExecuteRequest{
 		Argv:    []string{"true"},
 		Timeout: 1500 * time.Millisecond,
 	})
 	if err == nil {
 		return errors.New("S06 非整秒 timeout 未被 SDK 拒绝")
 	}
-	_, err = client.CreateSandboxWithOptions(ctx, createRequest, sdk.CreateSandboxOptions{
-		IdempotencyKey: "invalid key",
-	})
+	_, err = client.Create(ctx, createRequest, sdk.WithIdempotencyKey("invalid key"))
 	if err == nil {
 		return errors.New("S06 非法幂等 key 未被 SDK 拒绝")
 	}
 	pass("S06", "ResponseError、Context 和本地参数校验正确", "")
 
-	if err := client.DeleteSandbox(ctx, sandbox.ID); err != nil {
-		return fmt.Errorf("S07 删除 sandbox: %w", err)
-	}
-	sandbox, err = waitSandboxState(ctx, client, sandbox.ID, protocol.SandboxStateTerminated)
+	terminatedInfo, err := sandbox.DeleteAndWait(ctx)
 	if err != nil {
-		return fmt.Errorf("S07 等待 Terminated: %w", err)
+		return fmt.Errorf("S07 删除并等待 Terminated: %w", err)
 	}
-	if err := client.DeleteSandbox(ctx, sandbox.ID); err != nil {
+	if terminatedInfo.State != sdk.SandboxStateTerminated {
+		return fmt.Errorf("S07 非预期终态: %s", terminatedInfo.State)
+	}
+	if err := sandbox.Delete(ctx); err != nil {
 		return fmt.Errorf("S07 重复删除: %w", err)
 	}
-	_, err = client.StartBackgroundExecution(ctx, sandbox.ID, sdk.ExecuteRequest{
+	_, err = sandbox.StartExecution(ctx, sdk.ExecuteRequest{
 		Argv: []string{"/bin/true"},
 	})
-	if err := expectResponseError(err, http.StatusConflict, string(protocol.ErrorCodeSandboxNotRunning)); err != nil {
+	if err := expectResponseError(err, http.StatusConflict, "SANDBOX_NOT_RUNNING"); err != nil {
 		return fmt.Errorf("S07 终态拒绝 execution: %w", err)
 	}
 	cleanupNeeded = false
-	pass("S07", "删除收敛到 Terminated、重复删除且拒绝新执行", sandbox.ID)
+	pass("S07", "删除收敛到 Terminated、重复删除且拒绝新执行", sandbox.ID())
 	return nil
-}
-
-func waitSandboxState(
-	ctx context.Context,
-	client *sdk.Client,
-	sandboxID string,
-	want protocol.SandboxState,
-) (protocol.Sandbox, error) {
-	deadline := time.NewTimer(waitTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		sandbox, err := client.GetSandbox(ctx, sandboxID)
-		if err != nil {
-			return protocol.Sandbox{}, err
-		}
-		if sandbox.State == want {
-			return sandbox, nil
-		}
-		if sandbox.State == protocol.SandboxStateFailed ||
-			(want == protocol.SandboxStateRunning && sandbox.State == protocol.SandboxStateTerminated) {
-			return protocol.Sandbox{}, fmt.Errorf(
-				"sandbox 提前进入终态: state=%s reason=%s message=%s",
-				sandbox.State,
-				sandbox.Reason,
-				sandbox.Message,
-			)
-		}
-		select {
-		case <-ctx.Done():
-			return protocol.Sandbox{}, ctx.Err()
-		case <-deadline.C:
-			return protocol.Sandbox{}, fmt.Errorf("等待 sandbox %s 超时", want)
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitExecutionRunning(ctx context.Context, client *sdk.Client, sandboxID, executionID string) error {
-	deadline := time.NewTimer(waitTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		status, err := client.GetExecution(ctx, sandboxID, executionID)
-		if err != nil {
-			return err
-		}
-		if status.State == protocol.ExecutionStateRunning {
-			return nil
-		}
-		if executionTerminal(status.State) {
-			return fmt.Errorf("execution 在取消前已进入终态 %s", status.State)
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-deadline.C:
-			return errors.New("等待 execution Running 超时")
-		case <-ticker.C:
-		}
-	}
-}
-
-func waitExecutionTerminal(
-	ctx context.Context,
-	client *sdk.Client,
-	sandboxID string,
-	executionID string,
-) (protocol.ExecutionStatus, error) {
-	deadline := time.NewTimer(waitTimeout)
-	defer deadline.Stop()
-	ticker := time.NewTicker(pollInterval)
-	defer ticker.Stop()
-
-	for {
-		status, err := client.GetExecution(ctx, sandboxID, executionID)
-		if err != nil {
-			return protocol.ExecutionStatus{}, err
-		}
-		if executionTerminal(status.State) {
-			return status, nil
-		}
-		select {
-		case <-ctx.Done():
-			return protocol.ExecutionStatus{}, ctx.Err()
-		case <-deadline.C:
-			return protocol.ExecutionStatus{}, errors.New("等待 execution 终态超时")
-		case <-ticker.C:
-		}
-	}
-}
-
-func readCompleteLogs(
-	ctx context.Context,
-	client *sdk.Client,
-	sandboxID string,
-	executionID string,
-) (string, string, error) {
-	deadline := time.NewTimer(waitTimeout)
-	defer deadline.Stop()
-	var stdout, stderr strings.Builder
-	var cursor, lastSequence uint64
-
-	for {
-		page, err := client.GetExecutionLogs(ctx, sandboxID, executionID, cursor)
-		if err != nil {
-			return "", "", err
-		}
-		for _, event := range page.Events {
-			if err := event.Validate(); err != nil {
-				return "", "", fmt.Errorf("非法 execution event: sequence=%d type=%s", event.Sequence, event.Type)
-			}
-			if event.Sequence <= lastSequence {
-				return "", "", fmt.Errorf("event sequence 未严格递增: %d <= %d", event.Sequence, lastSequence)
-			}
-			lastSequence = event.Sequence
-			if event.Type != protocol.EventStdout && event.Type != protocol.EventStderr {
-				continue
-			}
-			data, err := base64.StdEncoding.DecodeString(event.DataBase64)
-			if err != nil {
-				return "", "", fmt.Errorf("解码 %s: %w", event.Type, err)
-			}
-			if event.Type == protocol.EventStdout {
-				_, _ = stdout.Write(data)
-			} else {
-				_, _ = stderr.Write(data)
-			}
-		}
-		if page.NextCursor < cursor || (len(page.Events) > 0 && page.NextCursor != lastSequence) {
-			return "", "", fmt.Errorf("非法日志游标: cursor=%d next=%d last=%d", cursor, page.NextCursor, lastSequence)
-		}
-		cursor = page.NextCursor
-		if page.Complete {
-			return stdout.String(), stderr.String(), nil
-		}
-		select {
-		case <-ctx.Done():
-			return "", "", ctx.Err()
-		case <-deadline.C:
-			return "", "", errors.New("等待完整日志超时")
-		case <-time.After(pollInterval):
-		}
-	}
-}
-
-func executionTerminal(state protocol.ExecutionState) bool {
-	switch state {
-	case protocol.ExecutionStateExited,
-		protocol.ExecutionStateFailed,
-		protocol.ExecutionStateCancelled,
-		protocol.ExecutionStateTimedOut:
-		return true
-	default:
-		return false
-	}
 }
 
 func expectResponseError(err error, status int, code string) error {
