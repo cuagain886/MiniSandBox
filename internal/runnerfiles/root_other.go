@@ -9,5 +9,5 @@ func openWorkspaceRoot(string) (workspaceRoot, error) {
 	return nil, ErrUnavailable
 }
 
-func (unsupportedRoot) close() error  { return nil }
+func (unsupportedRoot) close() error { return nil }
 func (unsupportedRoot) rootFD() int  { return -1 }
