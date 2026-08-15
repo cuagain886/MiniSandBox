@@ -1,67 +1,66 @@
 # MiniSandbox
 
-> An all-Go sandbox runtime for AI agents — run agent commands safely inside controlled Docker containers.
+> 全 Go 实现的 AI Agent 命令沙盒运行时 —— 让 Agent 在受控的 Docker 容器中安全地执行命令。
 
 ![Go](https://img.shields.io/badge/Go-1.26%2B-00ADD8?logo=go&logoColor=white)
 ![Platform](https://img.shields.io/badge/Platform-Linux%20%7C%20Docker-2496ED?logo=docker&logoColor=white)
 ![Status](https://img.shields.io/badge/Status-Prototype-orange)
 
-English | [简体中文](README-zh.md)
+[English](README.md) | 简体中文
 
-MiniSandbox is a single-host sandbox control plane: you tell it "give me a sandbox, run this command in it, and reclaim it when it expires" — it creates the container, injects its own execution components, runs the command, and reclaims resources, guaranteeing recovery or cleanup even if it crashes midway. Works with any user image out of the box, with nothing preinstalled.
+MiniSandbox 是一个单机沙盒控制面:你告诉它"给我一个沙盒、在里面跑这条命令、到点回收",它负责创建容器、注入执行组件、执行命令、回收资源,并保证中途崩溃也能恢复或清理干净。任意用户镜像开箱即用,无需预装任何组件。
 
-## Features
+## 功能
 
-- **Sandbox lifecycle**: asynchronous create/get/delete — idempotent, with automatic failure compensation and control-plane crash recovery.
-- **Command execution**: `argv` or `shell`, foreground SSE streaming output, background tasks (status/logs/cancel); timeout and cancellation kill the whole process group.
-- **Leases and reliability**: TTL-based automatic expiry, renewal, idempotent creation, and quota limits.
-- **Secure defaults**: commands run as a non-root user; containers are network-isolated by default (`network=none`) with `CapDrop=ALL` and CPU/memory/PID limits; outbound network is only possible through an explicitly enabled managed egress sidecar.
-- **Go SDK**: see [`sdk/go`](sdk/go/).
+- **沙盒生命周期**:异步创建/查询/删除 —— 幂等、失败自动补偿、控制面崩溃重启可恢复。
+- **命令执行**:`argv` 或 `shell`,前台 SSE 流式输出,后台任务(状态/日志/取消);超时与取消按完整进程组终止。
+- **租约与可靠性**:TTL 到期自动回收、续期、幂等创建、配额限制。
+- **安全默认**:命令以非 root 身份执行;容器默认断网(`network=none`)、`CapDrop=ALL`、CPU/内存/进程数限额;出站网络只能通过显式开启的受管 egress sidecar。
+- **Go SDK**:见 [`sdk/go`](sdk/go/)。
 
-## Quick Start
+## 快速开始
 
-### Requirements
+### 环境要求
 
-- Linux/amd64 with an accessible Docker Engine (able to pull `debian:bookworm-slim`)
-- Go 1.26+, GNU Make, `curl`, `jq`
+- Linux/amd64 + 可访问的 Docker Engine(能拉取 `debian:bookworm-slim`)
+- Go 1.26+、GNU Make、`curl`、`jq`
 
-> Windows dev machines can compile the code and run unit tests, but the sandbox runtime itself targets Linux only; verify full behavior on Linux (e.g. WSL2).
+> Windows 开发机可以编译和跑单测,但沙盒运行时本身只面向 Linux;完整行为需在 Linux(如 WSL2)中验证。
 
-### Build & Run
+### 构建与启动
 
 ```bash
-# Produces bin/sandboxd, bin/runnerd, bin/sandbox-init
+# 产出 bin/sandboxd、bin/runnerd、bin/sandbox-init
 make build
 
-# Runner master key: a regular file with exactly 32 bytes, mode 0600
+# runner master key:恰好 32 字节、权限 0600 的普通文件
 sudo mkdir -p /etc/minisandbox
 head -c 32 /dev/urandom | sudo tee /etc/minisandbox/runner-master-key >/dev/null
 sudo chmod 600 /etc/minisandbox/runner-master-key
 
 sudo ./bin/sandboxd --config configs/sandboxd.example.yaml
-# Check readiness in another terminal
+# 另一个终端确认就绪
 curl -s http://127.0.0.1:8080/readyz | jq .
 ```
 
-### Using a Sandbox
+### 使用沙盒
 
 ```bash
-# 1. Create (async, returns 202; note the returned ID)
+# 1. 创建(异步,返回 202;记下返回的 ID)
 curl -s -X POST http://127.0.0.1:8080/v1/sandboxes \
   -H 'Content-Type: application/json' \
   -d '{"image":"debian:bookworm-slim","ttl_seconds":1800}' | jq .
 
-# 2. Poll until state becomes "Running" (replace <id> with the ID above)
+# 2. 轮询直到 state 变为 "Running"(把 <id> 换成上一步的 ID)
 curl -s http://127.0.0.1:8080/v1/sandboxes/<id> | jq .
 
-# 3. Foreground execution: streams stdout/stderr events over SSE
+# 3. 前台执行:SSE 流式返回 stdout/stderr 事件
 curl -N http://127.0.0.1:8080/v1/sandboxes/<id>/executions \
   -H 'Content-Type: application/json' \
   -H 'Accept: text/event-stream' \
   -d '{"argv":["sh","-c","echo hello from sandbox"]}'
 
-# 4. Background execution: returns an execution descriptor immediately;
-#    query status, fetch paginated logs, or cancel
+# 4. 后台执行:立即返回 execution 描述符,可查状态、分页日志、取消
 curl -s http://127.0.0.1:8080/v1/sandboxes/<id>/executions \
   -H 'Content-Type: application/json' \
   -d '{"shell":"sleep 60 && echo done","background":true}' | jq .
@@ -69,7 +68,7 @@ curl -s http://127.0.0.1:8080/v1/sandboxes/<id>/executions/<exec_id> | jq .
 curl -s "http://127.0.0.1:8080/v1/sandboxes/<id>/executions/<exec_id>/logs?cursor=0" | jq .
 curl -s -X DELETE http://127.0.0.1:8080/v1/sandboxes/<id>/executions/<exec_id>
 
-# 5. Renew and delete (TTL expiry also deletes automatically; repeated deletes are idempotent)
+# 5. 续期与删除(TTL 到期也会自动删除;重复删除幂等)
 curl -s -X POST http://127.0.0.1:8080/v1/sandboxes/<id>/renew \
   -H 'Content-Type: application/json' \
   -d '{"expires_at":"2026-08-15T12:00:00Z"}' | jq .
