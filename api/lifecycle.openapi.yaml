@@ -492,6 +492,30 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/pty:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    get:
+      operationId: openSandboxPTY
+      description: >-
+        WebSocket upgrade using subprotocol minisandbox.pty.v1. One connection owns
+        exactly one PTY session. The first client text frame must be a PTYStart
+        message; afterwards client binary frames are stdin, client text frames are
+        PTYResize messages, server binary frames are merged PTY output, and server
+        text frames are PTYServerEvent messages (started, terminal, error). The
+        connection ends after the single terminal event; closing the connection
+        cancels the process group.
+      responses:
+        "101":
+          description: WebSocket connection established
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     IdempotencyKey:
@@ -682,6 +706,8 @@ components:
         - FILE_CONFLICT
         - FILE_TOO_LARGE
         - FILES_UNAVAILABLE
+        - PTY_UNAVAILABLE
+        - PTY_LIMIT_REACHED
       x-phase3-error-contract:
         INVALID_TTL:
           http_status: 400
@@ -1195,3 +1221,73 @@ components:
         recursive:
           type: boolean
           description: Delete directories with content; never follows symlinks
+    PTYStart:
+      type: object
+      additionalProperties: false
+      required: [type, argv, cols, rows, timeout_seconds]
+      properties:
+        type:
+          type: string
+          const: start
+        argv:
+          type: array
+          minItems: 1
+          items:
+            type: string
+        cwd:
+          type: string
+          description: Workspace-relative working directory; defaults to the workspace root
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        cols:
+          type: integer
+          minimum: 1
+          maximum: 500
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 300
+        timeout_seconds:
+          type: integer
+          format: int64
+          minimum: 0
+    PTYResize:
+      type: object
+      additionalProperties: false
+      required: [type, cols, rows]
+      properties:
+        type:
+          type: string
+          const: resize
+        cols:
+          type: integer
+          minimum: 1
+          maximum: 500
+        rows:
+          type: integer
+          minimum: 1
+          maximum: 300
+    PTYServerEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type:
+          type: string
+          enum: [started, terminal, error]
+        exit_code:
+          type: integer
+          description: Present only on terminal events for processes that exited
+        duration_ms:
+          type: integer
+          format: int64
+          minimum: 0
+          description: Present only on terminal events
+        error_code:
+          type: string
+          description: Present only on error and failed-terminal events
+        message:
+          type: string
+          description: Safe human-readable detail; no command content or secrets

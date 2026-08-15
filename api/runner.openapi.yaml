@@ -30,6 +30,26 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/pty:
+    get:
+      operationId: openPTY
+      description: >-
+        Internal WebSocket upgrade using subprotocol minisandbox.pty.v1; accepts no
+        sandbox identity. Frame semantics match the public PTY endpoint: first client
+        text frame is PTYStart, client binary frames are stdin, client text frames are
+        PTYResize, server binary frames are merged output, and server text frames are
+        PTYServerEvent messages.
+      responses:
+        "101":
+          description: WebSocket connection established
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "429":
+          $ref: "#/components/responses/TooManyRequests"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/files/stat:
     post:
       operationId: statFile
@@ -482,6 +502,42 @@ components:
       properties:
         path: {type: string}
         recursive: {type: boolean}
+    PTYStart:
+      type: object
+      additionalProperties: false
+      required: [type, argv, cols, rows, timeout_seconds]
+      properties:
+        type: {type: string, const: start}
+        argv:
+          type: array
+          minItems: 1
+          items: {type: string}
+        cwd: {type: string}
+        env:
+          type: object
+          additionalProperties:
+            type: string
+        cols: {type: integer, minimum: 1, maximum: 500}
+        rows: {type: integer, minimum: 1, maximum: 300}
+        timeout_seconds: {type: integer, format: int64, minimum: 0}
+    PTYResize:
+      type: object
+      additionalProperties: false
+      required: [type, cols, rows]
+      properties:
+        type: {type: string, const: resize}
+        cols: {type: integer, minimum: 1, maximum: 500}
+        rows: {type: integer, minimum: 1, maximum: 300}
+    PTYServerEvent:
+      type: object
+      additionalProperties: false
+      required: [type]
+      properties:
+        type: {type: string, enum: [started, terminal, error]}
+        exit_code: {type: integer}
+        duration_ms: {type: integer, format: int64, minimum: 0}
+        error_code: {type: string}
+        message: {type: string}
     RunnerHealth:
       type: object
       additionalProperties: false
@@ -712,4 +768,6 @@ components:
         - FILE_TYPE_MISMATCH
         - FILE_CONFLICT
         - FILE_TOO_LARGE
+        - PTY_UNAVAILABLE
+        - PTY_LIMIT_REACHED
         - INTERNAL_ERROR

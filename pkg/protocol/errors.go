@@ -56,6 +56,10 @@ const (
 	ErrorCodeFileTooLarge ErrorCode = "FILE_TOO_LARGE"
 	// ErrorCodeFilesUnavailable 表示当前 sandbox 未提供文件能力。
 	ErrorCodeFilesUnavailable ErrorCode = "FILES_UNAVAILABLE"
+	// ErrorCodePTYUnavailable 表示当前 sandbox 未提供 PTY 能力。
+	ErrorCodePTYUnavailable ErrorCode = "PTY_UNAVAILABLE"
+	// ErrorCodePTYLimitReached 表示当前 sandbox 的 PTY 并发上限已满。
+	ErrorCodePTYLimitReached ErrorCode = "PTY_LIMIT_REACHED"
 )
 
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。
