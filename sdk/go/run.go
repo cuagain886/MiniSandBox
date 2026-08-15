@@ -27,13 +27,13 @@ func (s *Sandbox) Run(ctx context.Context, request ExecuteRequest) (RunResult, e
 		State:       info.State,
 		ExitCode:    -1,
 	}
-	if info.TerminalEvent != nil {
-		if info.State == ExecutionStateExited {
-			result.ExitCode = info.TerminalEvent.ExitCode
-		}
-		result.Duration = info.TerminalEvent.Duration
-		result.OutputTruncated = info.TerminalEvent.OutputTruncated
+	// newExecutionInfo 已校验终态信息必携带类型匹配的终止事件，这里可以
+	// 安全地直接读取，不需要再做空指针防护。
+	if info.State == ExecutionStateExited {
+		result.ExitCode = info.TerminalEvent.ExitCode
 	}
+	result.Duration = info.TerminalEvent.Duration
+	result.OutputTruncated = info.TerminalEvent.OutputTruncated
 
 	var stdout, stderr bytes.Buffer
 	logs := execution.Logs(ctx, 0)

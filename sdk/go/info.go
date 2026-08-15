@@ -57,19 +57,72 @@ type ExecutionInfo struct {
 }
 
 // newExecutionInfo 把公共 wire 状态映射为 SDK 原生信息模型。
+//
+// 终态响应必须携带通过协议校验、类型与状态匹配、execution ID 一致的终止
+// 事件；非终态响应不得携带终止事件。违反任一不变量时本函数返回错误，
+// 防止异常响应（服务端 bug 或中间人代理损坏）把空指针或互相矛盾的数据
+// 交给上层导致调用进程 panic。
 func newExecutionInfo(status protocol.ExecutionStatus) (ExecutionInfo, error) {
 	info := ExecutionInfo{
 		ExecutionID: status.ExecutionID,
 		State:       status.State,
 	}
-	if status.TerminalEvent != nil {
-		event, err := newDecodedEvent(*status.TerminalEvent)
-		if err != nil {
-			return ExecutionInfo{}, err
+	expectedType, terminal := terminalEventTypes[status.State]
+	if status.TerminalEvent == nil {
+		if terminal {
+			return ExecutionInfo{}, fmt.Errorf(
+				"minisandbox: execution %s reports terminal state %s without a terminal event",
+				status.ExecutionID,
+				status.State,
+			)
 		}
-		info.TerminalEvent = &event
+		return info, nil
 	}
+	if !terminal {
+		return ExecutionInfo{}, fmt.Errorf(
+			"minisandbox: execution %s reports non-terminal state %s with a terminal event",
+			status.ExecutionID,
+			status.State,
+		)
+	}
+	event := *status.TerminalEvent
+	if err := event.Validate(); err != nil {
+		return ExecutionInfo{}, fmt.Errorf(
+			"minisandbox: execution %s carries an invalid terminal event: %w",
+			status.ExecutionID,
+			err,
+		)
+	}
+	if event.Type != expectedType {
+		return ExecutionInfo{}, fmt.Errorf(
+			"minisandbox: execution %s state %s disagrees with terminal event %s",
+			status.ExecutionID,
+			status.State,
+			event.Type,
+		)
+	}
+	if event.ExecutionID != status.ExecutionID {
+		return ExecutionInfo{}, fmt.Errorf(
+			"minisandbox: execution %s carries a terminal event for %s",
+			status.ExecutionID,
+			event.ExecutionID,
+		)
+	}
+	decoded, err := newDecodedEvent(event)
+	if err != nil {
+		return ExecutionInfo{}, err
+	}
+	info.TerminalEvent = &decoded
 	return info, nil
+}
+
+// terminalEventTypes 映射四种终态到唯一匹配的终止事件类型，用于校验
+// 状态与终止事件的一致性。
+var terminalEventTypes = map[ExecutionState]EventType{
+	ExecutionStateExited:    EventExited,
+	ExecutionStateFailed:    EventFailed,
+	ExecutionStateCancelled: EventCancelled,
+	ExecutionStateTimedOut:  EventTimedOut,
 }
 
 // DecodedEvent 是 SDK 高层迭代器交付给调用方的单条已解码执行事件。

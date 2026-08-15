@@ -79,6 +79,7 @@ func exitedStatus(state protocol.ExecutionState, eventType protocol.EventType, e
 	terminal := &protocol.ExecutionEvent{
 		ExecutionID:     "exec-run",
 		Sequence:        4,
+		Timestamp:       time.Unix(1003, 0).UTC(),
 		Type:            eventType,
 		DurationMS:      &[]int64{1200}[0],
 		OutputTruncated: &[]bool{false}[0],

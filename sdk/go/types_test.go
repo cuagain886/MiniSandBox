@@ -118,6 +118,82 @@ func TestNewDecodedEventDecodesPayload(t *testing.T) {
 	}
 }
 
+// TestNewExecutionInfoRejectsAnomalousTerminalStatus 验证异常终态响应在映射
+// 阶段被拒绝，而不是把空指针或矛盾数据交给上层导致 panic。
+func TestNewExecutionInfoRejectsAnomalousTerminalStatus(t *testing.T) {
+	terminalEvent := &protocol.ExecutionEvent{
+		ExecutionID:     "exec-1",
+		Sequence:        4,
+		Type:            protocol.EventCancelled,
+		DurationMS:      &[]int64{100}[0],
+		OutputTruncated: &[]bool{false}[0],
+	}
+	scenarios := []struct {
+		name   string
+		status protocol.ExecutionStatus
+	}{
+		{
+			name: "terminal state without terminal event",
+			status: protocol.ExecutionStatus{
+				ExecutionID: "exec-1",
+				State:       protocol.ExecutionStateFailed,
+			},
+		},
+		{
+			name: "state disagrees with terminal event type",
+			status: protocol.ExecutionStatus{
+				ExecutionID:   "exec-1",
+				State:         protocol.ExecutionStateExited,
+				TerminalEvent: terminalEvent,
+			},
+		},
+		{
+			name: "non-terminal state carries terminal event",
+			status: protocol.ExecutionStatus{
+				ExecutionID:   "exec-1",
+				State:         protocol.ExecutionStateRunning,
+				TerminalEvent: terminalEvent,
+			},
+		},
+		{
+			name: "terminal event belongs to another execution",
+			status: protocol.ExecutionStatus{
+				ExecutionID: "exec-2",
+				State:       protocol.ExecutionStateCancelled,
+				TerminalEvent: &protocol.ExecutionEvent{
+					ExecutionID:     "exec-1",
+					Sequence:        4,
+					Type:            protocol.EventCancelled,
+					DurationMS:      &[]int64{100}[0],
+					OutputTruncated: &[]bool{false}[0],
+				},
+			},
+		},
+		{
+			name: "terminal event violates protocol validation",
+			status: protocol.ExecutionStatus{
+				ExecutionID: "exec-1",
+				State:       protocol.ExecutionStateCancelled,
+				TerminalEvent: &protocol.ExecutionEvent{
+					ExecutionID:     "exec-1",
+					Sequence:        4,
+					Type:            protocol.EventCancelled,
+					ExitCode:        &[]int{0}[0],
+					DurationMS:      &[]int64{100}[0],
+					OutputTruncated: &[]bool{false}[0],
+				},
+			},
+		},
+	}
+	for _, scenario := range scenarios {
+		t.Run(scenario.name, func(t *testing.T) {
+			if _, err := newExecutionInfo(scenario.status); err == nil {
+				t.Fatalf("expected mapping rejection, got nil for %+v", scenario.status)
+			}
+		})
+	}
+}
+
 // TestNewSandboxAndExecutionInfo 验证 wire 资源到 SDK 信息模型的字段映射。
 func TestNewSandboxAndExecutionInfo(t *testing.T) {
 	createdAt := time.Date(2026, time.August, 15, 8, 0, 0, 0, time.UTC)
@@ -153,6 +229,7 @@ func TestNewSandboxAndExecutionInfo(t *testing.T) {
 		TerminalEvent: &protocol.ExecutionEvent{
 			ExecutionID:     "exec-1",
 			Sequence:        5,
+			Timestamp:       time.Unix(1004, 0).UTC(),
 			Type:            protocol.EventTimedOut,
 			DurationMS:      &[]int64{200}[0],
 			OutputTruncated: &[]bool{false}[0],
