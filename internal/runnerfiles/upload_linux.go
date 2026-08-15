@@ -66,6 +66,9 @@ func (s *Service) Upload(
 	if err != nil {
 		return false, protocol.FileStat{}, err
 	}
+	// 无论成败都关闭临时文件 fd；fd 保持写打开会让发布后的目标
+	// 无法被 exec（ETXTBSY），属于资源泄漏。
+	defer unix.Close(tempFD)
 	replaced := preExists
 	committed := false
 	defer func() {
