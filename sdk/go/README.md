@@ -27,6 +27,34 @@ if err != nil {
 fmt.Print(string(result.Stdout))
 ```
 
+## 方法总览
+
+| 对象 | 方法 | 说明 |
+|---|---|---|
+| `Client` | `NewClient(baseURL, httpClient)` | 创建客户端；`httpClient` 为 nil 时使用 `http.DefaultClient` |
+| | `Create(ctx, request, ...CreateOption)` | 创建 sandbox 并返回 `*Sandbox`；可选 `WithIdempotencyKey` 幂等语义 |
+| | `Sandbox(sandboxID)` | 用已知 ID 绑定资源对象，不发起请求 |
+| | `Health(ctx)` | `/healthz` 存活探测 |
+| | `Readiness(ctx)` | `/readyz` 组件状态；未就绪返回 `Ready=false` 而不是错误 |
+| `Sandbox` | `ID()` | 稳定 sandbox 标识 |
+| | `Info(ctx)` | 当前生命周期状态（`SandboxInfo`） |
+| | `WaitRunning(ctx)` | 轮询至 Running；Failed/Terminated 提前失败 |
+| | `Renew(ctx, expiresAt)` | 延长租约到绝对时间 |
+| | `Delete(ctx)` | 提交删除意图，立即返回 |
+| | `DeleteAndWait(ctx)` | 删除并等待 Terminated |
+| | `Run(ctx, request)` | 一次调用执行命令并收集输出（`RunResult`） |
+| | `ExecuteStream(ctx, request)` | 前台 SSE 流式执行，返回事件迭代器 |
+| | `StartExecution(ctx, request)` | 启动后台 execution，返回 `*Execution` |
+| `Execution` | `ID()` | 稳定 execution 标识 |
+| | `Info(ctx)` | 当前执行状态（`ExecutionInfo`） |
+| | `Wait(ctx)` | 等待任一合法终态 |
+| | `CancelAndWait(ctx)` | 取消并等待收敛到终态 |
+| | `Logs(ctx, cursor)` | 已解码日志迭代器；自动维护 cursor、翻页和解码 Base64 |
+| `EventStream` | `Next()` / `Event()` / `Err()` / `Close()` | SSE 迭代器：推进、取当前事件、取错误、提前放弃 |
+| 底层 API | `CreateSandboxWithOptions` 等 9 个方法 | 精确控制请求过程时使用，见下文“底层方法” |
+
+各方法的调用语义、参数和错误行为见下文对应章节。
+
 ## 前置条件
 
 - 已启动的 `sandboxd`（见根 README 的 Build & Run）；
