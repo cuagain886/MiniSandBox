@@ -9,6 +9,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"strings"
 
@@ -107,21 +108,28 @@ func (c *Client) doJSONWithHeaders(
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		var envelope protocol.ErrorResponse
-		if err := json.NewDecoder(response.Body).Decode(&envelope); err != nil {
-			return fmt.Errorf(
-				"minisandbox: HTTP status %d with invalid error response: %w",
-				response.StatusCode,
-				err,
-			)
-		}
-		return &ResponseError{
-			StatusCode: response.StatusCode,
-			Detail:     envelope.Error,
-		}
+		return responseError(response.StatusCode, response.Body)
 	}
 	if responseBody == nil {
 		return nil
 	}
 	return json.NewDecoder(response.Body).Decode(responseBody)
+}
+
+// responseError 把非 2xx 响应体转换为公共错误模型。
+//
+// JSON API 和 SSE 流式入口共用本函数，保证两类接口的错误语义一致。
+func responseError(statusCode int, body io.Reader) error {
+	var envelope protocol.ErrorResponse
+	if err := json.NewDecoder(body).Decode(&envelope); err != nil {
+		return fmt.Errorf(
+			"minisandbox: HTTP status %d with invalid error response: %w",
+			statusCode,
+			err,
+		)
+	}
+	return &ResponseError{
+		StatusCode: statusCode,
+		Detail:     envelope.Error,
+	}
 }
