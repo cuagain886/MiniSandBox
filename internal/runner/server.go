@@ -32,6 +32,11 @@ type ServerRoutes struct {
 	Logs http.Handler
 	// Shutdown 处理 POST /v1/shutdown，并永久关闭当前 sandbox 的 execution 准入。
 	Shutdown http.Handler
+	// Capabilities 处理 GET /v1/capabilities，报告实际可用功能。
+	Capabilities http.Handler
+	// Files 是可选的 workspace 文件路由组；nil 时文件端点显式返回
+	// FILES_UNAVAILABLE，而不是 404 隐藏能力语义。
+	Files *FilesRoutes
 }
 
 // ServerReadiness 保存 runner 的单向 readiness 状态；开始 draining 后不可恢复。
@@ -70,7 +75,7 @@ func NewServer(version, token string) (http.Handler, error) {
 	if err := readiness.MarkReady(); err != nil {
 		return nil, err
 	}
-	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented), Shutdown: http.HandlerFunc(notImplemented)}
+	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented), Shutdown: http.HandlerFunc(notImplemented), Capabilities: NewCapabilitiesHandler(protocol.Capabilities{})}
 	return newConfiguredServer(version, token, readiness, routes, currentNetNSIdentity)
 }
 
@@ -83,7 +88,7 @@ func newConfiguredServer(version, token string, readiness *ServerReadiness, rout
 	if version == "" || readiness == nil || readNetNSIdentity == nil {
 		return nil, errors.New("runner server identity is not configured")
 	}
-	if routes.Create == nil || routes.Status == nil || routes.Cancel == nil || routes.Logs == nil || routes.Shutdown == nil {
+	if routes.Create == nil || routes.Status == nil || routes.Cancel == nil || routes.Logs == nil || routes.Shutdown == nil || routes.Capabilities == nil {
 		return nil, errors.New("runner server routes are not configured")
 	}
 	mux := http.NewServeMux()
@@ -108,11 +113,43 @@ func newConfiguredServer(version, token string, readiness *ServerReadiness, rout
 	mux.Handle("DELETE /v1/executions/{execution_id}", routes.Cancel)
 	mux.Handle("GET /v1/executions/{execution_id}/logs", routes.Logs)
 	mux.Handle("POST /v1/shutdown", routes.Shutdown)
+	mux.Handle("GET /v1/capabilities", routes.Capabilities)
+	registerFilesRoutes(mux, routes.Files)
 	authenticated, err := TokenAuth(token, mux)
 	if err != nil {
 		return nil, err
 	}
 	return RunnerRequestPolicy(authenticated)
+}
+
+// registerFilesRoutes 注册七个固定文件 endpoint；未启用时统一返回
+// FILES_UNAVAILABLE，保持禁用语义显式可见。
+func registerFilesRoutes(mux *http.ServeMux, files *FilesRoutes) {
+	var stat, list, mkdir, upload, download, move, remove http.Handler = unavailableFilesHandler(), unavailableFilesHandler(), unavailableFilesHandler(), unavailableFilesHandler(),
+		unavailableFilesHandler(), unavailableFilesHandler(), unavailableFilesHandler()
+	if files != nil {
+		stat = files.Stat
+		list = files.List
+		mkdir = files.Mkdir
+		upload = files.Upload
+		download = files.Download
+		move = files.Move
+		remove = files.Delete
+	}
+	mux.Handle("POST /v1/files/stat", stat)
+	mux.Handle("POST /v1/directories/list", list)
+	mux.Handle("POST /v1/directories", mkdir)
+	mux.Handle("PUT /v1/files/content", upload)
+	mux.Handle("GET /v1/files/content", download)
+	mux.Handle("POST /v1/files/move", move)
+	mux.Handle("POST /v1/files/delete", remove)
+}
+
+// unavailableFilesHandler 返回文件能力不可用的固定响应。
+func unavailableFilesHandler() http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		writeRunnerError(w, http.StatusServiceUnavailable, "FILES_UNAVAILABLE", "files capability is unavailable", true)
+	})
 }
 
 // newServer 保留 netns reader 注入点，供 health contract 测试使用。
@@ -121,7 +158,7 @@ func newServer(version, token string, readNetNSIdentity func() (string, error)) 
 	if err := readiness.MarkReady(); err != nil {
 		return nil, err
 	}
-	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented), Shutdown: http.HandlerFunc(notImplemented)}
+	routes := ServerRoutes{Create: http.HandlerFunc(notImplemented), Status: http.HandlerFunc(notImplemented), Cancel: http.HandlerFunc(notImplemented), Logs: http.HandlerFunc(notImplemented), Shutdown: http.HandlerFunc(notImplemented), Capabilities: NewCapabilitiesHandler(protocol.Capabilities{})}
 	return newConfiguredServer(version, token, readiness, routes, readNetNSIdentity)
 }
 

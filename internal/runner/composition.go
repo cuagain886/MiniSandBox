@@ -8,6 +8,8 @@ import (
 
 	"minisandbox/internal/runnerauth"
 	"minisandbox/internal/runnerbootstrap"
+	"minisandbox/internal/runnerfiles"
+	"minisandbox/pkg/protocol"
 )
 
 // ServeConfigured 按目录、socket、降权、身份回验、readiness 的固定顺序启动 runner。
@@ -94,9 +96,30 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 	encodedToken := make([]byte, base64.RawURLEncoding.EncodedLen(len(token)))
 	base64.RawURLEncoding.Encode(encodedToken, token[:])
 	defer clear(encodedToken)
+
+	// 文件能力在降权后打开 workspace 根；平台或内核不支持时保持关闭
+	// 并在 capabilities 中如实报告，不降级为不安全实现。
+	capabilities := protocol.Capabilities{}
+	var files *FilesRoutes
+	if bootstrap.Features.FilesEnabled {
+		service, openErr := runnerfiles.Open(bootstrap.Paths.WorkspaceDirectory)
+		if openErr == nil {
+			defer service.Close()
+			routes, routesErr := NewFilesRoutes(service, bootstrap.Features)
+			if routesErr != nil {
+				return routesErr
+			}
+			files = routes
+			capabilities.Files = true
+		} else if !errors.Is(openErr, runnerfiles.ErrUnavailable) {
+			return openErr
+		}
+	}
 	routes := ServerRoutes{
 		Create: create, Status: status, Cancel: cancelHandler, Logs: logs,
-		Shutdown: NewShutdownHandler(manager, readiness, 5*time.Second),
+		Shutdown:     NewShutdownHandler(manager, readiness, 5*time.Second),
+		Capabilities: NewCapabilitiesHandler(capabilities),
+		Files:        files,
 	}
 	handler, err := NewConfiguredServer(version, string(encodedToken), readiness, routes)
 	if err != nil {
