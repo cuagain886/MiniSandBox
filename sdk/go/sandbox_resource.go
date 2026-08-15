@@ -120,3 +120,59 @@ func (s *Sandbox) WaitRunning(ctx context.Context) (SandboxInfo, error) {
 		}
 	}
 }
+
+// Renew 请求把 sandbox 租约延长到绝对时间 expiresAt。
+//
+// expiresAt 必须晚于当前到期时间；等于当前值是服务端幂等 no-op，缩短、
+// 已过期或终止意图已提交会返回稳定 409 错误。
+func (s *Sandbox) Renew(ctx context.Context, expiresAt time.Time) (SandboxInfo, error) {
+	sandbox, err := s.client.RenewSandbox(ctx, s.id, RenewSandboxRequest{
+		ExpiresAt: expiresAt,
+	})
+	if err != nil {
+		return SandboxInfo{}, err
+	}
+	return newSandboxInfo(sandbox), nil
+}
+
+// Delete 提交 sandbox 删除意图并立即返回。
+//
+// 删除是异步收敛过程；需要确认资源清理完成时应使用 DeleteAndWait。
+// 重复删除由服务端按幂等语义处理。
+func (s *Sandbox) Delete(ctx context.Context) error {
+	return s.client.DeleteSandbox(ctx, s.id)
+}
+
+// DeleteAndWait 提交删除意图并轮询直到 sandbox 进入 Terminated。
+//
+// 删除过程中进入 Failed（例如清理补偿未完成）时返回错误并携带稳定
+// reason；调用方可以安全地用新的 context 重试本方法。
+func (s *Sandbox) DeleteAndWait(ctx context.Context) (SandboxInfo, error) {
+	if err := s.Delete(ctx); err != nil {
+		return SandboxInfo{}, err
+	}
+	ticker := time.NewTicker(defaultPollInterval)
+	defer ticker.Stop()
+	for {
+		info, err := s.Info(ctx)
+		if err != nil {
+			return SandboxInfo{}, err
+		}
+		switch info.State {
+		case SandboxStateTerminated:
+			return info, nil
+		case SandboxStateFailed:
+			return SandboxInfo{}, fmt.Errorf(
+				"minisandbox: sandbox %s failed during deletion: %s: %s",
+				s.id,
+				info.Reason,
+				info.Message,
+			)
+		}
+		select {
+		case <-ctx.Done():
+			return SandboxInfo{}, ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
