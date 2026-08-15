@@ -163,6 +163,9 @@ type StatusError struct {
 	Code string
 }
 
+// ErrorCode 返回稳定机器错误码，供 application 层按码映射 domain 哨兵。
+func (e *StatusError) ErrorCode() string { return e.Code }
+
 // Error 返回不包含响应正文和秘密信息的安全错误文本。
 func (e *StatusError) Error() string {
 	data, _ := json.Marshal(struct {

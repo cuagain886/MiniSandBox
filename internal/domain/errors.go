@@ -51,4 +51,16 @@ var (
 	ErrSandboxLimitReached = errors.New("sandbox limit reached")
 	// ErrAdminDisabled 表示管理面未启用；HTTP 层必须用 404 隐藏该 surface。
 	ErrAdminDisabled = errors.New("admin API disabled")
+	// ErrFilesUnavailable 表示当前 sandbox 未提供文件能力。
+	ErrFilesUnavailable = errors.New("files capability unavailable")
+	// ErrInvalidFilePath 表示路径违反 workspace 相对路径规则。
+	ErrInvalidFilePath = errors.New("invalid workspace file path")
+	// ErrFileNotFound 表示目标文件或目录不存在。
+	ErrFileNotFound = errors.New("workspace file not found")
+	// ErrFileTypeMismatch 表示操作目标类型不符。
+	ErrFileTypeMismatch = errors.New("workspace file type mismatch")
+	// ErrFileConflict 表示非覆盖写入或移动遇到已存在目标等冲突。
+	ErrFileConflict = errors.New("workspace file conflict")
+	// ErrFileTooLarge 表示上传或下载超过配置上限。
+	ErrFileTooLarge = errors.New("workspace file too large")
 )
