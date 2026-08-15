@@ -77,6 +77,105 @@ paths:
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/ports/{port}/http/{path}:
+    parameters:
+      - $ref: "#/components/parameters/PortNumber"
+      - $ref: "#/components/parameters/ProxyPath"
+    get:
+      operationId: proxyHTTPGet
+      description: >-
+        Forwards one plain HTTP/1.1 request to 127.0.0.1:port in the current sandbox
+        network namespace. The runner strips internal authentication and hop-by-hop
+        headers and never accepts a caller-chosen destination.
+      responses:
+        "200":
+          description: Upstream response passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+    post:
+      operationId: proxyHTTPPost
+      description: See proxyHTTPGet; request bodies are streamed with limits
+      responses:
+        "200":
+          description: Upstream response passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+    put:
+      operationId: proxyHTTPPut
+      description: See proxyHTTPGet; request bodies are streamed with limits
+      responses:
+        "200":
+          description: Upstream response passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+    patch:
+      operationId: proxyHTTPPatch
+      description: See proxyHTTPGet; request bodies are streamed with limits
+      responses:
+        "200":
+          description: Upstream response passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+    delete:
+      operationId: proxyHTTPDelete
+      description: See proxyHTTPGet
+      responses:
+        "200":
+          description: Upstream response passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+    head:
+      operationId: proxyHTTPHead
+      description: See proxyHTTPGet; no response body is forwarded
+      responses:
+        "200":
+          description: Upstream response status and headers are passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
   /v1/directories/list:
     post:
       operationId: listDirectory
@@ -376,6 +475,22 @@ components:
       schema:
         type: boolean
         default: false
+    PortNumber:
+      name: port
+      in: path
+      required: true
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 65535
+    ProxyPath:
+      name: path
+      in: path
+      required: true
+      description: Deep wildcard path forwarded to the loopback service
+      schema:
+        type: string
     LogCursor:
       name: cursor
       in: query
@@ -431,6 +546,12 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     PayloadTooLarge:
       description: The uploaded or requested file exceeds the configured size limit
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BadGateway:
+      description: The sandbox loopback service could not be reached or misbehaved
       content:
         application/json:
           schema:
@@ -770,4 +891,7 @@ components:
         - FILE_TOO_LARGE
         - PTY_UNAVAILABLE
         - PTY_LIMIT_REACHED
+        - INVALID_PORT
+        - PORT_PROXY_UNAVAILABLE
+        - PORT_UPSTREAM_UNAVAILABLE
         - INTERNAL_ERROR

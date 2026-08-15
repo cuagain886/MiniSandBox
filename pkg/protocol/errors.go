@@ -60,6 +60,12 @@ const (
 	ErrorCodePTYUnavailable ErrorCode = "PTY_UNAVAILABLE"
 	// ErrorCodePTYLimitReached 表示当前 sandbox 的 PTY 并发上限已满。
 	ErrorCodePTYLimitReached ErrorCode = "PTY_LIMIT_REACHED"
+	// ErrorCodeInvalidPort 表示端口不在代理允许范围内。
+	ErrorCodeInvalidPort ErrorCode = "INVALID_PORT"
+	// ErrorCodePortProxyUnavailable 表示当前 sandbox 未提供 loopback HTTP 代理。
+	ErrorCodePortProxyUnavailable ErrorCode = "PORT_PROXY_UNAVAILABLE"
+	// ErrorCodePortUpstreamUnavailable 表示 sandbox 内目标服务不可达或行为异常。
+	ErrorCodePortUpstreamUnavailable ErrorCode = "PORT_UPSTREAM_UNAVAILABLE"
 )
 
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。

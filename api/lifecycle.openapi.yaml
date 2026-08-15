@@ -506,14 +506,131 @@ paths:
         connection ends after the single terminal event; closing the connection
         cancels the process group.
       responses:
-        "101":
-          description: WebSocket connection established
+  /v1/sandboxes/{sandbox_id}/ports/{port}/http/{path}:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+      - $ref: "#/components/parameters/PortNumber"
+      - $ref: "#/components/parameters/ProxyPath"
+    get:
+      operationId: proxySandboxHTTPGet
+      description: >-
+        Forwards one plain HTTP/1.1 request to the loopback service listening on the
+        given port inside this sandbox. The trailing path is a deep wildcard. The
+        destination is always 127.0.0.1 inside the sandbox network namespace; callers
+        cannot choose a host, scheme, or socket. Control-plane credentials and
+        hop-by-hop headers are removed before forwarding. WebSocket upgrades,
+        CONNECT, and raw TCP are not supported.
+      responses:
+        "200":
+          description: Upstream response status, headers, and body are passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    post:
+      operationId: proxySandboxHTTPPost
+      description: See proxySandboxHTTPGet; request bodies are streamed with limits
+      responses:
+        "200":
+          description: Upstream response status, headers, and body are passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    put:
+      operationId: proxySandboxHTTPPut
+      description: See proxySandboxHTTPGet; request bodies are streamed with limits
+      responses:
+        "200":
+          description: Upstream response status, headers, and body are passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    patch:
+      operationId: proxySandboxHTTPPatch
+      description: See proxySandboxHTTPGet; request bodies are streamed with limits
+      responses:
+        "200":
+          description: Upstream response status, headers, and body are passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    delete:
+      operationId: proxySandboxHTTPDelete
+      description: See proxySandboxHTTPGet
+      responses:
+        "200":
+          description: Upstream response status, headers, and body are passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
         "404":
           $ref: "#/components/responses/NotFound"
         "409":
           $ref: "#/components/responses/Conflict"
         "500":
           $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    head:
+      operationId: proxySandboxHTTPHead
+      description: See proxySandboxHTTPGet; no response body is forwarded
+      responses:
+        "200":
+          description: Upstream response status and headers are passed through
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "502":
+          $ref: "#/components/responses/BadGateway"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
 components:
@@ -585,6 +702,23 @@ components:
       schema:
         type: boolean
         default: false
+    PortNumber:
+      name: port
+      in: path
+      required: true
+      description: TCP port of the loopback service inside the sandbox; must be within the server-allowed range
+      schema:
+        type: integer
+        format: int32
+        minimum: 1
+        maximum: 65535
+    ProxyPath:
+      name: path
+      in: path
+      required: true
+      description: Deep wildcard path forwarded to the sandbox loopback service, including its query string
+      schema:
+        type: string
   responses:
     BadRequest:
       description: Request is invalid
@@ -636,6 +770,12 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     PayloadTooLarge:
       description: The uploaded or requested file exceeds the configured size limit
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    BadGateway:
+      description: The sandbox loopback service could not be reached or misbehaved
       content:
         application/json:
           schema:
@@ -708,6 +848,9 @@ components:
         - FILES_UNAVAILABLE
         - PTY_UNAVAILABLE
         - PTY_LIMIT_REACHED
+        - INVALID_PORT
+        - PORT_PROXY_UNAVAILABLE
+        - PORT_UPSTREAM_UNAVAILABLE
       x-phase3-error-contract:
         INVALID_TTL:
           http_status: 400
