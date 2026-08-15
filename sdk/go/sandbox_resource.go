@@ -62,3 +62,12 @@ type Sandbox struct {
 func (s *Sandbox) ID() string {
 	return s.id
 }
+
+// Info 查询当前 sandbox 的生命周期状态并转换为 SDK 原生信息模型。
+func (s *Sandbox) Info(ctx context.Context) (SandboxInfo, error) {
+	sandbox, err := s.client.GetSandbox(ctx, s.id)
+	if err != nil {
+		return SandboxInfo{}, err
+	}
+	return newSandboxInfo(sandbox), nil
+}
