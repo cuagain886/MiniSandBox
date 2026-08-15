@@ -273,6 +273,225 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/files/stat:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    post:
+      operationId: statSandboxFile
+      description: Returns metadata for one path relative to the sandbox workspace root
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileStatRequest"
+      responses:
+        "200":
+          description: File metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/directories/list:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    post:
+      operationId: listSandboxDirectory
+      description: Returns the direct children of one workspace directory; no pagination or snapshot guarantees in this version
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DirectoryListRequest"
+      responses:
+        "200":
+          description: Directory entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryListing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/directories:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    post:
+      operationId: createSandboxDirectory
+      description: Creates one workspace directory; with parents it creates missing ancestors and is idempotent for existing directories
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MkdirRequest"
+      responses:
+        "200":
+          description: Directory already existed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "201":
+          description: Directory was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/files/content:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    put:
+      operationId: uploadSandboxFile
+      description: >-
+        Streams raw bytes into one workspace file. The upload is atomic: the target
+        becomes visible only after the complete body was written and published.
+      parameters:
+        - $ref: "#/components/parameters/FilePath"
+        - $ref: "#/components/parameters/FileOverwrite"
+        - $ref: "#/components/parameters/FileCreateParents"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Existing file was replaced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "201":
+          description: File was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+    get:
+      operationId: downloadSandboxFile
+      description: Streams the raw bytes of one workspace regular file
+      parameters:
+        - $ref: "#/components/parameters/FilePath"
+      responses:
+        "200":
+          description: File content stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/files/move:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    post:
+      operationId: moveSandboxFile
+      description: Renames one path inside the same workspace
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileMoveRequest"
+      responses:
+        "200":
+          description: Move completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/files/delete:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    post:
+      operationId: deleteSandboxFile
+      description: >-
+        Deletes one file, symlink, or directory. Directories require recursive
+        unless empty. Deleting a missing path succeeds; the workspace root cannot
+        be deleted.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileDeleteRequest"
+      responses:
+        "204":
+          description: Path is gone
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     IdempotencyKey:
@@ -319,6 +538,29 @@ components:
         type: integer
         format: int32
         minimum: 0
+    FilePath:
+      name: path
+      in: query
+      required: true
+      description: Workspace-relative path; "." addresses the workspace root
+      schema:
+        type: string
+    FileOverwrite:
+      name: overwrite
+      in: query
+      required: false
+      description: Whether an existing regular file may be atomically replaced
+      schema:
+        type: boolean
+        default: false
+    FileCreateParents:
+      name: create_parents
+      in: query
+      required: false
+      description: Whether missing parent directories are created before the upload
+      schema:
+        type: boolean
+        default: false
   responses:
     BadRequest:
       description: Request is invalid
@@ -364,6 +606,12 @@ components:
             $ref: "#/components/schemas/ErrorResponse"
     TooManyRequests:
       description: A sandbox or execution admission limit has been reached
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
+    PayloadTooLarge:
+      description: The uploaded or requested file exceeds the configured size limit
       content:
         application/json:
           schema:
@@ -428,6 +676,12 @@ components:
         - RUNTIME_UNAVAILABLE
         - NOT_IMPLEMENTED
         - INTERNAL_ERROR
+        - INVALID_FILE_PATH
+        - FILE_NOT_FOUND
+        - FILE_TYPE_MISMATCH
+        - FILE_CONFLICT
+        - FILE_TOO_LARGE
+        - FILES_UNAVAILABLE
       x-phase3-error-contract:
         INVALID_TTL:
           http_status: 400
@@ -858,3 +1112,86 @@ components:
         files: true
         pty: true
         http_port_proxy: true
+    FileType:
+      type: string
+      enum: [regular, directory, symlink, other]
+    FileStat:
+      type: object
+      additionalProperties: false
+      required: [path, type, size_bytes, mode, modified_at]
+      properties:
+        path:
+          type: string
+          description: Workspace-relative path of the entry
+        type:
+          $ref: "#/components/schemas/FileType"
+        size_bytes:
+          type: integer
+          format: int64
+          minimum: 0
+        mode:
+          type: string
+          pattern: '^0[0-7]{3}$'
+          description: Permission bits as a four-digit octal string, for example 0644
+        modified_at:
+          type: string
+          format: date-time
+    FileStatRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Workspace-relative path; "." addresses the workspace root
+    DirectoryListRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path:
+          type: string
+          description: Workspace-relative directory path; "." addresses the workspace root
+    DirectoryListing:
+      type: object
+      additionalProperties: false
+      required: [path, entries]
+      properties:
+        path:
+          type: string
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileStat"
+    MkdirRequest:
+      type: object
+      additionalProperties: false
+      required: [path, parents]
+      properties:
+        path:
+          type: string
+        parents:
+          type: boolean
+          description: Create missing ancestor directories; existing directories are accepted
+    FileMoveRequest:
+      type: object
+      additionalProperties: false
+      required: [source, destination, overwrite]
+      properties:
+        source:
+          type: string
+        destination:
+          type: string
+        overwrite:
+          type: boolean
+          description: Whether an existing destination entry may be replaced; directories cannot be replaced
+    FileDeleteRequest:
+      type: object
+      additionalProperties: false
+      required: [path, recursive]
+      properties:
+        path:
+          type: string
+        recursive:
+          type: boolean
+          description: Delete directories with content; never follows symlinks

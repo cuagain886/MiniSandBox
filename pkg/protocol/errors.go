@@ -44,6 +44,18 @@ const (
 	ErrorCodeSandboxLimitReached ErrorCode = "SANDBOX_LIMIT_REACHED"
 	// ErrorCodeAdminDisabled 表示只读管理面未启用，并以 404 隐藏其存在性。
 	ErrorCodeAdminDisabled ErrorCode = "ADMIN_DISABLED"
+	// ErrorCodeInvalidFilePath 表示文件路径违反 workspace 相对路径规则。
+	ErrorCodeInvalidFilePath ErrorCode = "INVALID_FILE_PATH"
+	// ErrorCodeFileNotFound 表示目标文件或目录不存在。
+	ErrorCodeFileNotFound ErrorCode = "FILE_NOT_FOUND"
+	// ErrorCodeFileTypeMismatch 表示操作目标类型不符，例如对目录下载内容。
+	ErrorCodeFileTypeMismatch ErrorCode = "FILE_TYPE_MISMATCH"
+	// ErrorCodeFileConflict 表示非覆盖写入遇到已存在目标等冲突。
+	ErrorCodeFileConflict ErrorCode = "FILE_CONFLICT"
+	// ErrorCodeFileTooLarge 表示上传或下载超过配置的大小上限。
+	ErrorCodeFileTooLarge ErrorCode = "FILE_TOO_LARGE"
+	// ErrorCodeFilesUnavailable 表示当前 sandbox 未提供文件能力。
+	ErrorCodeFilesUnavailable ErrorCode = "FILES_UNAVAILABLE"
 )
 
 // ErrorResponse 是所有公共 HTTP 错误共用的 JSON envelope。

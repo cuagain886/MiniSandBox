@@ -30,6 +30,205 @@ paths:
           $ref: "#/components/responses/Unauthorized"
         "500":
           $ref: "#/components/responses/InternalError"
+  /v1/files/stat:
+    post:
+      operationId: statFile
+      description: Returns metadata for one path relative to the workspace root; accepts no sandbox identity
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileStatRequest"
+      responses:
+        "200":
+          description: File metadata
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/directories/list:
+    post:
+      operationId: listDirectory
+      description: Returns the direct children of one workspace directory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/DirectoryListRequest"
+      responses:
+        "200":
+          description: Directory entries
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/DirectoryListing"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/directories:
+    post:
+      operationId: createDirectory
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/MkdirRequest"
+      responses:
+        "200":
+          description: Directory already existed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "201":
+          description: Directory was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/files/content:
+    put:
+      operationId: uploadFile
+      description: Streams raw bytes into one workspace file with atomic publish semantics
+      parameters:
+        - $ref: "#/components/parameters/FilePath"
+        - $ref: "#/components/parameters/FileOverwrite"
+        - $ref: "#/components/parameters/FileCreateParents"
+      requestBody:
+        required: true
+        content:
+          application/octet-stream:
+            schema:
+              type: string
+              format: binary
+      responses:
+        "200":
+          description: Existing file was replaced
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "201":
+          description: File was created
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+    get:
+      operationId: downloadFile
+      description: Streams the raw bytes of one workspace regular file
+      parameters:
+        - $ref: "#/components/parameters/FilePath"
+      responses:
+        "200":
+          description: File content stream
+          content:
+            application/octet-stream:
+              schema:
+                type: string
+                format: binary
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "413":
+          $ref: "#/components/responses/PayloadTooLarge"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/files/move:
+    post:
+      operationId: moveFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileMoveRequest"
+      responses:
+        "200":
+          description: Move completed
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/FileStat"
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+  /v1/files/delete:
+    post:
+      operationId: deleteFile
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: "#/components/schemas/FileDeleteRequest"
+      responses:
+        "204":
+          description: Path is gone
+        "400":
+          $ref: "#/components/responses/BadRequest"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/executions:
     post:
       operationId: execute
@@ -136,6 +335,27 @@ components:
       schema:
         type: string
         minLength: 1
+    FilePath:
+      name: path
+      in: query
+      required: true
+      description: Workspace-relative path; "." addresses the workspace root
+      schema:
+        type: string
+    FileOverwrite:
+      name: overwrite
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
+    FileCreateParents:
+      name: create_parents
+      in: query
+      required: false
+      schema:
+        type: boolean
+        default: false
     LogCursor:
       name: cursor
       in: query
@@ -189,6 +409,12 @@ components:
         application/json:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
+    PayloadTooLarge:
+      description: The uploaded or requested file exceeds the configured size limit
+      content:
+        application/json:
+          schema:
+            $ref: "#/components/schemas/ErrorResponse"
   schemas:
     Capabilities:
       type: object
@@ -198,6 +424,64 @@ components:
         files: {type: boolean}
         pty: {type: boolean}
         http_port_proxy: {type: boolean}
+    FileType:
+      type: string
+      enum: [regular, directory, symlink, other]
+    FileStat:
+      type: object
+      additionalProperties: false
+      required: [path, type, size_bytes, mode, modified_at]
+      properties:
+        path: {type: string}
+        type:
+          $ref: "#/components/schemas/FileType"
+        size_bytes: {type: integer, format: int64, minimum: 0}
+        mode: {type: string, pattern: '^0[0-7]{3}$'}
+        modified_at: {type: string, format: date-time}
+    FileStatRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path: {type: string}
+    DirectoryListRequest:
+      type: object
+      additionalProperties: false
+      required: [path]
+      properties:
+        path: {type: string}
+    DirectoryListing:
+      type: object
+      additionalProperties: false
+      required: [path, entries]
+      properties:
+        path: {type: string}
+        entries:
+          type: array
+          items:
+            $ref: "#/components/schemas/FileStat"
+    MkdirRequest:
+      type: object
+      additionalProperties: false
+      required: [path, parents]
+      properties:
+        path: {type: string}
+        parents: {type: boolean}
+    FileMoveRequest:
+      type: object
+      additionalProperties: false
+      required: [source, destination, overwrite]
+      properties:
+        source: {type: string}
+        destination: {type: string}
+        overwrite: {type: boolean}
+    FileDeleteRequest:
+      type: object
+      additionalProperties: false
+      required: [path, recursive]
+      properties:
+        path: {type: string}
+        recursive: {type: boolean}
     RunnerHealth:
       type: object
       additionalProperties: false
@@ -422,4 +706,10 @@ components:
         - EXECUTION_LIMIT_REACHED
         - SHELL_NOT_FOUND
         - INVALID_CWD
+        - FILES_UNAVAILABLE
+        - INVALID_FILE_PATH
+        - FILE_NOT_FOUND
+        - FILE_TYPE_MISMATCH
+        - FILE_CONFLICT
+        - FILE_TOO_LARGE
         - INTERNAL_ERROR
