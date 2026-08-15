@@ -97,6 +97,21 @@ S06 错误模型与 Context、S07 删除收敛与重复删除。
   `a798f48` 将其收敛为“示例配置与宣传默认值一致”的仓库内契约，全量测试
   因此恢复绿色。该修复独立提交，未混入 SDK 变更。
 
+### 5.1 评审后修复（P1/P2）
+
+阶段交付评审发现三个问题，均已独立提交修复并重新通过全部验证：
+
+| 问题 | 修复 | 提交 |
+|---|---|---|
+| P1：`sdk.ExecutionEvent` 由 wire 别名改为已解码结构，构成破坏性变更 | 恢复 `ExecutionEvent = protocol.ExecutionEvent` 别名（`DataBase64`、指针 `ExitCode`、日志页元素赋值全部继续编译），已解码事件改用新名称 `DecodedEvent` 交付 | `1870d66` |
+| P2：异常终态响应（如 State=Failed 且无终止事件）可使 `Run` 解引用空指针 panic | `newExecutionInfo` 在映射阶段校验不变量：终态必携带终止事件、事件类型与状态匹配、execution ID 一致且通过协议 `Validate()`；非终态不得携带终止事件。违反时返回错误而不是崩溃 | `022bef8` |
+| P2：`Run` 日志分页中途失败时，已读取的 stdout/stderr 随错误返回丢失 | 错误返回前把已收集缓冲写入 `RunResult.Stdout/Stderr`，并新增“第二页日志请求失败”回归测试 | `36cdb67` |
+
+修复后重新执行：Windows 全量 `go test ./...` / `go vet ./...` / `gofmt`
+全部通过；WSL2 真实服务端验收再次 **10/10 PASS**（sandbox ID
+`b84ef44e-f3cc-404e-9b29-2d99c9d1a272`），验收后受管资源与临时目录
+零残留。
+
 ## 6. 已知限制与环境说明
 
 1. **WSL 单测环境限制**：本机 WSL2（Docker Desktop mirrored networking，
