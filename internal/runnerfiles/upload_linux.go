@@ -52,11 +52,21 @@ func (s *Service) Upload(
 	}
 	defer unix.Close(parentFD)
 
+	// 状态分类用预检：已存在且不允许覆盖时直接失败；该检查与 rename 之间
+	// 的竞争最多影响 200/201 的标注，不影响内容正确性。
+	preExists, _, statErr := statEntry(parentFD, base, path)
+	if statErr != nil && statErr != ErrNotFound {
+		return false, protocol.FileStat{}, statErr
+	}
+	if preExists && !overwrite {
+		return false, protocol.FileStat{}, ErrConflict
+	}
+
 	tempFD, tempName, err := createTempFile(parentFD)
 	if err != nil {
 		return false, protocol.FileStat{}, err
 	}
-	replaced := false
+	replaced := preExists
 	committed := false
 	defer func() {
 		if !committed {
@@ -87,7 +97,6 @@ func (s *Service) Upload(
 		return false, protocol.FileStat{}, translateErrno(err)
 	}
 	committed = true
-	replaced = overwrite
 
 	exists, stat, statErr := statEntry(parentFD, base, path)
 	if statErr != nil || !exists {
