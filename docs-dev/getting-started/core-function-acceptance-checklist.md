@@ -166,37 +166,23 @@ err = client.DeleteSandbox(ctx, sandbox.ID)
 - 对同一个 ID 再次调用 `DeleteSandbox` 仍成功；
 - 删除后不能再创建新的 execution。
 
-## 5. 最小验收程序结构
+## 5. 执行完整验收程序
 
-建议把上述步骤写成一个普通 Go 测试，测试本身只依赖公开 SDK：
-
-```go
-func TestSDKCoreFlow(t *testing.T) {
-    if os.Getenv("MINISANDBOX_ACCEPTANCE") != "1" {
-        t.Skip("set MINISANDBOX_ACCEPTANCE=1 to run live acceptance")
-    }
-
-    client := sdk.NewClient("http://127.0.0.1:8080", &http.Client{
-        Timeout: 15 * time.Second,
-    })
-
-    // 1. CreateSandboxWithOptions + wait Running
-    // 2. replay Idempotency-Key
-    // 3. StartBackgroundExecution + GetExecutionLogs
-    // 4. CancelExecution
-    // 5. RenewSandbox
-    // 6. verify ResponseError and context cancellation
-    // 7. DeleteSandbox + wait Terminated + delete again
-}
-```
-
-执行入口只需要一条命令：
+仓库已经提供只依赖公开 Go SDK 的完整验收程序：[go_sdk.go](../../tests/sdk/go_sdk.go)。在 `sandboxd` 就绪后，从仓库根目录执行：
 
 ```bash
-MINISANDBOX_ACCEPTANCE=1 go test ./tests/sdkacceptance -v
+go run ./tests/sdk
 ```
 
-如果仓库尚未提供 `tests/sdkacceptance`，应将它作为后续易用性任务补齐；在此之前可按 S01～S07 编写临时 `_test.go` 文件执行。长期方案不应让使用者复制大量 Bash 请求。
+默认连接 `http://127.0.0.1:8080` 并使用 `debian:bookworm-slim`。如需覆盖：
+
+```bash
+MINISANDBOX_URL=http://127.0.0.1:18080 \
+MINISANDBOX_IMAGE=debian:bookworm-slim \
+go run ./tests/sdk
+```
+
+程序逐项打印 S01～S07；全部通过时打印 `7/7 PASS` 并以退出码 0 结束，任一失败时打印所属步骤并以非零退出码结束。程序会使用每次唯一的幂等 key，并在失败路径尽力删除本次创建的 sandbox。
 
 ## 6. SDK 验收通过标准
 
