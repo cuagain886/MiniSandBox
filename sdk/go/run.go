@@ -46,11 +46,13 @@ func (s *Sandbox) Run(ctx context.Context, request ExecuteRequest) (RunResult, e
 			stderr.Write(event.Data)
 		}
 	}
+	// 无论日志读取是否完整，都把已收集的部分输出交给调用方，便于在分页
+	// 失败时诊断已产生的输出。
+	result.Stdout = stdout.Bytes()
+	result.Stderr = stderr.Bytes()
 	if err := logs.Err(); err != nil {
 		return result, err
 	}
-	result.Stdout = stdout.Bytes()
-	result.Stderr = stderr.Bytes()
 
 	switch info.State {
 	case ExecutionStateExited:

@@ -22,7 +22,9 @@ type fakeExecutionServer struct {
 	statuses    []protocol.ExecutionStatus
 	statusIndex int
 	logPages    map[uint64]protocol.ExecutionLogPage
-	cancels     int
+	// logFailCursors 中的 cursor 直接返回 500，模拟日志分页中途失败。
+	logFailCursors map[uint64]bool
+	cancels        int
 }
 
 func (f *fakeExecutionServer) handler(t *testing.T) http.HandlerFunc {
@@ -53,6 +55,18 @@ func (f *fakeExecutionServer) handler(t *testing.T) http.HandlerFunc {
 			cursor, err := strconv.ParseUint(r.URL.Query().Get("cursor"), 10, 64)
 			if err != nil {
 				http.Error(w, "bad cursor", http.StatusBadRequest)
+				return
+			}
+			if f.logFailCursors[cursor] {
+				w.Header().Set("Content-Type", "application/json")
+				w.WriteHeader(http.StatusInternalServerError)
+				_ = json.NewEncoder(w).Encode(protocol.ErrorResponse{
+					Error: protocol.ErrorDetail{
+						Code:      "INTERNAL_ERROR",
+						Message:   "simulated log page failure",
+						RequestID: "req-partial",
+					},
+				})
 				return
 			}
 			page, ok := f.logPages[cursor]
@@ -297,6 +311,63 @@ func TestRunScenarios(t *testing.T) {
 				t.Fatalf("expected ExecutionFailedError, got %v", err)
 			}
 		})
+}
+
+// TestRunKeepsPartialOutputWhenLogFetchFails 验收 Run 在日志分页中途失败时，
+// 错误返回的同时仍携带第一页已读取的输出。
+func TestRunKeepsPartialOutputWhenLogFetchFails(t *testing.T) {
+	partialPages := map[uint64]protocol.ExecutionLogPage{
+		0: {
+			Events: []protocol.ExecutionEvent{
+				{
+					ExecutionID: "exec-run",
+					Sequence:    1,
+					Timestamp:   time.Unix(1000, 0).UTC(),
+					Type:        protocol.EventStdout,
+					DataBase64:  base64.StdEncoding.EncodeToString([]byte("partial-out")),
+				},
+				{
+					ExecutionID: "exec-run",
+					Sequence:    2,
+					Timestamp:   time.Unix(1001, 0).UTC(),
+					Type:        protocol.EventStderr,
+					DataBase64:  base64.StdEncoding.EncodeToString([]byte("partial-err")),
+				},
+			},
+			NextCursor: 2,
+			Complete:   false,
+		},
+	}
+	fake := &fakeExecutionServer{
+		statuses: []protocol.ExecutionStatus{
+			exitedStatus(protocol.ExecutionStateExited, protocol.EventExited, &[]int{0}[0]),
+		},
+		logPages:       partialPages,
+		logFailCursors: map[uint64]bool{2: true},
+	}
+	server := httptest.NewServer(fake.handler(t))
+	defer server.Close()
+
+	client := NewClient(server.URL, server.Client())
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	result, err := client.Sandbox("sbx-run").Run(ctx, ExecuteRequest{
+		Argv: []string{"/bin/true"},
+	})
+	var responseError *ResponseError
+	if !errors.As(err, &responseError) || responseError.StatusCode != http.StatusInternalServerError {
+		t.Fatalf("expected simulated log failure, got %v", err)
+	}
+	if string(result.Stdout) != "partial-out" || string(result.Stderr) != "partial-err" {
+		t.Fatalf("partial output must survive log failure: stdout=%q stderr=%q",
+			result.Stdout,
+			result.Stderr,
+		)
+	}
+	if result.ExecutionID == "" || result.State != ExecutionStateExited {
+		t.Fatalf("result identity must survive log failure: %+v", result)
+	}
 }
 
 // TestCancelAndWaitConverges 验收取消后等待：DELETE 提交一次，终态收敛。
