@@ -58,6 +58,9 @@ type RouterDependencies struct {
 	Metrics http.Handler
 	// Diagnostics 非 nil 时注册固定 GET /v1/admin/diagnostics；调用方必须已包装 admin 鉴权。
 	Diagnostics http.Handler
+	// Files 提供 workspace 文件与 capabilities 用例；nil 时对应路由保持
+	// NOT_IMPLEMENTED 占位。
+	Files FilesService
 }
 
 // NewRouter 创建 sandboxd 的根 HTTP handler，并注册中间件与全部公开路由。
@@ -84,6 +87,7 @@ func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler
 	mux.HandleFunc("GET /readyz", readinessHandler(deps.Readiness))
 	registerLifecycleRoutes(mux, deps.Lifecycle)
 	registerExecutionRoutes(mux, deps.Execution, deps.SSEWriteTimeout)
+	registerFilesRoutes(mux, deps.Files)
 	if deps.Metrics != nil {
 		mux.Handle("GET /metrics", deps.Metrics)
 	}
@@ -98,4 +102,29 @@ func writeJSON(w http.ResponseWriter, status int, value any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(value)
+}
+
+// registerFilesRoutes 注册公共文件与 capabilities 路由；服务未装配时保持
+// 显式 NOT_IMPLEMENTED 占位。
+func registerFilesRoutes(mux *http.ServeMux, service FilesService) {
+	files := notImplemented("files")
+	if service == nil {
+		mux.Handle("GET /v1/sandboxes/{sandbox_id}/capabilities", files)
+		mux.Handle("POST /v1/sandboxes/{sandbox_id}/files/stat", files)
+		mux.Handle("POST /v1/sandboxes/{sandbox_id}/directories/list", files)
+		mux.Handle("POST /v1/sandboxes/{sandbox_id}/directories", files)
+		mux.Handle("PUT /v1/sandboxes/{sandbox_id}/files/content", files)
+		mux.Handle("GET /v1/sandboxes/{sandbox_id}/files/content", files)
+		mux.Handle("POST /v1/sandboxes/{sandbox_id}/files/move", files)
+		mux.Handle("POST /v1/sandboxes/{sandbox_id}/files/delete", files)
+		return
+	}
+	mux.Handle("GET /v1/sandboxes/{sandbox_id}/capabilities", NewSandboxCapabilitiesHandler(service))
+	mux.Handle("POST /v1/sandboxes/{sandbox_id}/files/stat", NewFileStatHandler(service))
+	mux.Handle("POST /v1/sandboxes/{sandbox_id}/directories/list", NewDirectoryListHandler(service))
+	mux.Handle("POST /v1/sandboxes/{sandbox_id}/directories", NewDirectoryCreateHandler(service))
+	mux.Handle("PUT /v1/sandboxes/{sandbox_id}/files/content", NewFileUploadHandler(service))
+	mux.Handle("GET /v1/sandboxes/{sandbox_id}/files/content", NewFileDownloadHandler(service))
+	mux.Handle("POST /v1/sandboxes/{sandbox_id}/files/move", NewFileMoveHandler(service))
+	mux.Handle("POST /v1/sandboxes/{sandbox_id}/files/delete", NewFileDeleteHandler(service))
 }

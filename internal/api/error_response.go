@@ -183,6 +183,48 @@ func mapError(err error) errorMapping {
 			message:   "Sandbox runner protocol is incompatible.",
 			retryable: false,
 		}
+	case errors.Is(err, domain.ErrFilesUnavailable):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodeFilesUnavailable),
+			message:   "Sandbox files capability is unavailable.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrInvalidFilePath):
+		return errorMapping{
+			status:    http.StatusBadRequest,
+			code:      string(protocol.ErrorCodeInvalidFilePath),
+			message:   "Workspace file path is invalid.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrFileNotFound):
+		return errorMapping{
+			status:    http.StatusNotFound,
+			code:      string(protocol.ErrorCodeFileNotFound),
+			message:   "Workspace file does not exist.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrFileTypeMismatch):
+		return errorMapping{
+			status:    http.StatusConflict,
+			code:      string(protocol.ErrorCodeFileTypeMismatch),
+			message:   "Workspace file type does not match the operation.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrFileConflict):
+		return errorMapping{
+			status:    http.StatusConflict,
+			code:      string(protocol.ErrorCodeFileConflict),
+			message:   "Workspace file conflicts with an existing entry.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrFileTooLarge):
+		return errorMapping{
+			status:    http.StatusRequestEntityTooLarge,
+			code:      string(protocol.ErrorCodeFileTooLarge),
+			message:   "Workspace file exceeds the configured size limit.",
+			retryable: false,
+		}
 	case errors.Is(err, domain.ErrOutboundNotAllowed):
 		return errorMapping{
 			status:    http.StatusForbidden,
