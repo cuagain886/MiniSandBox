@@ -39,6 +39,9 @@ type ServerRoutes struct {
 	Files *FilesRoutes
 	// PTY 处理 GET /v1/pty 的内部 WebSocket；nil 时返回 PTY_UNAVAILABLE。
 	PTY http.Handler
+	// PortProxy 处理 /v1/ports/{port}/http/{path...} 的固定代理；nil 时
+	// 返回 PORT_PROXY_UNAVAILABLE。
+	PortProxy http.Handler
 }
 
 // ServerReadiness 保存 runner 的单向 readiness 状态；开始 draining 后不可恢复。
@@ -118,6 +121,7 @@ func newConfiguredServer(version, token string, readiness *ServerReadiness, rout
 	mux.Handle("GET /v1/capabilities", routes.Capabilities)
 	registerFilesRoutes(mux, routes.Files)
 	registerPTYRoute(mux, routes.PTY)
+	registerPortProxyRoute(mux, routes.PortProxy)
 	authenticated, err := TokenAuth(token, mux)
 	if err != nil {
 		return nil, err
@@ -153,6 +157,22 @@ func unavailableFilesHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeRunnerError(w, http.StatusServiceUnavailable, "FILES_UNAVAILABLE", "files capability is unavailable", true)
 	})
+}
+
+// registerPortProxyRoute 注册固定端口代理路由；未启用时返回明确错误。
+// 深通配只存在于该固定前缀之下，其余路径不受影响。
+func registerPortProxyRoute(mux *http.ServeMux, proxy http.Handler) {
+	if proxy == nil {
+		proxy = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeRunnerError(w, http.StatusServiceUnavailable, "PORT_PROXY_UNAVAILABLE", "port proxy capability is unavailable", true)
+		})
+	}
+	for _, method := range []string{
+		http.MethodGet, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodHead,
+	} {
+		mux.Handle(method+" /v1/ports/{port}/http/{path...}", proxy)
+	}
 }
 
 // registerPTYRoute 注册内部 PTY WebSocket 路由；未启用时在升级前返回
