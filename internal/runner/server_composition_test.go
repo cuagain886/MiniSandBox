@@ -28,6 +28,7 @@ func TestConfiguredServerRequiresReadinessAndExactRoutes(t *testing.T) {
 	readiness := NewServerReadiness()
 	server, err := newConfiguredServer("build", "token", readiness, ServerRoutes{
 		Create: handler("create"), Status: handler("status"), Cancel: handler("cancel"), Logs: handler("logs"), Shutdown: handler("shutdown"),
+		Capabilities: NewCapabilitiesHandler(protocol.Capabilities{}),
 	}, func() (string, error) { return "linux-netns:4:9", nil })
 	if err != nil {
 		t.Fatalf("new configured server: %v", err)
