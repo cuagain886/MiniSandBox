@@ -79,6 +79,10 @@ func (s *Service) Delete(path string, recursive bool) error {
 		return err
 	}
 	parentFD, base, err := openParent(s.root.rootFD(), path)
+	if errors.Is(err, ErrNotFound) {
+		// 父目录已不存在时目标必然不存在；删除保持幂等成功。
+		return nil
+	}
 	if err != nil {
 		return err
 	}
