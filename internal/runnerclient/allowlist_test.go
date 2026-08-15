@@ -14,7 +14,12 @@ func TestClientExportsOnlyNamedRunnerOperations(t *testing.T) {
 		methods = append(methods, typeOfClient.Method(index).Name)
 	}
 	sort.Strings(methods)
-	want := []string{"Cancel", "ExecuteBackground", "ExecuteForeground", "GoString", "Health", "Logs", "Shutdown", "Status", "String"}
+	want := []string{
+		"Cancel", "Capabilities", "Delete", "DirectoryList", "Download",
+		"ExecuteBackground", "ExecuteForeground", "FileStat", "GoString",
+		"Health", "Logs", "Mkdir", "Move", "Shutdown", "Status", "String",
+		"Upload",
+	}
 	if !reflect.DeepEqual(methods, want) {
 		t.Fatalf("runner client exported surface changed: got %v want %v", methods, want)
 	}
