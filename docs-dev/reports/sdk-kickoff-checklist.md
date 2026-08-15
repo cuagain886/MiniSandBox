@@ -88,16 +88,17 @@ SDK 原生请求模型：`CreateSandboxRequest`、`SandboxNetworkRequest`、
 
 - 状态/事件：`SandboxState`、`SandboxReason`、`ExecutionState`、`EventType`
   在 SDK 内直接公开，普通示例不再导入 `pkg/protocol`；
-- 信息与结果：`SandboxInfo`、`ExecutionInfo`、`ExecutionEvent`（已解码
-  `Data []byte`）、`RunResult`，使用 Go 原生 `time.Time` / `time.Duration`；
+- 信息与结果：`SandboxInfo`、`ExecutionInfo`、已解码事件（交付为
+  `DecodedEvent`，保留 wire 别名 `ExecutionEvent` 供底层 API 使用者）、
+  `RunResult`，使用 Go 原生 `time.Time` / `time.Duration`；
 - 错误：保留 `ResponseError`，补充少量判断 helper；`Run` 的非零退出、取消、
   超时和执行失败分别定义为可 `errors.As` 的具体错误类型。
 
 ## 4. 边界确认
 
 - 现有 9 个底层方法全部保留，不做删除、重命名或语义变更；
-- `sdk.ExecutionEvent` 从协议别名改为 SDK 自有的已解码事件类型（当前无
-  SDK 外部使用者，属本阶段既定目标，不是破坏性变更）；
+- `sdk.ExecutionEvent` 保持 protocol wire 别名不变，已解码事件以新名称
+  `DecodedEvent` 交付，底层 API 兼容性零破坏（评审后修正的原方案）；
 - 不新增服务端 API，不修改 OpenAPI 与协议语义；
 - 测试集中在 SDK-005 / SDK-011 / SDK-018 / SDK-023 / SDK-025 五个验收时点。
 

@@ -70,7 +70,7 @@ type EventStream struct {
 	body   io.ReadCloser
 	reader *bufio.Reader
 
-	current          ExecutionEvent
+	current          DecodedEvent
 	executionID      string
 	expectedSequence uint64
 	terminal         bool
@@ -78,7 +78,7 @@ type EventStream struct {
 }
 
 // Event 返回最近一次 Next 成功时抵达的事件。
-func (s *EventStream) Event() ExecutionEvent {
+func (s *EventStream) Event() DecodedEvent {
 	return s.current
 }
 
@@ -121,7 +121,7 @@ func (s *EventStream) Next() bool {
 
 // readEvent 读取直到下一条业务事件；返回 hasEvent 为 false 且 err 为 nil
 // 仅表示流正常耗尽。注释行和空帧按心跳跳过。
-func (s *EventStream) readEvent() (ExecutionEvent, bool, error) {
+func (s *EventStream) readEvent() (DecodedEvent, bool, error) {
 	var dataLines []string
 	var frameID, frameEvent string
 	frameBytes := 0
@@ -129,11 +129,11 @@ func (s *EventStream) readEvent() (ExecutionEvent, bool, error) {
 	for {
 		line, eof, err := readSSELine(s.reader)
 		if err != nil {
-			return ExecutionEvent{}, false, err
+			return DecodedEvent{}, false, err
 		}
 		if len(line) > 0 {
 			if len(line) > maxSSEFrameBytes-frameBytes {
-				return ExecutionEvent{}, false, errors.New("minisandbox: SSE frame exceeds limit")
+				return DecodedEvent{}, false, errors.New("minisandbox: SSE frame exceeds limit")
 			}
 			frameBytes += len(line) + 1
 			text := string(line)
@@ -158,7 +158,7 @@ func (s *EventStream) readEvent() (ExecutionEvent, bool, error) {
 		// 空行是 frame 边界；空 frame 或纯注释 frame 是心跳，跳过。
 		if !hasField {
 			if eof {
-				return ExecutionEvent{}, false, nil
+				return DecodedEvent{}, false, nil
 			}
 			dataLines = nil
 			frameID = ""
@@ -168,15 +168,15 @@ func (s *EventStream) readEvent() (ExecutionEvent, bool, error) {
 		}
 		event, err := decodeSSEData(strings.Join(dataLines, "\n"), frameEvent)
 		if err != nil {
-			return ExecutionEvent{}, false, err
+			return DecodedEvent{}, false, err
 		}
 		if frameID != "" {
 			sequence, err := parseSSESequence(frameID)
 			if err != nil {
-				return ExecutionEvent{}, false, err
+				return DecodedEvent{}, false, err
 			}
 			if sequence != event.Sequence {
-				return ExecutionEvent{}, false, errors.New("minisandbox: SSE id disagrees with payload sequence")
+				return DecodedEvent{}, false, errors.New("minisandbox: SSE id disagrees with payload sequence")
 			}
 		}
 		// 新 execution 的序号从 1 开始连续递增；execution ID 中途变化说明
@@ -186,7 +186,7 @@ func (s *EventStream) readEvent() (ExecutionEvent, bool, error) {
 			s.expectedSequence = 1
 		}
 		if event.ExecutionID != s.executionID || event.Sequence != s.expectedSequence {
-			return ExecutionEvent{}, false, fmt.Errorf(
+			return DecodedEvent{}, false, fmt.Errorf(
 				"minisandbox: execution stream broke at sequence %d for %s",
 				event.Sequence,
 				event.ExecutionID,
@@ -198,23 +198,23 @@ func (s *EventStream) readEvent() (ExecutionEvent, bool, error) {
 }
 
 // decodeSSEData 把单帧 data JSON 解码为已验证的 SDK 事件。
-func decodeSSEData(data string, frameEvent string) (ExecutionEvent, error) {
+func decodeSSEData(data string, frameEvent string) (DecodedEvent, error) {
 	if data == "" {
-		return ExecutionEvent{}, errors.New("minisandbox: SSE frame has no data")
+		return DecodedEvent{}, errors.New("minisandbox: SSE frame has no data")
 	}
 	var wireEvent protocol.ExecutionEvent
 	if err := json.Unmarshal([]byte(data), &wireEvent); err != nil {
-		return ExecutionEvent{}, fmt.Errorf("minisandbox: decode SSE event: %w", err)
+		return DecodedEvent{}, fmt.Errorf("minisandbox: decode SSE event: %w", err)
 	}
 	if err := wireEvent.Validate(); err != nil {
-		return ExecutionEvent{}, fmt.Errorf(
+		return DecodedEvent{}, fmt.Errorf(
 			"minisandbox: invalid SSE event payload: %w", err,
 		)
 	}
 	if frameEvent != "" && frameEvent != string(wireEvent.Type) {
-		return ExecutionEvent{}, errors.New("minisandbox: SSE event field disagrees with payload")
+		return DecodedEvent{}, errors.New("minisandbox: SSE event field disagrees with payload")
 	}
-	return newExecutionEvent(wireEvent)
+	return newDecodedEvent(wireEvent)
 }
 
 // readSSELine 读取一行并在超过缓冲上限时失败，语义与 runnerclient 一致。

@@ -66,6 +66,14 @@ func executionTerminalState(state ExecutionState) bool {
 // EventType 标识 SSE 执行事件的稳定类型。
 type EventType = protocol.EventType
 
+// ExecutionEvent 是公共 wire 执行事件的原样别名，保持既有底层 API 使用者
+// 不经修改继续编译。
+//
+// 该类型与 GetExecutionLogs 返回的日志页元素、SSE data 载荷完全一致：
+// 输出仍是 Base64 字符串，可选字段仍是指针形式。需要已解码输出、Go 原生
+// 耗时和扁平化终止字段时，请使用高层迭代器交付的 DecodedEvent。
+type ExecutionEvent = protocol.ExecutionEvent
+
 const (
 	// EventStarted 表示 runner 已成功启动用户进程。
 	EventStarted = protocol.EventStarted

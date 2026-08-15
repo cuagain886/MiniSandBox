@@ -87,8 +87,8 @@ type ExecutionLogs struct {
 	execution *Execution
 	ctx       context.Context
 	cursor    uint64
-	pending   []ExecutionEvent
-	current   ExecutionEvent
+	pending   []DecodedEvent
+	current   DecodedEvent
 	complete  bool
 	err       error
 }
@@ -104,7 +104,7 @@ func (e *Execution) Logs(ctx context.Context, cursor uint64) *ExecutionLogs {
 }
 
 // Event 返回最近一次 Next 成功时抵达的事件。
-func (l *ExecutionLogs) Event() ExecutionEvent {
+func (l *ExecutionLogs) Event() DecodedEvent {
 	return l.current
 }
 
@@ -140,7 +140,7 @@ func (l *ExecutionLogs) Next() bool {
 			return false
 		}
 		for _, event := range page.Events {
-			decoded, err := newExecutionEvent(event)
+			decoded, err := newDecodedEvent(event)
 			if err != nil {
 				l.err = err
 				return false

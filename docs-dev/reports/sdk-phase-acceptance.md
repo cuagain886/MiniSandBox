@@ -60,8 +60,9 @@ API 且真实验收通过；9 个底层方法全部保留。
   `StartExecution`、`Run`、`ExecuteStream`；
 - `Execution`：`ID`、`Info`、`Wait`、`CancelAndWait`、`Logs`（已解码迭代器）；
 - `EventStream`：前台 SSE 事件迭代器（`Next`/`Event`/`Err`/`Close`）；
-- 类型：`SandboxInfo`、`ExecutionInfo`、`ExecutionEvent`（已解码 `Data`）、
-  `RunResult`、`Readiness`、`ReadinessComponent`，以及状态/事件枚举常量；
+- 类型：`SandboxInfo`、`ExecutionInfo`、`DecodedEvent`（已解码 `Data`；
+  wire 别名 `ExecutionEvent` 原样保留）、`RunResult`、`Readiness`、
+  `ReadinessComponent`，以及状态/事件枚举常量；
 - 错误：`ResponseError`（新增 `IsNotFound`/`IsConflict`/`IsRetryable`）、
   `ExitError`、`ExecutionCancelledError`、`ExecutionTimedOutError`、
   `ExecutionFailedError`。

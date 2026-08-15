@@ -53,7 +53,7 @@ type ExecutionInfo struct {
 	// State 是查询时最近一次观测到的 execution 状态。
 	State ExecutionState
 	// TerminalEvent 仅在 execution 已终止时非 nil，是四种终止事件之一。
-	TerminalEvent *ExecutionEvent
+	TerminalEvent *DecodedEvent
 }
 
 // newExecutionInfo 把公共 wire 状态映射为 SDK 原生信息模型。
@@ -63,7 +63,7 @@ func newExecutionInfo(status protocol.ExecutionStatus) (ExecutionInfo, error) {
 		State:       status.State,
 	}
 	if status.TerminalEvent != nil {
-		event, err := newExecutionEvent(*status.TerminalEvent)
+		event, err := newDecodedEvent(*status.TerminalEvent)
 		if err != nil {
 			return ExecutionInfo{}, err
 		}
@@ -72,12 +72,14 @@ func newExecutionInfo(status protocol.ExecutionStatus) (ExecutionInfo, error) {
 	return info, nil
 }
 
-// ExecutionEvent 是 SDK 交付给调用方的单条已解码执行事件。
+// DecodedEvent 是 SDK 高层迭代器交付给调用方的单条已解码执行事件。
 //
-// 输出类事件的 Data 是解码后的原始 stdout/stderr 字节；终止事件携带
-// ExitCode、Duration 和 OutputTruncated；ErrorCode 和 Message 仅出现在
-// failed 事件中。可选字段的适用范围与公共协议一致，由 Type 决定。
-type ExecutionEvent struct {
+// 与 wire 别名 ExecutionEvent 不同，本类型把 Base64 输出还原为字节、把毫秒
+// 耗时映射为 time.Duration、把可选终止字段扁平化：输出类事件的 Data 是原始
+// stdout/stderr 字节；终止事件携带 ExitCode、Duration 和 OutputTruncated；
+// ErrorCode 和 Message 仅出现在 failed 事件中。字段适用范围与公共协议一致，
+// 由 Type 决定。
+type DecodedEvent struct {
 	// ExecutionID 是本事件所属的稳定 execution 标识。
 	ExecutionID string
 	// Sequence 是单次执行内从一开始单调递增的事件序号。
@@ -101,7 +103,7 @@ type ExecutionEvent struct {
 }
 
 // Terminal 报告事件是否为四种互斥终止类型之一。
-func (e ExecutionEvent) Terminal() bool {
+func (e DecodedEvent) Terminal() bool {
 	switch e.Type {
 	case EventExited, EventFailed, EventCancelled, EventTimedOut:
 		return true
@@ -110,22 +112,22 @@ func (e ExecutionEvent) Terminal() bool {
 	}
 }
 
-// newExecutionEvent 把公共 wire 事件解码为 SDK 原生事件模型。
+// newDecodedEvent 把公共 wire 事件解码为 SDK 原生事件模型。
 //
 // wire 事件必须已经通过协议校验；本函数只负责把 Base64 输出还原为字节，
 // 并把毫秒耗时映射为 time.Duration。
-func newExecutionEvent(event protocol.ExecutionEvent) (ExecutionEvent, error) {
+func newDecodedEvent(event protocol.ExecutionEvent) (DecodedEvent, error) {
 	var data []byte
 	if event.DataBase64 != "" {
 		decoded, err := base64.StdEncoding.DecodeString(event.DataBase64)
 		if err != nil {
-			return ExecutionEvent{}, fmt.Errorf(
+			return DecodedEvent{}, fmt.Errorf(
 				"minisandbox: decode %s event payload: %w", event.Type, err,
 			)
 		}
 		data = decoded
 	}
-	result := ExecutionEvent{
+	result := DecodedEvent{
 		ExecutionID: event.ExecutionID,
 		Sequence:    event.Sequence,
 		Timestamp:   event.Timestamp,

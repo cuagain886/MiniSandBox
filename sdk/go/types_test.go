@@ -48,13 +48,37 @@ func TestSDKStateEnumsMatchProtocol(t *testing.T) {
 	}
 }
 
-// TestNewExecutionEventDecodesPayload 验证 wire 事件到 SDK 事件的转换会解码
+// TestExecutionEventAliasPreservesWireModel 验证 sdk.ExecutionEvent 仍是
+// protocol.ExecutionEvent 的原样别名：底层 API 使用者对 DataBase64、指针
+// ExitCode 和日志页元素赋值的既有代码不经修改继续编译。
+func TestExecutionEventAliasPreservesWireModel(t *testing.T) {
+	exitCode := 0
+	var event ExecutionEvent = protocol.ExecutionEvent{
+		ExecutionID: "exec-1",
+		Sequence:    1,
+		Type:        protocol.EventExited,
+		DataBase64:  base64.StdEncoding.EncodeToString([]byte("raw")),
+		ExitCode:    &exitCode,
+	}
+	var wire protocol.ExecutionEvent = event
+	if wire.DataBase64 != base64.StdEncoding.EncodeToString([]byte("raw")) ||
+		wire.ExitCode == nil || *wire.ExitCode != exitCode {
+		t.Fatalf("alias lost wire model shape: %#v", wire)
+	}
+	var page protocol.ExecutionLogPage
+	page.Events = append(page.Events, event)
+	if len(page.Events) != 1 || page.Events[0].DataBase64 == "" {
+		t.Fatal("wire event must remain assignable to log page elements")
+	}
+}
+
+// TestNewDecodedEventDecodesPayload 验证 wire 事件到 SDK 事件的转换会解码
 // Base64 输出并映射毫秒耗时与可选终止字段。
-func TestNewExecutionEventDecodesPayload(t *testing.T) {
+func TestNewDecodedEventDecodesPayload(t *testing.T) {
 	exitCode := 3
 	duration := int64(1500)
 	truncated := true
-	event, err := newExecutionEvent(protocol.ExecutionEvent{
+	event, err := newDecodedEvent(protocol.ExecutionEvent{
 		ExecutionID: "exec-1",
 		Sequence:    2,
 		Timestamp:   time.Unix(1000, 0).UTC(),
@@ -68,7 +92,7 @@ func TestNewExecutionEventDecodesPayload(t *testing.T) {
 		t.Fatalf("unexpected decoded event: %#v", event)
 	}
 
-	terminal, err := newExecutionEvent(protocol.ExecutionEvent{
+	terminal, err := newDecodedEvent(protocol.ExecutionEvent{
 		ExecutionID:     "exec-1",
 		Sequence:        3,
 		Timestamp:       time.Unix(1001, 0).UTC(),
@@ -85,7 +109,7 @@ func TestNewExecutionEventDecodesPayload(t *testing.T) {
 		t.Fatalf("unexpected terminal event: %#v", terminal)
 	}
 
-	if _, err := newExecutionEvent(protocol.ExecutionEvent{
+	if _, err := newDecodedEvent(protocol.ExecutionEvent{
 		Sequence:   1,
 		Type:       protocol.EventStdout,
 		DataBase64: "not-base64!!",
