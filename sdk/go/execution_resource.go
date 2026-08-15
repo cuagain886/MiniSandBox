@@ -77,3 +77,90 @@ func (e *Execution) CancelAndWait(ctx context.Context) (ExecutionInfo, error) {
 	}
 	return e.Wait(ctx)
 }
+
+// ExecutionLogs 是后台 execution 日志的已解码事件迭代器。
+//
+// 迭代器内部维护日志 cursor 并自动翻页：输出尚未追平终止事件时会按默认
+// 轮询间隔继续拉取，日志 Complete 且缓冲排空后 Next 返回 false。调用方
+// 不接触 cursor 和 Base64。
+type ExecutionLogs struct {
+	execution *Execution
+	ctx       context.Context
+	cursor    uint64
+	pending   []ExecutionEvent
+	current   ExecutionEvent
+	complete  bool
+	err       error
+}
+
+// Logs 返回从事件 sequence cursor 开始的日志迭代器；cursor 为 0 表示从
+// 头读取完整日志。
+func (e *Execution) Logs(ctx context.Context, cursor uint64) *ExecutionLogs {
+	return &ExecutionLogs{
+		execution: e,
+		ctx:       ctx,
+		cursor:    cursor,
+	}
+}
+
+// Event 返回最近一次 Next 成功时抵达的事件。
+func (l *ExecutionLogs) Event() ExecutionEvent {
+	return l.current
+}
+
+// Err 返回迭代过程中发生的传输或解码错误；正常结束时返回 nil。
+func (l *ExecutionLogs) Err() error {
+	return l.err
+}
+
+// Next 推进到下一条事件，缓冲排空且日志完整或发生错误时返回 false。
+func (l *ExecutionLogs) Next() bool {
+	if l.err != nil {
+		return false
+	}
+	if len(l.pending) > 0 {
+		l.current = l.pending[0]
+		l.pending = l.pending[1:]
+		return true
+	}
+	if l.complete {
+		return false
+	}
+	ticker := time.NewTicker(defaultPollInterval)
+	defer ticker.Stop()
+	for len(l.pending) == 0 && !l.complete {
+		page, err := l.execution.sandbox.client.GetExecutionLogs(
+			l.ctx,
+			l.execution.sandbox.id,
+			l.execution.id,
+			l.cursor,
+		)
+		if err != nil {
+			l.err = err
+			return false
+		}
+		for _, event := range page.Events {
+			decoded, err := newExecutionEvent(event)
+			if err != nil {
+				l.err = err
+				return false
+			}
+			l.pending = append(l.pending, decoded)
+		}
+		l.cursor = page.NextCursor
+		l.complete = page.Complete
+		if len(l.pending) > 0 {
+			break
+		}
+		if l.complete {
+			return false
+		}
+		select {
+		case <-l.ctx.Done():
+			l.err = l.ctx.Err()
+			return false
+		case <-ticker.C:
+		}
+	}
+	return l.Next()
+}
