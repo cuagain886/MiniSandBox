@@ -116,6 +116,36 @@ func (c *Client) doJSONWithHeaders(
 	return json.NewDecoder(response.Body).Decode(responseBody)
 }
 
+// doStream 执行请求；2xx 时调用可选 handle 处理响应，非 2xx 时解析
+// 公共错误。上传下载等流式接口共用本语义。
+func (c *Client) doStream(request *http.Request, handle func(*http.Response) error) error {
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		return responseError(response.StatusCode, response.Body)
+	}
+	if handle == nil {
+		return nil
+	}
+	return handle(response)
+}
+
+// doStreamBody 执行请求并直接返回响应体；调用方负责关闭。
+func (c *Client) doStreamBody(request *http.Request) (io.ReadCloser, error) {
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.StatusCode < 200 || response.StatusCode >= 300 {
+		defer response.Body.Close()
+		return nil, responseError(response.StatusCode, response.Body)
+	}
+	return response.Body, nil
+}
+
 // responseError 把非 2xx 响应体转换为公共错误模型。
 //
 // JSON API 和 SSE 流式入口共用本函数，保证两类接口的错误语义一致。
