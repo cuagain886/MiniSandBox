@@ -4,11 +4,13 @@ import (
 	"context"
 	"encoding/base64"
 	"errors"
+	"net/http"
 	"time"
 
 	"minisandbox/internal/runnerauth"
 	"minisandbox/internal/runnerbootstrap"
 	"minisandbox/internal/runnerfiles"
+	"minisandbox/internal/runnerpty"
 	"minisandbox/pkg/protocol"
 )
 
@@ -115,11 +117,28 @@ func ServeConfigured(ctx context.Context, version string, bootstrap runnerbootst
 			return openErr
 		}
 	}
+	// PTY 能力按配置启用；manager 关闭在服务返回后统一执行，覆盖
+	// 健康连接与断连中的会话。
+	var ptyHandler http.Handler
+	if bootstrap.Features.PTYEnabled {
+		ptyManager, managerErr := runnerpty.NewManager(bootstrap.Features.PTYMaxConcurrentSessions)
+		if managerErr != nil {
+			return managerErr
+		}
+		handler, handlerErr := NewPTYHandler(ptyManager, bootstrap, ctx)
+		if handlerErr != nil {
+			return handlerErr
+		}
+		ptyHandler = handler
+		capabilities.PTY = true
+		defer ptyManager.Shutdown(5 * time.Second)
+	}
 	routes := ServerRoutes{
 		Create: create, Status: status, Cancel: cancelHandler, Logs: logs,
 		Shutdown:     NewShutdownHandler(manager, readiness, 5*time.Second),
 		Capabilities: NewCapabilitiesHandler(capabilities),
 		Files:        files,
+		PTY:          ptyHandler,
 	}
 	handler, err := NewConfiguredServer(version, string(encodedToken), readiness, routes)
 	if err != nil {

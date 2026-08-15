@@ -37,6 +37,8 @@ type ServerRoutes struct {
 	// Files 是可选的 workspace 文件路由组；nil 时文件端点显式返回
 	// FILES_UNAVAILABLE，而不是 404 隐藏能力语义。
 	Files *FilesRoutes
+	// PTY 处理 GET /v1/pty 的内部 WebSocket；nil 时返回 PTY_UNAVAILABLE。
+	PTY http.Handler
 }
 
 // ServerReadiness 保存 runner 的单向 readiness 状态；开始 draining 后不可恢复。
@@ -115,6 +117,7 @@ func newConfiguredServer(version, token string, readiness *ServerReadiness, rout
 	mux.Handle("POST /v1/shutdown", routes.Shutdown)
 	mux.Handle("GET /v1/capabilities", routes.Capabilities)
 	registerFilesRoutes(mux, routes.Files)
+	registerPTYRoute(mux, routes.PTY)
 	authenticated, err := TokenAuth(token, mux)
 	if err != nil {
 		return nil, err
@@ -150,6 +153,17 @@ func unavailableFilesHandler() http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		writeRunnerError(w, http.StatusServiceUnavailable, "FILES_UNAVAILABLE", "files capability is unavailable", true)
 	})
+}
+
+// registerPTYRoute 注册内部 PTY WebSocket 路由；未启用时在升级前返回
+// 明确的 PTY_UNAVAILABLE JSON 错误。
+func registerPTYRoute(mux *http.ServeMux, pty http.Handler) {
+	if pty == nil {
+		pty = http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			writeRunnerError(w, http.StatusServiceUnavailable, "PTY_UNAVAILABLE", "pty capability is unavailable", true)
+		})
+	}
+	mux.Handle("GET /v1/pty", pty)
 }
 
 // newServer 保留 netns reader 注入点，供 health contract 测试使用。
