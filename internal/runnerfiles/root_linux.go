@@ -52,6 +52,9 @@ func (r *linuxRoot) close() error {
 	return err
 }
 
+// rootFD 返回根目录 fd 供操作层直接使用。
+func (r *linuxRoot) rootFD() int { return r.fd }
+
 // openBeneath 在根 fd 之下解析 path 并按 how 打开目标。
 //
 // RESOLVE_BENEATH 保证最终对象仍在 workspace 内；RESOLVE_NO_MAGICLINKS

@@ -6,6 +6,8 @@ import "minisandbox/pkg/protocol"
 type workspaceRoot interface {
 	// close 释放根目录 fd；重复调用安全。
 	close() error
+	// rootFD 返回根目录 fd；不支持 fd 操作的平台返回 -1。
+	rootFD() int
 }
 
 // Service 是 runner 内 workspace 文件服务的入口。
