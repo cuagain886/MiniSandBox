@@ -120,6 +120,21 @@ func TestDefaultSnapshot(t *testing.T) {
 			Enabled:   false,
 			TokenFile: "",
 		},
+		Files: FilesConfig{
+			Enabled:          true,
+			MaxUploadBytes:   33_554_432,
+			MaxDownloadBytes: 67_108_864,
+		},
+		PTY: PTYConfig{
+			Enabled:               true,
+			MaxConcurrentSessions: 2,
+			DefaultTimeout:        time.Hour,
+		},
+		PortProxy: PortProxyConfig{
+			Enabled: true,
+			MinPort: 1024,
+			MaxPort: 65535,
+		},
 	}
 
 	if got := Default(); !reflect.DeepEqual(got, want) {

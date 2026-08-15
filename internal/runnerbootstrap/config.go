@@ -42,6 +42,33 @@ type Config struct {
 	Limits Limits `json:"limits"`
 	// Paths 是 runner 可访问的固定容器内路径。
 	Paths Paths `json:"paths"`
+	// Features 是 Phase 4 能力开关与传输、会话和端口上限。
+	Features Features `json:"features"`
+}
+
+// Features 描述控制面固定下发的 Phase 4 能力开关与上限。
+//
+// 关闭的能力在 runner 内对应 endpoint 返回明确 unavailable；普通请求不能
+// 通过任何方式扩大这里的上限。
+type Features struct {
+	// FilesEnabled 表示 workspace 文件能力是否启用。
+	FilesEnabled bool `json:"files_enabled"`
+	// MaxUploadBytes 是单次上传字节上限。
+	MaxUploadBytes int64 `json:"max_upload_bytes"`
+	// MaxDownloadBytes 是单次下载字节上限。
+	MaxDownloadBytes int64 `json:"max_download_bytes"`
+	// PTYEnabled 表示交互终端能力是否启用。
+	PTYEnabled bool `json:"pty_enabled"`
+	// PTYMaxConcurrentSessions 是单 sandbox 并发 PTY 会话上限。
+	PTYMaxConcurrentSessions int `json:"pty_max_concurrent_sessions"`
+	// PTYDefaultTimeoutNanoseconds 是未指定 timeout 时的 PTY 默认时长。
+	PTYDefaultTimeoutNanoseconds time.Duration `json:"pty_default_timeout_nanoseconds"`
+	// PortProxyEnabled 表示 loopback HTTP 代理能力是否启用。
+	PortProxyEnabled bool `json:"port_proxy_enabled"`
+	// PortProxyMinPort 是允许代理的最小 TCP 端口。
+	PortProxyMinPort int `json:"port_proxy_min_port"`
+	// PortProxyMaxPort 是允许代理的最大 TCP 端口。
+	PortProxyMaxPort int `json:"port_proxy_max_port"`
 }
 
 // Identity 描述控制面 socket owner 与 runner execution 的 Linux 数字身份。
@@ -152,6 +179,17 @@ func FromConfig(control config.Config, sandboxID string, socketOwnerUID, socketO
 			SocketPath:             SocketPath,
 			ExecutionDataDirectory: ExecutionDataDirectory,
 		},
+		Features: Features{
+			FilesEnabled:                 control.Files.Enabled,
+			MaxUploadBytes:               control.Files.MaxUploadBytes,
+			MaxDownloadBytes:             control.Files.MaxDownloadBytes,
+			PTYEnabled:                   control.PTY.Enabled,
+			PTYMaxConcurrentSessions:     control.PTY.MaxConcurrentSessions,
+			PTYDefaultTimeoutNanoseconds: control.PTY.DefaultTimeout,
+			PortProxyEnabled:             control.PortProxy.Enabled,
+			PortProxyMinPort:             control.PortProxy.MinPort,
+			PortProxyMaxPort:             control.PortProxy.MaxPort,
+		},
 	}, nil
 }
 
@@ -215,6 +253,19 @@ type wireConfig struct {
 	Identity        *wireIdentity `json:"identity"`
 	Limits          *wireLimits   `json:"limits"`
 	Paths           *wirePaths    `json:"paths"`
+	Features        *wireFeatures `json:"features"`
+}
+
+type wireFeatures struct {
+	FilesEnabled                 *bool          `json:"files_enabled"`
+	MaxUploadBytes               *int64         `json:"max_upload_bytes"`
+	MaxDownloadBytes             *int64         `json:"max_download_bytes"`
+	PTYEnabled                   *bool          `json:"pty_enabled"`
+	PTYMaxConcurrentSessions     *int           `json:"pty_max_concurrent_sessions"`
+	PTYDefaultTimeoutNanoseconds *time.Duration `json:"pty_default_timeout_nanoseconds"`
+	PortProxyEnabled             *bool          `json:"port_proxy_enabled"`
+	PortProxyMinPort             *int           `json:"port_proxy_min_port"`
+	PortProxyMaxPort             *int           `json:"port_proxy_max_port"`
 }
 
 type wireIdentity struct {
@@ -250,8 +301,14 @@ type wirePaths struct {
 }
 
 func (w wireConfig) value() (Config, error) {
-	if w.ProtocolVersion == nil || w.SandboxID == nil || w.Identity == nil || w.Limits == nil || w.Paths == nil {
+	if w.ProtocolVersion == nil || w.SandboxID == nil || w.Identity == nil || w.Limits == nil || w.Paths == nil || w.Features == nil {
 		return Config{}, errors.New("decode runner bootstrap: required top-level field is missing")
+	}
+	f := w.Features
+	if f.FilesEnabled == nil || f.MaxUploadBytes == nil || f.MaxDownloadBytes == nil ||
+		f.PTYEnabled == nil || f.PTYMaxConcurrentSessions == nil || f.PTYDefaultTimeoutNanoseconds == nil ||
+		f.PortProxyEnabled == nil || f.PortProxyMinPort == nil || f.PortProxyMaxPort == nil {
+		return Config{}, errors.New("decode runner bootstrap: required features field is missing")
 	}
 	i, l, p := w.Identity, w.Limits, w.Paths
 	if i.ExecutionUID == nil || i.ExecutionGID == nil || i.SocketOwnerUID == nil || i.SocketOwnerGID == nil {
@@ -269,5 +326,16 @@ func (w wireConfig) value() (Config, error) {
 		Identity:        Identity{ExecutionUID: *i.ExecutionUID, ExecutionGID: *i.ExecutionGID, SocketOwnerUID: *i.SocketOwnerUID, SocketOwnerGID: *i.SocketOwnerGID},
 		Limits:          Limits{DefaultTimeoutNanoseconds: *l.DefaultTimeoutNanoseconds, MaxTimeoutNanoseconds: *l.MaxTimeoutNanoseconds, TerminationGraceNanoseconds: *l.TerminationGraceNanoseconds, MaxConcurrentExecutions: *l.MaxConcurrentExecutions, MaxRequestBytes: *l.MaxRequestBytes, MaxOutputBytes: *l.MaxOutputBytes, MaxEnvVars: *l.MaxEnvVars, MaxEnvKeyBytes: *l.MaxEnvKeyBytes, MaxEnvValueBytes: *l.MaxEnvValueBytes, MaxEnvTotalBytes: *l.MaxEnvTotalBytes, MaxLogPageEvents: *l.MaxLogPageEvents, MaxLogPageBytes: *l.MaxLogPageBytes, CompletedRetentionNanoseconds: *l.CompletedRetentionNanoseconds, MaxRetainedExecutions: *l.MaxRetainedExecutions, SSEWriteTimeoutNanoseconds: *l.SSEWriteTimeoutNanoseconds},
 		Paths:           Paths{WorkspaceDirectory: *p.WorkspaceDirectory, RuntimeDirectory: *p.RuntimeDirectory, SocketPath: *p.SocketPath, ExecutionDataDirectory: *p.ExecutionDataDirectory},
+		Features: Features{
+			FilesEnabled:                 *f.FilesEnabled,
+			MaxUploadBytes:               *f.MaxUploadBytes,
+			MaxDownloadBytes:             *f.MaxDownloadBytes,
+			PTYEnabled:                   *f.PTYEnabled,
+			PTYMaxConcurrentSessions:     *f.PTYMaxConcurrentSessions,
+			PTYDefaultTimeoutNanoseconds: *f.PTYDefaultTimeoutNanoseconds,
+			PortProxyEnabled:             *f.PortProxyEnabled,
+			PortProxyMinPort:             *f.PortProxyMinPort,
+			PortProxyMaxPort:             *f.PortProxyMaxPort,
+		},
 	}, nil
 }

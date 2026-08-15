@@ -43,6 +43,12 @@ type Config struct {
 	Recovery RecoveryConfig
 	// Admin 是默认关闭的本地只读管理端点访问配置。
 	Admin AdminConfig
+	// Files 是 workspace 文件能力开关与传输上限配置。
+	Files FilesConfig
+	// PTY 是交互终端能力开关与会话上限配置。
+	PTY PTYConfig
+	// PortProxy 是 sandbox loopback HTTP 代理开关与端口范围配置。
+	PortProxy PortProxyConfig
 }
 
 // ServerConfig 描述控制面 HTTP 服务的监听与关闭行为。
@@ -81,6 +87,17 @@ type RuntimeConfig struct {
 	// Platform 是 sandbox 容器与嵌入产物的目标平台;Phase 1 固定
 	// linux/amd64。
 	Platform domain.Platform
+	// PrePullImages 是启动后在后台准备的常用镜像列表;每项为 image 引加
+	// 与形如 linux/amd64 的平台串。
+	PrePullImages []PrePullImage
+}
+
+// PrePullImage 描述一条启动后预拉取的镜像与目标平台。
+type PrePullImage struct {
+	// Image 是完整的镜像引用,必须通过现有镜像 allowlist 校验。
+	Image string
+	// Platform 是形如 linux/amd64 的目标平台串。
+	Platform string
 }
 
 // LimitsConfig 描述 TTL 与资源的默认分配和服务端上限。
@@ -232,6 +249,39 @@ type AdminConfig struct {
 	TokenFile string `json:"-" yaml:"-"`
 }
 
+// FilesConfig 描述 workspace 文件能力开关与传输上限。
+//
+// 关闭时 capabilities 报 files=false 且公共文件接口返回 FILES_UNAVAILABLE；
+// 上限同时约束公共接口与 runner 内部实现，普通请求不能扩大。
+type FilesConfig struct {
+	// Enabled 表示是否启用文件能力。
+	Enabled bool
+	// MaxUploadBytes 是单次上传允许的最大字节数。
+	MaxUploadBytes int64
+	// MaxDownloadBytes 是单次下载允许的最大字节数。
+	MaxDownloadBytes int64
+}
+
+// PTYConfig 描述交互终端能力开关与会话上限。
+type PTYConfig struct {
+	// Enabled 表示是否启用 PTY 能力。
+	Enabled bool
+	// MaxConcurrentSessions 是单个 sandbox 允许同时存在的 PTY 会话数上限。
+	MaxConcurrentSessions int
+	// DefaultTimeout 是请求未指定 timeout 时的会话默认时长。
+	DefaultTimeout time.Duration
+}
+
+// PortProxyConfig 描述 sandbox loopback HTTP 代理开关与端口范围。
+type PortProxyConfig struct {
+	// Enabled 表示是否启用端口代理能力。
+	Enabled bool
+	// MinPort 是允许代理的最小 TCP 端口。
+	MinPort int
+	// MaxPort 是允许代理的最大 TCP 端口。
+	MaxPort int
+}
+
 // Default 返回 Phase 1 的安全默认配置。
 //
 // 默认值遵循安全边界:仅监听 loopback、网络模式为 none、workspace 非持久、
@@ -341,6 +391,21 @@ func Default() Config {
 		Admin: AdminConfig{
 			Enabled:   false,
 			TokenFile: "",
+		},
+		Files: FilesConfig{
+			Enabled:          true,
+			MaxUploadBytes:   33_554_432,
+			MaxDownloadBytes: 67_108_864,
+		},
+		PTY: PTYConfig{
+			Enabled:               true,
+			MaxConcurrentSessions: 2,
+			DefaultTimeout:        time.Hour,
+		},
+		PortProxy: PortProxyConfig{
+			Enabled: true,
+			MinPort: 1024,
+			MaxPort: 65535,
 		},
 	}
 }

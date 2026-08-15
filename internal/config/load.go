@@ -28,6 +28,9 @@ type fileConfig struct {
 	Idempotency *fileIdempotency `yaml:"idempotency"`
 	Recovery    *fileRecovery    `yaml:"recovery"`
 	Admin       *fileAdmin       `yaml:"admin"`
+	Files       *fileFiles       `yaml:"files"`
+	PTY         *filePTY         `yaml:"pty"`
+	PortProxy   *filePortProxy   `yaml:"port_proxy"`
 }
 
 // fileServer 对应 server 分组的文件字段。
@@ -44,14 +47,21 @@ type fileData struct {
 
 // fileRuntime 对应 runtime 分组的文件字段。
 type fileRuntime struct {
-	Type                  *string       `yaml:"type"`
-	DockerHost            *string       `yaml:"docker_host"`
-	DefaultImage          *string       `yaml:"default_image"`
-	RunnerSocketDirectory *string       `yaml:"runner_socket_directory"`
-	WorkspaceDirectory    *string       `yaml:"workspace_directory"`
-	NetworkMode           *string       `yaml:"network_mode"`
-	WorkspacePersistent   *bool         `yaml:"workspace_persistent"`
-	Platform              *filePlatform `yaml:"platform"`
+	Type                  *string           `yaml:"type"`
+	DockerHost            *string           `yaml:"docker_host"`
+	DefaultImage          *string           `yaml:"default_image"`
+	RunnerSocketDirectory *string           `yaml:"runner_socket_directory"`
+	WorkspaceDirectory    *string           `yaml:"workspace_directory"`
+	NetworkMode           *string           `yaml:"network_mode"`
+	WorkspacePersistent   *bool             `yaml:"workspace_persistent"`
+	Platform              *filePlatform     `yaml:"platform"`
+	PrePullImages         []filePrePullItem `yaml:"prepull_images"`
+}
+
+// filePrePullItem 对应 runtime.prepull_images 单个条目。
+type filePrePullItem struct {
+	Image    *string `yaml:"image"`
+	Platform *string `yaml:"platform"`
 }
 
 // filePlatform 对应 runtime.platform 的文件字段。
@@ -156,6 +166,27 @@ type fileAdmin struct {
 	TokenFile *string `yaml:"token_file"`
 }
 
+// fileFiles 对应 files 分组的文件字段。
+type fileFiles struct {
+	Enabled          *bool  `yaml:"enabled"`
+	MaxUploadBytes   *int64 `yaml:"max_upload_bytes"`
+	MaxDownloadBytes *int64 `yaml:"max_download_bytes"`
+}
+
+// filePTY 对应 pty 分组的文件字段。
+type filePTY struct {
+	Enabled               *bool   `yaml:"enabled"`
+	MaxConcurrentSessions *int    `yaml:"max_concurrent_sessions"`
+	DefaultTimeout        *string `yaml:"default_timeout"`
+}
+
+// filePortProxy 对应 port_proxy 分组的文件字段。
+type filePortProxy struct {
+	Enabled *bool `yaml:"enabled"`
+	MinPort *int  `yaml:"min_port"`
+	MaxPort *int  `yaml:"max_port"`
+}
+
 // Load 从显式路径读取 YAML 配置,并把文件中出现的字段覆盖到安全默认值上。
 //
 // 未出现的字段保持 Default 的取值;空文件等价于全部默认值。未知字段、
@@ -222,6 +253,20 @@ func (f fileConfig) apply(base Config) (Config, error) {
 		if f.Runtime.Platform != nil {
 			override(&cfg.Runtime.Platform.OS, f.Runtime.Platform.OS)
 			override(&cfg.Runtime.Platform.Arch, f.Runtime.Platform.Arch)
+		}
+		if f.Runtime.PrePullImages != nil {
+			images := make([]PrePullImage, 0, len(f.Runtime.PrePullImages))
+			for _, item := range f.Runtime.PrePullImages {
+				entry := PrePullImage{Platform: "linux/amd64"}
+				if item.Image != nil {
+					entry.Image = *item.Image
+				}
+				if item.Platform != nil {
+					entry.Platform = *item.Platform
+				}
+				images = append(images, entry)
+			}
+			cfg.Runtime.PrePullImages = images
 		}
 	}
 
@@ -426,6 +471,30 @@ func (f fileConfig) apply(base Config) (Config, error) {
 	if f.Admin != nil {
 		override(&cfg.Admin.Enabled, f.Admin.Enabled)
 		override(&cfg.Admin.TokenFile, f.Admin.TokenFile)
+	}
+
+	if f.Files != nil {
+		override(&cfg.Files.Enabled, f.Files.Enabled)
+		override(&cfg.Files.MaxUploadBytes, f.Files.MaxUploadBytes)
+		override(&cfg.Files.MaxDownloadBytes, f.Files.MaxDownloadBytes)
+	}
+
+	if f.PTY != nil {
+		override(&cfg.PTY.Enabled, f.PTY.Enabled)
+		override(&cfg.PTY.MaxConcurrentSessions, f.PTY.MaxConcurrentSessions)
+		if err := overrideDuration(
+			&cfg.PTY.DefaultTimeout,
+			f.PTY.DefaultTimeout,
+			"pty.default_timeout",
+		); err != nil {
+			return Config{}, err
+		}
+	}
+
+	if f.PortProxy != nil {
+		override(&cfg.PortProxy.Enabled, f.PortProxy.Enabled)
+		override(&cfg.PortProxy.MinPort, f.PortProxy.MinPort)
+		override(&cfg.PortProxy.MaxPort, f.PortProxy.MaxPort)
 	}
 
 	return cfg, nil

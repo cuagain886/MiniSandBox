@@ -14,6 +14,8 @@ runtime:
   workspace_directory: "/var/lib/minisandbox/workspaces"
   network_mode: "none"
   workspace_persistent: false
+  # 启动后在后台预拉取的常用镜像；本地已存在时跳过。
+  prepull_images: []
   platform:
     os: "linux"
     arch: "amd64"
@@ -65,6 +67,24 @@ admin:
   enabled: false
   # 只允许 secret file 引用，禁止在 YAML 中填写 raw token。
   token_file: ""
+
+# Phase 4：workspace 文件能力。关闭时 capabilities 报 files=false。
+files:
+  enabled: true
+  max_upload_bytes: 33554432
+  max_download_bytes: 67108864
+
+# Phase 4：交互 PTY 能力。关闭时 capabilities 报 pty=false。
+pty:
+  enabled: true
+  max_concurrent_sessions: 2
+  default_timeout: "1h"
+
+# Phase 4：sandbox loopback HTTP 代理。目标固定为 sandbox 内 127.0.0.1。
+port_proxy:
+  enabled: true
+  min_port: 1024
+  max_port: 65535
 
 runner:
   # runnerd 与用户命令最终都使用该固定非 root 身份；它必须不同于宿主机 socket owner。

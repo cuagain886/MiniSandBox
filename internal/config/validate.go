@@ -6,6 +6,7 @@ import (
 	"path"
 	"regexp"
 	"strconv"
+	"strings"
 	"time"
 
 	"minisandbox/internal/domain"
@@ -256,7 +257,88 @@ func (c Config) Validate() error {
 			return err
 		}
 	}
+	if err := validateFiles(c.Files); err != nil {
+		return err
+	}
+	if err := validatePTY(c.PTY); err != nil {
+		return err
+	}
+	if err := validatePortProxy(c.PortProxy); err != nil {
+		return err
+	}
+	if err := validatePrePullImages(c.Runtime.PrePullImages); err != nil {
+		return err
+	}
 
+	return nil
+}
+
+// validateFiles 校验文件能力上限有界。
+func validateFiles(f FilesConfig) error {
+	if f.MaxUploadBytes <= 0 {
+		return &FieldError{Field: "files.max_upload_bytes", Message: "must be positive"}
+	}
+	if f.MaxDownloadBytes <= 0 {
+		return &FieldError{Field: "files.max_download_bytes", Message: "must be positive"}
+	}
+	return nil
+}
+
+// validatePTY 校验 PTY 会话上限与默认时长有界。
+func validatePTY(p PTYConfig) error {
+	if p.MaxConcurrentSessions <= 0 {
+		return &FieldError{
+			Field:   "pty.max_concurrent_sessions",
+			Message: "must be positive",
+		}
+	}
+	if p.DefaultTimeout <= 0 {
+		return &FieldError{Field: "pty.default_timeout", Message: "must be positive"}
+	}
+	return nil
+}
+
+// validatePortProxy 校验端口范围合法且自洽。
+func validatePortProxy(p PortProxyConfig) error {
+	if p.MinPort < 1 || p.MaxPort > 65535 || p.MinPort > p.MaxPort {
+		return &FieldError{
+			Field:   "port_proxy.min_port/max_port",
+			Message: "port range must satisfy 1 <= min <= max <= 65535",
+		}
+	}
+	return nil
+}
+
+// validatePrePullImages 校验预拉取镜像列表有界且字段完整。
+func validatePrePullImages(images []PrePullImage) error {
+	if len(images) > 16 {
+		return &FieldError{
+			Field:   "runtime.prepull_images",
+			Message: "too many entries",
+		}
+	}
+	for index, entry := range images {
+		if entry.Image == "" {
+			return &FieldError{
+				Field:   "runtime.prepull_images",
+				Message: "image reference must not be empty",
+			}
+		}
+		if len(entry.Image) > domain.MaxImageReferenceLength {
+			return &FieldError{
+				Field:   "runtime.prepull_images",
+				Message: "image reference is too long",
+			}
+		}
+		os, arch, found := strings.Cut(entry.Platform, "/")
+		if !found || os == "" || arch == "" || strings.Contains(arch, "/") {
+			return &FieldError{
+				Field:   "runtime.prepull_images",
+				Message: "platform must look like linux/amd64",
+			}
+		}
+		_ = index
+	}
 	return nil
 }
 
