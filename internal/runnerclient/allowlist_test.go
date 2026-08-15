@@ -17,7 +17,7 @@ func TestClientExportsOnlyNamedRunnerOperations(t *testing.T) {
 	want := []string{
 		"Cancel", "Capabilities", "Delete", "DialPTY", "DirectoryList", "Download",
 		"ExecuteBackground", "ExecuteForeground", "FileStat", "GoString",
-		"Health", "Logs", "Mkdir", "Move", "Shutdown", "Status", "String",
+		"Health", "Logs", "Mkdir", "Move", "Proxy", "Shutdown", "Status", "String",
 		"Upload",
 	}
 	if !reflect.DeepEqual(methods, want) {

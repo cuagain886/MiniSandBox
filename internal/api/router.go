@@ -63,6 +63,9 @@ type RouterDependencies struct {
 	Files FilesService
 	// PTY 提供交互终端桥接用例；nil 时 PTY 路由保持 NOT_IMPLEMENTED 占位。
 	PTY PTYService
+	// PortProxy 提供 sandbox loopback HTTP 代理用例；nil 时返回
+	// PORT_PROXY_UNAVAILABLE。
+	PortProxy PortProxyService
 }
 
 // NewRouter 创建 sandboxd 的根 HTTP handler，并注册中间件与全部公开路由。
@@ -95,6 +98,7 @@ func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler
 	} else {
 		mux.Handle("GET /v1/sandboxes/{sandbox_id}/pty", notImplemented("pty"))
 	}
+	registerPortProxyRoutes(mux, deps.PortProxy)
 	if deps.Metrics != nil {
 		mux.Handle("GET /metrics", deps.Metrics)
 	}
@@ -102,6 +106,25 @@ func NewRouter(build BuildInfo, dependencies ...RouterDependencies) http.Handler
 		mux.Handle("GET /v1/admin/diagnostics", deps.Diagnostics)
 	}
 	return requestIDMiddleware(mux)
+}
+
+// registerPortProxyRoutes 注册公共端口代理路由；未装配服务时统一返回
+// PORT_PROXY_UNAVAILABLE。
+func registerPortProxyRoutes(mux *http.ServeMux, service PortProxyService) {
+	var handler http.Handler
+	if service != nil {
+		handler = NewSandboxPortProxyHandler(service)
+	} else {
+		handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			writeError(w, r, domain.ErrPortProxyUnavailable)
+		})
+	}
+	for _, method := range []string{
+		http.MethodGet, http.MethodPost, http.MethodPut,
+		http.MethodPatch, http.MethodDelete, http.MethodHead,
+	} {
+		mux.Handle(method+" /v1/sandboxes/{sandbox_id}/ports/{port}/http/{path...}", handler)
+	}
 }
 
 // writeJSON 统一写入 JSON Content-Type、状态码和响应体。

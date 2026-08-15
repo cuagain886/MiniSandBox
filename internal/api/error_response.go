@@ -239,6 +239,27 @@ func mapError(err error) errorMapping {
 			message:   "PTY session limit has been reached.",
 			retryable: true,
 		}
+	case errors.Is(err, domain.ErrInvalidPort):
+		return errorMapping{
+			status:    http.StatusBadRequest,
+			code:      string(protocol.ErrorCodeInvalidPort),
+			message:   "Proxy port is invalid.",
+			retryable: false,
+		}
+	case errors.Is(err, domain.ErrPortProxyUnavailable):
+		return errorMapping{
+			status:    http.StatusServiceUnavailable,
+			code:      string(protocol.ErrorCodePortProxyUnavailable),
+			message:   "Sandbox port proxy capability is unavailable.",
+			retryable: true,
+		}
+	case errors.Is(err, domain.ErrPortUpstreamUnavailable):
+		return errorMapping{
+			status:    http.StatusBadGateway,
+			code:      string(protocol.ErrorCodePortUpstreamUnavailable),
+			message:   "Sandbox loopback service is unavailable.",
+			retryable: true,
+		}
 	case errors.Is(err, domain.ErrOutboundNotAllowed):
 		return errorMapping{
 			status:    http.StatusForbidden,

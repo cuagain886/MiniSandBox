@@ -60,6 +60,8 @@ func NewPortProxyHandler(service *runnerportproxy.Service) (http.Handler, error)
 				w.Header().Add(name, value)
 			}
 		}
+		// 标记头供控制面区分上游业务状态与代理基础设施错误；对外前剥离。
+		w.Header().Set("X-MiniSandbox-Proxied", "v1")
 		w.WriteHeader(response.StatusCode)
 		if r.Method == http.MethodHead {
 			return

@@ -595,7 +595,21 @@ func startProductionHTTPWithAdmin(cfg config.Config, build controlapi.BuildInfo,
 		runnerFactory.Close()
 		return nil, err
 	}
-	deps := controlapi.RouterDependencies{Lifecycle: lifecycleAPI, Execution: executionAPI, SSEWriteTimeout: cfg.Runner.SSEWriteTimeout, Readiness: readiness, Files: filesService, PTY: ptyService}
+	var portProxyAPI controlapi.PortProxyService
+	if cfg.PortProxy.Enabled {
+		portProxyService, proxyErr := application.NewPortProxyService(
+			sandboxStore,
+			applicationPortProxyFactory{factory: runnerFactory},
+			cfg.PortProxy.MinPort,
+			cfg.PortProxy.MaxPort,
+		)
+		if proxyErr != nil {
+			runnerFactory.Close()
+			return nil, proxyErr
+		}
+		portProxyAPI = portProxyService
+	}
+	deps := controlapi.RouterDependencies{Lifecycle: lifecycleAPI, Execution: executionAPI, SSEWriteTimeout: cfg.Runner.SSEWriteTimeout, Readiness: readiness, Files: filesService, PTY: ptyService, PortProxy: portProxyAPI}
 	if cfg.Admin.Enabled {
 		token, loadErr := adminauth.LoadToken(cfg.Admin.TokenFile)
 		if loadErr != nil {

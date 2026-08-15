@@ -67,4 +67,10 @@ var (
 	ErrPTYUnavailable = errors.New("pty capability unavailable")
 	// ErrPTYLimitReached 表示当前 sandbox 的 PTY 并发上限已满。
 	ErrPTYLimitReached = errors.New("pty session limit reached")
+	// ErrInvalidPort 表示端口不在代理允许范围内。
+	ErrInvalidPort = errors.New("invalid proxy port")
+	// ErrPortProxyUnavailable 表示当前 sandbox 未提供 loopback HTTP 代理。
+	ErrPortProxyUnavailable = errors.New("port proxy unavailable")
+	// ErrPortUpstreamUnavailable 表示 sandbox 内目标服务不可达。
+	ErrPortUpstreamUnavailable = errors.New("port upstream unavailable")
 )
