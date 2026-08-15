@@ -249,6 +249,30 @@ paths:
           $ref: "#/components/responses/InternalError"
         "503":
           $ref: "#/components/responses/ServiceUnavailable"
+  /v1/sandboxes/{sandbox_id}/capabilities:
+    parameters:
+      - $ref: "#/components/parameters/SandboxID"
+    get:
+      operationId: getSandboxCapabilities
+      description: >-
+        Reports the features the current runner actually provides. The control plane
+        only serves this for a Running sandbox and proxies the runner response
+        unchanged; clients must treat every feature as independently optional.
+      responses:
+        "200":
+          description: Capabilities currently provided by the sandbox runner
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "404":
+          $ref: "#/components/responses/NotFound"
+        "409":
+          $ref: "#/components/responses/Conflict"
+        "500":
+          $ref: "#/components/responses/InternalError"
+        "503":
+          $ref: "#/components/responses/ServiceUnavailable"
 components:
   parameters:
     IdempotencyKey:
@@ -816,3 +840,21 @@ components:
         expires_at: "2026-07-25T11:30:00Z"
         created_at: "2026-07-25T10:30:00Z"
         updated_at: "2026-07-25T10:30:00Z"
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [files, pty, http_port_proxy]
+      properties:
+        files:
+          type: boolean
+          description: Workspace file management is available on this sandbox
+        pty:
+          type: boolean
+          description: Interactive PTY sessions are available on this sandbox
+        http_port_proxy:
+          type: boolean
+          description: The loopback HTTP port proxy is available on this sandbox
+      example:
+        files: true
+        pty: true
+        http_port_proxy: true

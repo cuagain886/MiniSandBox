@@ -15,6 +15,21 @@ paths:
             application/json:
               schema:
                 $ref: "#/components/schemas/RunnerHealth"
+  /v1/capabilities:
+    get:
+      operationId: getRunnerCapabilities
+      description: Reports the features this runner actually provides; never overstates a disabled feature
+      responses:
+        "200":
+          description: Current runner capabilities
+          content:
+            application/json:
+              schema:
+                $ref: "#/components/schemas/Capabilities"
+        "401":
+          $ref: "#/components/responses/Unauthorized"
+        "500":
+          $ref: "#/components/responses/InternalError"
   /v1/executions:
     post:
       operationId: execute
@@ -175,6 +190,14 @@ components:
           schema:
             $ref: "#/components/schemas/ErrorResponse"
   schemas:
+    Capabilities:
+      type: object
+      additionalProperties: false
+      required: [files, pty, http_port_proxy]
+      properties:
+        files: {type: boolean}
+        pty: {type: boolean}
+        http_port_proxy: {type: boolean}
     RunnerHealth:
       type: object
       additionalProperties: false
