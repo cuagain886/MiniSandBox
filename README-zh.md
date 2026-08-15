@@ -77,6 +77,9 @@ curl -s -X DELETE http://127.0.0.1:8080/v1/sandboxes/<id> -o /dev/null -w '%{htt
 
 ### Go SDK
 
+推荐使用高层资源 API（见 [`sdk/go/README.md`](sdk/go/README.md)）：
+创建 sandbox、等待就绪、一次调用执行命令并删除，无需手写轮询、游标或 Base64 解码。
+
 ```go
 package main
 
@@ -89,36 +92,30 @@ import (
 )
 
 func main() {
-	ctx := context.Background()
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+
 	client := sdk.NewClient("http://127.0.0.1:8080", nil)
 
-	sandbox, err := client.CreateSandboxWithOptions(ctx,
-		sdk.CreateSandboxRequest{Image: "debian:bookworm-slim"},
-		sdk.CreateSandboxOptions{IdempotencyKey: "demo-create-1"},
-	)
+	sandbox, err := client.Create(ctx, sdk.CreateSandboxRequest{
+		Image: "debian:bookworm-slim",
+	}, sdk.WithIdempotencyKey("demo-create-1"))
 	if err != nil {
 		panic(err)
 	}
-	for sandbox.State != "Running" {
-		if sandbox, err = client.GetSandbox(ctx, sandbox.ID); err != nil {
-			panic(err)
-		}
-		time.Sleep(time.Second)
+	defer sandbox.Delete(context.Background())
+
+	if _, err := sandbox.WaitRunning(ctx); err != nil {
+		panic(err)
 	}
 
-	execution, err := client.StartBackgroundExecution(ctx, sandbox.ID,
-		sdk.ExecuteRequest{Argv: []string{"sh", "-c", "echo hello"}, Timeout: 30 * time.Second})
+	result, err := sandbox.Run(ctx, sdk.ExecuteRequest{
+		Argv:    []string{"sh", "-c", "echo hello"},
+		Timeout: 30 * time.Second,
+	})
 	if err != nil {
 		panic(err)
 	}
-	status, err := client.GetExecution(ctx, sandbox.ID, execution.ExecutionID)
-	if err != nil {
-		panic(err)
-	}
-	fmt.Println(execution.ExecutionID, status.State)
-
-	if err := client.DeleteSandbox(ctx, sandbox.ID); err != nil {
-		panic(err)
-	}
+	fmt.Println(string(result.Stdout), result.ExitCode)
 }
 ```
