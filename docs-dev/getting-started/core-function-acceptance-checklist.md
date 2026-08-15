@@ -13,21 +13,24 @@ Bash 在验收中只负责两件事：启动 `sandboxd`，以及运行 SDK 验�
 
 ## 2. 当前 SDK 能力边界
 
-| 能力 | SDK 方法 | 本次是否验收 |
-|---|---|---|
-| 创建 sandbox | `CreateSandboxWithOptions` | 是 |
-| 幂等创建 | `CreateSandboxOptions.IdempotencyKey` | 是 |
-| 查询生命周期状态 | `GetSandbox` | 是 |
-| 续期 | `RenewSandbox` | 是 |
-| 创建后台 execution | `StartBackgroundExecution` | 是 |
-| 查询 execution | `GetExecution` | 是 |
-| 游标读取 stdout/stderr 事件 | `GetExecutionLogs` | 是 |
-| 取消 execution | `CancelExecution` | 是 |
-| 删除 sandbox | `DeleteSandbox` | 是 |
-| 前台 SSE 执行 | 暂无高层 SDK 方法 | 不作为 SDK 验收项 |
-| readiness、metrics、admin | 暂无 SDK 方法 | 由服务运维验收覆盖 |
+SDK Phase 完成后，高层接口覆盖调用方完整工作流；需要精确控制请求过程时可退回底层方法。
 
-因此，当前 SDK 已经覆盖普通调用方的完整后台执行闭环，但还不是覆盖全部 HTTP API 的完整客户端。
+| 能力 | SDK 高层方法 | 本次是否验收 |
+|---|---|---|
+| 服务存活 / 就绪 | `Client.Health`、`Client.Readiness` | 是 |
+| 创建 sandbox | `Client.Create`（支持 `WithIdempotencyKey`） | 是 |
+| 绑定已有 sandbox | `Client.Sandbox(id)` | 是 |
+| 查询生命周期状态 | `Sandbox.Info` | 是 |
+| 等待 Running | `Sandbox.WaitRunning` | 是 |
+| 续期 | `Sandbox.Renew` | 是 |
+| 删除 | `Sandbox.Delete`、`Sandbox.DeleteAndWait` | 是 |
+| 一次调用执行命令 | `Sandbox.Run` | 是 |
+| 前台 SSE 流式执行 | `Sandbox.ExecuteStream` | 是 |
+| 启动后台 execution | `Sandbox.StartExecution` | 是 |
+| 查询 / 等待 execution | `Execution.Info`、`Execution.Wait` | 是 |
+| 读取日志 | `Execution.Logs`（自动翻页解码） | 是 |
+| 取消 | `Execution.CancelAndWait` | 是 |
+| 底层精确控制 | `CreateSandboxWithOptions`、`GetSandbox` 等 9 个方法 | 由 SDK 单测回归 |
 
 ## 3. 验收前提
 
@@ -48,100 +51,83 @@ sudo ./bin/sandboxd --config configs/sandboxd.example.yaml
 
 ## 4. SDK 核心验收步骤
 
-### S01：创建并等待 Running
+以下步骤由验收程序自动执行；此处列出每步的调用方式和通过条件。
 
-调用：
+### S10：Health 与 Readiness（环境预检）
 
 ```go
-ttl := 10 * time.Minute
-client := sdk.NewClient("http://127.0.0.1:8080", nil)
-
-sandbox, err := client.CreateSandboxWithOptions(ctx, sdk.CreateSandboxRequest{
-    Image: "debian:bookworm-slim",
-    TTL:   &ttl,
-}, sdk.CreateSandboxOptions{
-    IdempotencyKey: "sdk-acceptance-001",
-})
+err := client.Health(ctx)
+readiness, err := client.Readiness(ctx)
 ```
 
-随后每 200 毫秒调用一次 `GetSandbox`，最长等待 60 秒。
+通过条件：Health 无错误；Readiness 返回的 `Ready` 为 true 且全部组件就绪。
 
-通过条件：
+### S01：创建并等待 Running
 
-- 创建返回非空 `sandbox.ID`；
-- 状态最终进入 `protocol.SandboxStateRunning`；
-- `ExpiresAt` 晚于当前时间；
-- 若进入 `Failed`，立即判定失败，并记录 `Reason` 和 `Message`。
+```go
+sandbox, err := client.Create(ctx, sdk.CreateSandboxRequest{
+    Image: "debian:bookworm-slim",
+    TTL:   &ttl,
+}, sdk.WithIdempotencyKey("sdk-acceptance-001"))
+
+info, err := sandbox.WaitRunning(ctx)
+```
+
+通过条件：创建返回资源对象；`WaitRunning` 收敛到 Running；`ExpiresAt` 晚于当前时间；Failed/Terminated 提前失败并携带 reason。
 
 ### S02：验证幂等创建
 
-使用完全相同的请求和 `IdempotencyKey` 再次调用 `CreateSandboxWithOptions`。
+使用完全相同的请求和 key 再次 `Create`。
 
-通过条件：第二次返回的 sandbox ID 与第一次相同，没有创建第二个 sandbox。
+通过条件：第二次返回的 sandbox ID 与第一次相同；同一 key、不同请求返回 409。
 
-再用同一个 key、不同 TTL 或镜像调用一次。
-
-通过条件：返回 `*sdk.ResponseError`，HTTP 状态为 `409`。
-
-### S03：执行命令并读取日志
+### S03：后台执行并读取日志
 
 ```go
-execution, err := client.StartBackgroundExecution(ctx, sandbox.ID, sdk.ExecuteRequest{
-    Argv: []string{
-        "/bin/sh", "-c",
-        "printf 'sdk-stdout'; printf 'sdk-stderr' >&2",
-    },
+execution, err := sandbox.StartExecution(ctx, sdk.ExecuteRequest{
+    Argv:    []string{"/bin/sh", "-c", "printf 'sdk-stdout'; printf 'sdk-stderr' >&2"},
     Timeout: 10 * time.Second,
 })
+info, err := execution.Wait(ctx)
+
+logs := execution.Logs(ctx, 0)
+for logs.Next() { event := logs.Event() /* ... */ }
 ```
 
-随后调用 `GetExecution` 轮询终态，并从游标 `0` 开始调用 `GetExecutionLogs`。每次把游标更新为 `page.NextCursor`，直到 `page.Complete == true`。
-
-`stdout` 和 `stderr` 内容位于事件的 `DataBase64` 字段，需要使用 `base64.StdEncoding.DecodeString` 解码。
-
-通过条件：
-
-- execution ID 非空；
-- 状态最终为 `protocol.ExecutionStateExited`；
-- 终止事件类型为 `protocol.EventExited`，退出码为 `0`；
-- stdout 精确包含 `sdk-stdout`；
-- stderr 精确包含 `sdk-stderr`；
-- 所有事件的 `Sequence` 严格递增；
-- 日志最终返回 `Complete == true`。
+通过条件：终态为 Exited 且退出码为 0；日志迭代器自动翻页并解码，stdout/stderr 内容精确匹配。
 
 ### S04：取消长任务
 
 ```go
-execution, err := client.StartBackgroundExecution(ctx, sandbox.ID, sdk.ExecuteRequest{
-    Argv:    []string{"/bin/sh", "-c", "sleep 30 & wait"},
-    Timeout: 60 * time.Second,
-})
-
-err = client.CancelExecution(ctx, sandbox.ID, execution.ExecutionID)
+info, err := execution.CancelAndWait(ctx)
 ```
 
-通过条件：
-
-- `CancelExecution` 成功；
-- execution 最终进入 `protocol.ExecutionStateCancelled`；
-- 终止事件类型为 `protocol.EventCancelled`；
-- 再次取消不会破坏已确定的终态。
-
-该项从 SDK 可见行为上验证“取消整个执行”的语义；是否残留子进程由运行时安全测试进一步验证。
+通过条件：终态收敛为 Cancelled 且终止事件为 `cancelled`；重复 CancelAndWait 不破坏终态。
 
 ### S05：续期
 
 ```go
-renewed, err := client.RenewSandbox(ctx, sandbox.ID, sdk.RenewSandboxRequest{
-    ExpiresAt: sandbox.ExpiresAt.Add(5 * time.Minute),
-})
+info, err := sandbox.Renew(ctx, sandboxInfo.ExpiresAt.Add(5*time.Minute))
 ```
 
-通过条件：
+通过条件：返回的 `ExpiresAt` 等于请求值；同值重放仍成功；缩短租约返回 409。
 
-- 返回的新 `ExpiresAt` 等于请求值；
-- 使用同一个 `ExpiresAt` 重试仍成功，且时间不再变化；
-- 尝试缩短租约时返回 `*sdk.ResponseError`，HTTP 状态为 `409`。
+### S08：Run 一次调用执行
+
+```go
+result, err := sandbox.Run(ctx, sdk.ExecuteRequest{ /* ... */ })
+```
+
+通过条件：正常命令返回 `ExitCode` 0 与精确的 stdout/stderr；`exit 7` 返回 `*sdk.ExitError`（退出码 7）且结果对象仍携带输出。
+
+### S09：前台 SSE 流式执行
+
+```go
+stream, err := sandbox.ExecuteStream(ctx, sdk.ExecuteRequest{ /* ... */ })
+for stream.Next() { event := stream.Event() /* ... */ }
+```
+
+通过条件：事件按序解码；stdout/stderr 精确匹配；流以 exit 0 的 `exited` 终止事件结束且 `Err()` 为 nil。
 
 ### S06：错误模型与 Context
 
@@ -154,21 +140,14 @@ renewed, err := client.RenewSandbox(ctx, sandbox.ID, sdk.RenewSandboxRequest{
 ### S07：删除与重复删除
 
 ```go
-err = client.DeleteSandbox(ctx, sandbox.ID)
+info, err := sandbox.DeleteAndWait(ctx)
 ```
 
-随后轮询 `GetSandbox`，等待状态进入 `protocol.SandboxStateTerminated`。
-
-通过条件：
-
-- 首次删除成功；
-- 状态最终为 `Terminated`；
-- 对同一个 ID 再次调用 `DeleteSandbox` 仍成功；
-- 删除后不能再创建新的 execution。
+通过条件：首次删除成功；状态收敛 Terminated；重复 `Delete` 仍成功；删除后创建 execution 返回 409。
 
 ## 5. 执行完整验收程序
 
-仓库已经提供只依赖公开 Go SDK 的完整验收程序：[go_sdk.go](../../tests/sdk/go_sdk.go)。在 `sandboxd` 就绪后，从仓库根目录执行：
+仓库已经提供只依赖公开 Go SDK 高层接口的完整验收程序：[go_sdk.go](../../tests/sdk/go_sdk.go)。在 `sandboxd` 就绪后，从仓库根目录执行：
 
 ```bash
 go run ./tests/sdk
@@ -182,21 +161,24 @@ MINISANDBOX_IMAGE=debian:bookworm-slim \
 go run ./tests/sdk
 ```
 
-程序逐项打印 S01～S07；全部通过时打印 `7/7 PASS` 并以退出码 0 结束，任一失败时打印所属步骤并以非零退出码结束。程序会使用每次唯一的幂等 key，并在失败路径尽力删除本次创建的 sandbox。
+程序逐项打印 S01～S10（S10 环境预检最先执行）；全部通过时打印 `10/10 PASS` 并以退出码 0 结束，任一失败时打印所属步骤并以非零退出码结束。程序会使用每次唯一的幂等 key，并在失败路径尽力删除本次创建的 sandbox。
 
 ## 6. SDK 验收通过标准
 
 | 编号 | 验收项 | 结果 |
 |---|---|---|
+| S10 | Health 与 Readiness 预检 | ☐ PASS / ☐ FAIL |
 | S01 | 创建并进入 Running | ☐ PASS / ☐ FAIL |
 | S02 | 幂等重放与冲突 | ☐ PASS / ☐ FAIL |
-| S03 | 执行、状态、stdout/stderr 和日志游标 | ☐ PASS / ☐ FAIL |
+| S03 | 后台执行、状态与自动解码日志 | ☐ PASS / ☐ FAIL |
 | S04 | 取消长任务 | ☐ PASS / ☐ FAIL |
 | S05 | 续期、重放和拒绝缩短 | ☐ PASS / ☐ FAIL |
+| S08 | Run 一次调用执行与非零退出 | ☐ PASS / ☐ FAIL |
+| S09 | 前台 SSE 流式执行 | ☐ PASS / ☐ FAIL |
 | S06 | SDK 错误模型与 Context | ☐ PASS / ☐ FAIL |
 | S07 | 删除、终态和重复删除 | ☐ PASS / ☐ FAIL |
 
-全部 7 项通过，才能判定“面向 Go SDK 用户的核心功能可用”。
+全部 10 项通过，才能判定“面向 Go SDK 用户的核心功能可用”。
 
 ## 7. SDK 之外仍需保留的工程验收
 
@@ -214,16 +196,14 @@ go run ./tests/sdk
 
 ## 8. 当前结论
 
-项目的设计初衷确实是让 Go 调用方通过 SDK 使用 MiniSandbox。当前最合适的验收主线是：
+SDK 的推荐使用主线是：
 
 ```text
-SDK 创建 sandbox
-  -> 等待 Running
-  -> 启动后台 execution
-  -> 查询状态和读取日志
-  -> 取消或等待退出
-  -> 续期
-  -> 删除 sandbox
+Client.Create
+  -> Sandbox.WaitRunning
+  -> Sandbox.Run（或 StartExecution + Wait + Logs / ExecuteStream）
+  -> Sandbox.Renew（可选）
+  -> Sandbox.DeleteAndWait
 ```
 
 原先逐条调用 HTTP API 的 Bash 清单更适合协议调试或服务端排障，不应作为核心用户验收流程。
