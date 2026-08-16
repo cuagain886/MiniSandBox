@@ -77,8 +77,45 @@ curl -s -X POST http://127.0.0.1:8080/v1/sandboxes/<id>/renew \
 curl -s -X DELETE http://127.0.0.1:8080/v1/sandboxes/<id> -o /dev/null -w '%{http_code}\n'
 ```
 
-### Go SDK
+## Agent Features (Phase 4)
 
+After a sandbox reaches `Running`, query its capabilities, then use files, PTY, and the loopback HTTP proxy through the public API or any of the three SDKs.
+
+```bash
+# What can this sandbox do?
+curl -s http://127.0.0.1:8080/v1/sandboxes/<id>/capabilities | jq .
+
+# Upload a file into the workspace (atomic; parents created on demand)
+curl -s -X PUT "http://127.0.0.1:8080/v1/sandboxes/<id>/files/content?path=src/main.go&create_parents=true"   -H 'Content-Type: application/octet-stream' --data-binary @main.go | jq .
+
+# List a directory and download an artifact
+curl -s -X POST http://127.0.0.1:8080/v1/sandboxes/<id>/directories/list   -H 'Content-Type: application/json' -d '{"path":"."}' | jq .
+curl -s "http://127.0.0.1:8080/v1/sandboxes/<id>/files/content?path=artifact.txt" -o artifact.txt
+
+# Interactive PTY over WebSocket (subprotocol minisandbox.pty.v1): first text
+# frame is {"type":"start","argv":["/bin/bash"],...}; then binary frames are
+# stdin, text frames are resize, server frames carry merged terminal output.
+
+# Reach an HTTP service listening inside the sandbox (loopback only)
+curl -s "http://127.0.0.1:8080/v1/sandboxes/<id>/ports/8080/http/hello"
+```
+
+All file paths are workspace-relative and cannot escape `/workspace`; the port
+proxy always dials `127.0.0.1:<port>` inside the sandbox and strips control-plane
+credentials. Prefer the SDKs — see [`sdk/go`](sdk/go/README.md),
+[`sdk/typescript`](sdk/typescript/README.md), and [`sdk/python`](sdk/python/README.md),
+or run the shared workflow examples under [`examples/`](examples/).
+
+Frequently used images can be pre-pulled at startup:
+
+```yaml
+runtime:
+  prepull_images:
+    - image: "debian:bookworm-slim"
+      platform: "linux/amd64"
+```
+
+### Go SDK
 The recommended path is the high-level resource API ([`sdk/go/README.md`](sdk/go/README.md)):
 create a sandbox, wait until running, run a command in one call, then delete — no hand-written
 polling, cursors, or Base64 decoding.

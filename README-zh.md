@@ -76,8 +76,46 @@ curl -s -X POST http://127.0.0.1:8080/v1/sandboxes/<id>/renew \
 curl -s -X DELETE http://127.0.0.1:8080/v1/sandboxes/<id> -o /dev/null -w '%{http_code}\n'
 ```
 
-### Go SDK
+## Agent 能力（Phase 4）
 
+sandbox 进入 `Running` 后，先查询 capabilities，再通过公共 API 或三种 SDK
+使用文件、PTY 和 loopback HTTP 代理。
+
+```bash
+# 当前 sandbox 支持哪些能力？
+curl -s http://127.0.0.1:8080/v1/sandboxes/<id>/capabilities | jq .
+
+# 向 workspace 上传文件（原子写入，可自动创建父目录）
+curl -s -X PUT "http://127.0.0.1:8080/v1/sandboxes/<id>/files/content?path=src/main.go&create_parents=true"   -H 'Content-Type: application/octet-stream' --data-binary @main.go | jq .
+
+# 列目录并下载产物
+curl -s -X POST http://127.0.0.1:8080/v1/sandboxes/<id>/directories/list   -H 'Content-Type: application/json' -d '{"path":"."}' | jq .
+curl -s "http://127.0.0.1:8080/v1/sandboxes/<id>/files/content?path=artifact.txt" -o artifact.txt
+
+# WebSocket 交互终端（子协议 minisandbox.pty.v1）：首条文本帧是
+# {"type":"start","argv":["/bin/bash"],...}；此后二进制帧为 stdin、文本帧为
+# resize，服务端帧携带合并的终端输出。
+
+# 访问 sandbox 内启动的 HTTP 服务（仅 loopback）
+curl -s "http://127.0.0.1:8080/v1/sandboxes/<id>/ports/8080/http/hello"
+```
+
+文件路径均为 workspace 相对路径，不能越出 `/workspace`；端口代理固定访问
+sandbox 内 `127.0.0.1:<port>` 并剥离控制面凭证。推荐直接使用 SDK：见
+[`sdk/go`](sdk/go/README.md)、[`sdk/typescript`](sdk/typescript/README.md) 与
+[`sdk/python`](sdk/python/README.md)，或运行 [`examples/`](examples/) 下的
+同构工作流示例。
+
+常用镜像可在启动后自动预拉取：
+
+```yaml
+runtime:
+  prepull_images:
+    - image: "debian:bookworm-slim"
+      platform: "linux/amd64"
+```
+
+### Go SDK
 推荐使用高层资源 API（见 [`sdk/go/README.md`](sdk/go/README.md)）：
 创建 sandbox、等待就绪、一次调用执行命令并删除，无需手写轮询、游标或 Base64 解码。
 
