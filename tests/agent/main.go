@@ -74,12 +74,16 @@ func run() error {
 		return fmt.Errorf("A02/A03 PTY: %w", err)
 	}
 
+	if err := verifyFilesWorkflow(ctx, baseURL, sandbox); err != nil {
+		return fmt.Errorf("A04 文件工作流: %w", err)
+	}
+
 	serverBinary := os.Getenv("MINISANDBOX_TEST_SERVER")
 	if serverBinary == "" {
 		return errors.New("需要 MINISANDBOX_TEST_SERVER 指向已构建的 tests/agent/testserver 二进制")
 	}
 	if err := verifyPortProxy(ctx, baseURL, sandbox, serverBinary); err != nil {
-		return fmt.Errorf("A04/A05 端口代理: %w", err)
+		return fmt.Errorf("A05/A06 端口代理: %w", err)
 	}
 
 	deleteCtx, deleteCancel := context.WithTimeout(ctx, 60*time.Second)
@@ -88,6 +92,51 @@ func run() error {
 		return fmt.Errorf("删除 sandbox: %w", err)
 	}
 	cleanup = false
+	return nil
+}
+
+// verifyFilesWorkflow 通过 SDK 完成 upload → run → download 闭环。
+func verifyFilesWorkflow(ctx context.Context, baseURL string, sandbox *sdk.Sandbox) error {
+	script := []byte("#!/bin/sh\necho agent-full-ok > artifact.txt\n")
+	query := url.Values{}
+	query.Set("path", "src/build.sh")
+	query.Set("create_parents", "true")
+	uploadURL := baseURL + "/v1/sandboxes/" + url.PathEscape(sandbox.ID()) + "/files/content?" + query.Encode()
+	uploadRequest, err := http.NewRequestWithContext(ctx, http.MethodPut, uploadURL, bytes.NewReader(script))
+	if err != nil {
+		return err
+	}
+	uploadRequest.Header.Set("Content-Type", "application/octet-stream")
+	uploadResponse, err := http.DefaultClient.Do(uploadRequest)
+	if err != nil {
+		return err
+	}
+	_ = uploadResponse.Body.Close()
+	if uploadResponse.StatusCode != http.StatusCreated {
+		return fmt.Errorf("上传 build.sh: HTTP %d", uploadResponse.StatusCode)
+	}
+
+	result, err := sandbox.Run(ctx, sdk.ExecuteRequest{
+		Argv: []string{"/bin/sh", "/workspace/src/build.sh"}, Timeout: 30 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("执行 build.sh: %w", err)
+	}
+	if result.ExitCode != 0 {
+		return fmt.Errorf("build.sh 退出码 %d", result.ExitCode)
+	}
+
+	downloadURL := baseURL + "/v1/sandboxes/" + url.PathEscape(sandbox.ID()) + "/files/content?path=artifact.txt"
+	downloadRequest, _ := http.NewRequestWithContext(ctx, http.MethodGet, downloadURL, nil)
+	downloadResponse, err := http.DefaultClient.Do(downloadRequest)
+	if err != nil {
+		return err
+	}
+	artifact := readBody(downloadResponse)
+	if artifact != "agent-full-ok\n" {
+		return fmt.Errorf("artifact 内容不匹配: %q", artifact)
+	}
+	pass("A04", "上传脚本、执行并下载产物", strings.TrimSpace(artifact))
 	return nil
 }
 
@@ -258,8 +307,8 @@ func verifyPortProxy(ctx context.Context, baseURL string, sandbox *sdk.Sandbox, 
 	if echoResponse.Header.Get("Authorization") != "" || echoResponse.Header.Get("X-MiniSandbox-Proxied") != "" {
 		return errors.New("响应泄漏内部头")
 	}
-	pass("A04", "端口代理 GET /hello", helloBody)
-	pass("A05", "端口代理 POST /echo", echoBody)
+	pass("A05", "端口代理 GET /hello", helloBody)
+	pass("A06", "端口代理 POST /echo", echoBody)
 	return nil
 }
 
