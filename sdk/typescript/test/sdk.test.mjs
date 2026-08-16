@@ -42,7 +42,7 @@ test("client lifecycle and execution facades", async (t) => {
       ],
       next_cursor: 2, complete: true,
     })],
-    ["DELETE /v1/sandboxes/sbx-1", () => jsonResponse(202, {})],
+    ["DELETE /v1/sandboxes/sbx-1", () => new Response(null, { status: 202 })],
   ]);
 
   const fetchImpl = makeStubFetch(routes);

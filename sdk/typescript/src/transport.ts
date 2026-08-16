@@ -51,10 +51,7 @@ export class Transport {
     if (!response.ok) {
       throw await decodeResponseError(response);
     }
-    if (response.status === 204) {
-      return { status: response.status, value: undefined as T };
-    }
-    return { status: response.status, value: (await response.json()) as T };
+    return { status: response.status, value: await decodeSuccessfulJSON<T>(response) };
   }
 
   /** 执行原始 fetch，附加公共 base URL。 */
@@ -86,11 +83,16 @@ export class Transport {
     if (!acceptedStatuses.includes(response.status)) {
       throw await decodeResponseError(response);
     }
-    if (response.status === 204) {
-      return { status: response.status, value: undefined as T };
-    }
-    return { status: response.status, value: (await response.json()) as T };
+    return { status: response.status, value: await decodeSuccessfulJSON<T>(response) };
   }
+}
+
+async function decodeSuccessfulJSON<T>(response: Response): Promise<T> {
+  const body = await response.text();
+  if (body.trim() === "") {
+    return undefined as T;
+  }
+  return JSON.parse(body) as T;
 }
 
 async function decodeResponseError(response: Response): Promise<ResponseError> {
