@@ -33,7 +33,7 @@ func main() {
 		fmt.Fprintf(os.Stderr, "\nAgent 能力验收失败: %v\n", err)
 		os.Exit(1)
 	}
-	fmt.Println("\n5/5 PASS：PTY 与端口代理真实验收通过")
+	fmt.Println("\n6/6 PASS：完整 Agent workflow 真实验收通过")
 }
 
 func run() error {
