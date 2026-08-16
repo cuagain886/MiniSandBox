@@ -57,6 +57,16 @@ export class Transport {
     return { status: response.status, value: (await response.json()) as T };
   }
 
+  /** 执行原始 fetch，附加公共 base URL。 */
+  fetch(path: string, init?: RequestInit): Promise<Response> {
+    return this.fetchImpl(this.baseUrl + path, init);
+  }
+
+  /** 把非 2xx 响应解码为公共错误。 */
+  async decodeError(response: Response): Promise<ResponseError> {
+    return decodeResponseError(response);
+  }
+
   async expectJSON<T>(
     method: string,
     path: string,

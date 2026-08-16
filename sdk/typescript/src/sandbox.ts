@@ -2,9 +2,14 @@
  * Sandbox 资源对象：生命周期与命令执行。
  */
 import { ResponseError } from "./errors.js";
+import { SandboxFiles } from "./files.js";
+import { PTYConnection } from "./pty.js";
+import { PortHTTP } from "./portproxy.js";
 import { sandboxBasePath, sleep, Transport } from "./transport.js";
 import {
+  Capabilities,
   CreateSandboxRequest,
+  PTYStartRequest,
   ExecutionEvent,
   ExecutionInfo,
   ExecutionLogPage,
@@ -190,6 +195,50 @@ export class Sandbox {
       }
       await sleep(this.transport.pollIntervalMs);
     }
+  }
+
+  /** 查询当前 sandbox 的功能能力。 */
+  async capabilities(): Promise<Capabilities> {
+    const { value } = await this.transport.requestJSON<Capabilities>(
+      "GET",
+      `${sandboxBasePath(this.id)}/capabilities`,
+    );
+    return value;
+  }
+
+  /** 等待 Running 并确认能力可用，返回二者结果。 */
+  async waitReady(timeoutMs = 90_000): Promise<{ info: SandboxInfo; capabilities: Capabilities }> {
+    const info = await this.waitRunning(timeoutMs);
+    const deadline = Date.now() + timeoutMs;
+    for (;;) {
+      try {
+        const capabilities = await this.capabilities();
+        return { info, capabilities };
+      } catch (error) {
+        if (!(error instanceof ResponseError) || !error.retryable) {
+          throw error;
+        }
+      }
+      if (Date.now() > deadline) {
+        throw new Error(`timeout waiting for sandbox ${this.id} capabilities`);
+      }
+      await sleep(this.transport.pollIntervalMs);
+    }
+  }
+
+  /** 返回 workspace 文件管理对象。 */
+  files(): SandboxFiles {
+    return new SandboxFiles(this.transport, this.id);
+  }
+
+  /** 打开一个交互式 PTY 会话。 */
+  async openPTY(request: PTYStartRequest): Promise<PTYConnection> {
+    return PTYConnection.open(this.transport, this.id, request);
+  }
+
+  /** 返回 sandbox loopback HTTP 代理对象。 */
+  portHTTP(): PortHTTP {
+    return new PortHTTP(this.transport, this.id);
   }
 
   /** 启动后台 execution 并返回资源对象。 */
