@@ -38,3 +38,6 @@ docs-dev/
 # TypeScript SDK build output and dependencies.
 /sdk/typescript/node_modules/
 /sdk/typescript/dist/
+
+# Python SDK bytecode cache.
+sdk/python/**/__pycache__/
