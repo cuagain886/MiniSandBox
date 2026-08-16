@@ -35,3 +35,6 @@ Thumbs.db
 /.github/modernize/
 
 docs-dev/
+# TypeScript SDK build output and dependencies.
+/sdk/typescript/node_modules/
+/sdk/typescript/dist/

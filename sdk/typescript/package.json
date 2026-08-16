@@ -1,0 +1,22 @@
+{
+  "name": "@minisandbox/sdk",
+  "version": "0.4.0",
+  "description": "MiniSandbox TypeScript SDK for Node.js",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "test": "tsc -p tsconfig.json && node --test test/sdk.test.mjs"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "typescript": "^5.7.0"
+  },
+  "files": [
+    "dist"
+  ]
+}
