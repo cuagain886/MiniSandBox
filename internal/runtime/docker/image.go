@@ -9,6 +9,7 @@ import (
 	cerrdefs "github.com/containerd/errdefs"
 	"github.com/distribution/reference"
 	mobyclient "github.com/moby/moby/client"
+	ocispec "github.com/opencontainers/image-spec/specs-go/v1"
 	"minisandbox/internal/domain"
 	runtimeport "minisandbox/internal/runtime"
 )
@@ -113,6 +114,25 @@ func ensureImage(
 	createTimeout time.Duration,
 	pullLimiter runtimeport.Limiter,
 ) (mobyclient.ImageInspectResult, error) {
+	return ensureImageForPlatform(
+		ctx,
+		engine,
+		value,
+		ocispec.Platform{OS: "linux", Architecture: "amd64"},
+		createTimeout,
+		pullLimiter,
+	)
+}
+
+// ensureImageForPlatform 按明确平台执行镜像 inspect-or-pull，并校验最终镜像元数据。
+func ensureImageForPlatform(
+	ctx context.Context,
+	engine Engine,
+	value string,
+	platform ocispec.Platform,
+	createTimeout time.Duration,
+	pullLimiter runtimeport.Limiter,
+) (mobyclient.ImageInspectResult, error) {
 	imageReference, err := ParseImageReference(value)
 	if err != nil {
 		return mobyclient.ImageInspectResult{}, err
@@ -125,7 +145,7 @@ func ensureImage(
 
 	inspection, err := engine.ImageInspect(operationContext, imageReference.Name)
 	if err == nil {
-		if err := validateImagePlatform(inspection); err != nil {
+		if err := validateImagePlatformFor(inspection, platform); err != nil {
 			return mobyclient.ImageInspectResult{}, err
 		}
 		return inspection, nil
@@ -134,7 +154,7 @@ func ensureImage(
 		return mobyclient.ImageInspectResult{}, runtimeUnavailable(err)
 	}
 
-	if err := pullMissingImage(operationContext, engine, imageReference.Name, pullLimiter); err != nil {
+	if err := pullMissingImage(operationContext, engine, imageReference.Name, platform, pullLimiter); err != nil {
 		return mobyclient.ImageInspectResult{}, err
 	}
 
@@ -147,14 +167,14 @@ func ensureImage(
 		}
 		return mobyclient.ImageInspectResult{}, runtimeUnavailable(err)
 	}
-	if err := validateImagePlatform(inspection); err != nil {
+	if err := validateImagePlatformFor(inspection, platform); err != nil {
 		return mobyclient.ImageInspectResult{}, err
 	}
 	return inspection, nil
 }
 
 // pullMissingImage 只在已确认本地缺失后占用全局 slot，并覆盖完整响应流生命周期。
-func pullMissingImage(ctx context.Context, engine Engine, image string, limiter runtimeport.Limiter) error {
+func pullMissingImage(ctx context.Context, engine Engine, image string, platform ocispec.Platform, limiter runtimeport.Limiter) error {
 	var release func()
 	if limiter != nil {
 		var err error
@@ -164,7 +184,7 @@ func pullMissingImage(ctx context.Context, engine Engine, image string, limiter 
 		}
 		defer release()
 	}
-	stream, err := engine.ImagePull(ctx, image, mobyclient.ImagePullOptions{})
+	stream, err := engine.ImagePull(ctx, image, mobyclient.ImagePullOptions{Platforms: []ocispec.Platform{platform}})
 	if err != nil {
 		return classifyPullError(ctx, err)
 	}
@@ -184,7 +204,12 @@ func pullMissingImage(ctx context.Context, engine Engine, image string, limiter 
 
 // validateImagePlatform 强制镜像与唯一的 linux/amd64 artifact 集合匹配。
 func validateImagePlatform(inspection mobyclient.ImageInspectResult) error {
-	if inspection.Os != "linux" || inspection.Architecture != "amd64" {
+	return validateImagePlatformFor(inspection, ocispec.Platform{OS: "linux", Architecture: "amd64"})
+}
+
+// validateImagePlatformFor 校验 inspect 结果与请求拉取的平台一致。
+func validateImagePlatformFor(inspection mobyclient.ImageInspectResult, platform ocispec.Platform) error {
+	if inspection.Os != platform.OS || inspection.Architecture != platform.Architecture {
 		return &ArtifactInvalidError{}
 	}
 	return nil

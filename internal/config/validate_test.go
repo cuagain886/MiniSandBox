@@ -123,6 +123,13 @@ func TestValidateRejections(t *testing.T) {
 			field:  "runtime.platform.arch",
 		},
 		{
+			name: "pre-pull platform differs from runtime",
+			mutate: func(c *Config) {
+				c.Runtime.PrePullImages = []PrePullImage{{Image: "alpine:3.22", Platform: "linux/arm64"}}
+			},
+			field: "runtime.prepull_images",
+		},
+		{
 			name:   "default ttl not positive",
 			mutate: func(c *Config) { c.Limits.DefaultTTL = 0 },
 			field:  "limits.default_ttl",

@@ -266,7 +266,7 @@ func (c Config) Validate() error {
 	if err := validatePortProxy(c.PortProxy); err != nil {
 		return err
 	}
-	if err := validatePrePullImages(c.Runtime.PrePullImages); err != nil {
+	if err := validatePrePullImages(c.Runtime.PrePullImages, c.Runtime.Platform); err != nil {
 		return err
 	}
 
@@ -310,14 +310,14 @@ func validatePortProxy(p PortProxyConfig) error {
 }
 
 // validatePrePullImages 校验预拉取镜像列表有界且字段完整。
-func validatePrePullImages(images []PrePullImage) error {
+func validatePrePullImages(images []PrePullImage, runtimePlatform domain.Platform) error {
 	if len(images) > 16 {
 		return &FieldError{
 			Field:   "runtime.prepull_images",
 			Message: "too many entries",
 		}
 	}
-	for index, entry := range images {
+	for _, entry := range images {
 		if entry.Image == "" {
 			return &FieldError{
 				Field:   "runtime.prepull_images",
@@ -337,7 +337,12 @@ func validatePrePullImages(images []PrePullImage) error {
 				Message: "platform must look like linux/amd64",
 			}
 		}
-		_ = index
+		if os != runtimePlatform.OS || arch != runtimePlatform.Arch {
+			return &FieldError{
+				Field:   "runtime.prepull_images",
+				Message: "platform must match runtime.platform",
+			}
+		}
 	}
 	return nil
 }

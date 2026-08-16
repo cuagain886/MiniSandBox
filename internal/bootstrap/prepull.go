@@ -30,13 +30,13 @@ func runImagePrePull(runtime runtimeport.Runtime, images []config.PrePullImage, 
 	go func() {
 		for _, entry := range images {
 			ctx, cancel := context.WithTimeout(context.Background(), timeout)
-			err := preparer.PrepareImage(ctx, entry.Image)
+			err := preparer.PrepareImage(ctx, entry.Image, entry.Platform)
 			cancel()
 			if err != nil {
-				slog.Warn("image pre-pull failed", "image", entry.Image, "error_type", errTypeName(err))
+				slog.Warn("image pre-pull failed", "image", entry.Image, "platform", entry.Platform, "error_type", errTypeName(err))
 				continue
 			}
-			slog.Info("image pre-pull ready", "image", entry.Image)
+			slog.Info("image pre-pull ready", "image", entry.Image, "platform", entry.Platform)
 		}
 	}()
 }
