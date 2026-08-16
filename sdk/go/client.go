@@ -146,6 +146,25 @@ func (c *Client) doStreamBody(request *http.Request) (io.ReadCloser, error) {
 	return response.Body, nil
 }
 
+// doStreamResponse 执行端口代理请求并返回原始响应。
+//
+// 带代理标记头的响应是上游业务状态原样透传；不带标记头的非 2xx 响应
+// 是控制面基础设施错误，统一转换为 ResponseError。
+func (c *Client) doStreamResponse(request *http.Request) (*http.Response, error) {
+	response, err := c.httpClient.Do(request)
+	if err != nil {
+		return nil, err
+	}
+	if response.Header.Get(protocol.ProxiedResponseHeader) != "" {
+		return response, nil
+	}
+	defer response.Body.Close()
+	if response.StatusCode >= 200 && response.StatusCode < 300 {
+		return response, nil
+	}
+	return nil, responseError(response.StatusCode, response.Body)
+}
+
 // responseError 把非 2xx 响应体转换为公共错误模型。
 //
 // JSON API 和 SSE 流式入口共用本函数，保证两类接口的错误语义一致。

@@ -7,7 +7,6 @@ import (
 	"strconv"
 
 	"minisandbox/internal/domain"
-	"minisandbox/internal/runnerclient"
 	"minisandbox/internal/runnerportproxy"
 )
 
@@ -51,7 +50,7 @@ func NewSandboxPortProxyHandler(service PortProxyService) http.Handler {
 				w.Header().Add(name, value)
 			}
 		}
-		w.Header().Del(runnerclient.ProxiedResponseHeader)
+		// 标记头保留在响应中，供 SDK 区分上游业务状态与控制面错误。
 		w.WriteHeader(response.StatusCode)
 		if r.Method == http.MethodHead {
 			return

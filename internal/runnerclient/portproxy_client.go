@@ -5,11 +5,9 @@ import (
 	"io"
 	"net/http"
 	"strconv"
-)
 
-// ProxiedResponseHeader 是 runner 在成功转发上游响应时附加的标记头，
-// 用于区分“上游业务状态码”与“代理基础设施错误”。
-const ProxiedResponseHeader = "X-MiniSandbox-Proxied"
+	"minisandbox/pkg/protocol"
+)
 
 // Proxy 把一次 HTTP 请求转发到当前 sandbox 的固定端口代理。
 //
@@ -42,7 +40,7 @@ func (c *Client) Proxy(
 	if err != nil {
 		return nil, err
 	}
-	if response.Header.Get(ProxiedResponseHeader) != "" {
+	if response.Header.Get(protocol.ProxiedResponseHeader) != "" {
 		return response, nil
 	}
 	defer response.Body.Close()

@@ -7,6 +7,7 @@ import (
 	"strconv"
 
 	"minisandbox/internal/runnerportproxy"
+	"minisandbox/pkg/protocol"
 )
 
 // portProxyMethods 是代理固定支持的 HTTP 方法集合；CONNECT、TRACE 与
@@ -61,7 +62,7 @@ func NewPortProxyHandler(service *runnerportproxy.Service) (http.Handler, error)
 			}
 		}
 		// 标记头供控制面区分上游业务状态与代理基础设施错误；对外前剥离。
-		w.Header().Set("X-MiniSandbox-Proxied", "v1")
+		w.Header().Set(protocol.ProxiedResponseHeader, "v1")
 		w.WriteHeader(response.StatusCode)
 		if r.Method == http.MethodHead {
 			return
