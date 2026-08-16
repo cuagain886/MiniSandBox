@@ -585,6 +585,9 @@ func startProductionHTTPWithAdmin(cfg config.Config, build controlapi.BuildInfo,
 			return nil, err
 		}
 	}
+	// 镜像预拉取在后台执行，不阻塞 readiness；本地缓存是事实源。
+	runImagePrePull(runtime, cfg.Runtime.PrePullImages, cfg.Reconcile.Timeout)
+
 	filesService, err := application.NewFilesService(sandboxStore, applicationFilesFactory{factory: runnerFactory})
 	if err != nil {
 		runnerFactory.Close()

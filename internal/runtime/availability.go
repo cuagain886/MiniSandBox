@@ -58,3 +58,12 @@ func (g *AvailabilityGate) SetAvailable(available bool) {
 	close(g.changed)
 	g.changed = make(chan struct{})
 }
+
+// ImagePreparer 是 runtime 可选提供的镜像预拉取能力。
+//
+// 供启动期准备配置中的常用镜像使用；实现必须复用 sandbox 创建的镜像
+// 校验与拉取路径，不得接受任意目标或绕过并发限制。
+type ImagePreparer interface {
+	// PrepareImage 确保镜像在本机可用，缺失时拉取。
+	PrepareImage(ctx context.Context, image string) error
+}
