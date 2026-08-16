@@ -77,6 +77,51 @@ test("response error mapping", async () => {
   );
 });
 
+test("PTY terminal waiter rejects when the connection closes abnormally", async (t) => {
+  const originalWebSocket = globalThis.WebSocket;
+  let socket;
+
+  class StubWebSocket {
+    static CLOSED = 3;
+
+    constructor() {
+      socket = this;
+      this.readyState = 0;
+      queueMicrotask(() => {
+        this.readyState = 1;
+        this.onopen?.({});
+      });
+    }
+
+    send(payload) {
+      if (typeof payload === "string" && JSON.parse(payload).type === "start") {
+        queueMicrotask(() => this.onmessage?.({ data: JSON.stringify({ type: "started" }) }));
+      }
+    }
+
+    close() {
+      this.serverClose();
+    }
+
+    serverClose() {
+      if (this.readyState === StubWebSocket.CLOSED) return;
+      this.readyState = StubWebSocket.CLOSED;
+      this.onclose?.({});
+    }
+  }
+
+  globalThis.WebSocket = StubWebSocket;
+  t.after(() => {
+    globalThis.WebSocket = originalWebSocket;
+  });
+
+  const client = new Client("http://127.0.0.1:8080");
+  const pty = await client.sandbox("sbx-pty").openPTY({ argv: ["/bin/sh"], cols: 80, rows: 24 });
+  const terminal = pty.waitTerminal();
+  socket.serverClose();
+  await assert.rejects(terminal, /PTY connection closed/);
+});
+
 function jsonResponse(status, body) {
   return new Response(JSON.stringify(body), {
     status,

@@ -12,7 +12,10 @@ export class PTYConnection {
   private readonly pending: Array<{ resolve: (chunk: Uint8Array) => void; reject: (error: Error) => void }> = [];
   private readonly queue: Uint8Array[] = [];
   private terminalEvent?: PTYTerminalEvent;
-  private terminalWaiters: Array<(event: PTYTerminalEvent) => void> = [];
+  private terminalWaiters: Array<{
+    resolve: (event: PTYTerminalEvent) => void;
+    reject: (error: Error) => void;
+  }> = [];
   private failure?: Error;
 
   private constructor(socket: WebSocket) {
@@ -115,8 +118,11 @@ export class PTYConnection {
     if (this.terminalEvent !== undefined) {
       return Promise.resolve(this.terminalEvent);
     }
-    return new Promise((resolve) => {
-      this.terminalWaiters.push(resolve);
+    if (this.failure !== undefined) {
+      return Promise.reject(this.failure);
+    }
+    return new Promise((resolve, reject) => {
+      this.terminalWaiters.push({ resolve, reject });
     });
   }
 
@@ -137,7 +143,7 @@ export class PTYConnection {
           message: parsed.message,
         };
         for (const waiter of this.terminalWaiters.splice(0)) {
-          waiter(this.terminalEvent);
+          waiter.resolve(this.terminalEvent);
         }
         this.drainPending();
         this.close();
@@ -158,16 +164,27 @@ export class PTYConnection {
       this.failure ??= new Error("minisandbox: PTY connection closed");
     }
     this.drainPending();
+    this.drainTerminalWaiters();
   }
 
   private handleError(): void {
     this.failure ??= new Error("minisandbox: PTY connection error");
     this.drainPending();
+    this.drainTerminalWaiters();
   }
 
   private drainPending(): void {
     for (const waiter of this.pending.splice(0)) {
       waiter.reject(this.failure ?? new Error("minisandbox: PTY output ended"));
+    }
+  }
+
+  private drainTerminalWaiters(): void {
+    if (this.failure === undefined) {
+      return;
+    }
+    for (const waiter of this.terminalWaiters.splice(0)) {
+      waiter.reject(this.failure);
     }
   }
 }
