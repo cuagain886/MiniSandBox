@@ -1,6 +1,6 @@
 # Phase 4：Agent 体验开发计划
 
-> - 状态：待执行，`P4-000` 尚未开始
+> - 状态：已完成，`P4-000～P4-045` 验收通过
 > - 前置阶段：[Phase 3：可靠性开发计划](./phase-3-reliability-development-plan.md)
 > - SDK 基线：[Go SDK 易用化开发计划](./phase-sdk-go-productization-development-plan.md)
 > - 上位设计：[全 Go Agent Sandbox Runtime 设计](./all-go-agent-sandbox-runtime-design.md)
