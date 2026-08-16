@@ -51,6 +51,10 @@ fmt.Print(string(result.Stdout))
 | | `CancelAndWait(ctx)` | 取消并等待收敛到终态 |
 | | `Logs(ctx, cursor)` | 已解码日志迭代器；自动维护 cursor、翻页和解码 Base64 |
 | `EventStream` | `Next()` / `Event()` / `Err()` / `Close()` | SSE 迭代器：推进、取当前事件、取错误、提前放弃 |
+| `Sandbox`（Phase 4） | `Capabilities` / `WaitReady` | 查询功能能力并等待就绪 |
+| `SandboxFiles` | `Stat` / `List` / `Mkdir` / `Upload` / `Download` / `Move` / `Delete` | workspace 文件管理 |
+| `PTYConnection` | `Write` / `Resize` / `Output` / `Terminal` / `Close` | 交互式终端 |
+| `Sandbox`（Phase 4） | `PortHTTP` | 访问 sandbox 内 loopback HTTP 服务 |
 | 底层 API | `CreateSandboxWithOptions` 等 9 个方法 | 精确控制请求过程时使用，见下文“底层方法” |
 
 各方法的调用语义、参数和错误行为见下文对应章节。

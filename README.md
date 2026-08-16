@@ -16,6 +16,7 @@ MiniSandbox is a single-host sandbox control plane: you tell it "give me a sandb
 - **Command execution**: `argv` or `shell`, foreground SSE streaming output, background tasks (status/logs/cancel); timeout and cancellation kill the whole process group.
 - **Leases and reliability**: TTL-based automatic expiry, renewal, idempotent creation, and quota limits.
 - **Secure defaults**: commands run as a non-root user; containers are network-isolated by default (`network=none`) with `CapDrop=ALL` and CPU/memory/PID limits; outbound network is only possible through an explicitly enabled managed egress sidecar.
+- **Agent experience (Phase 4)**: workspace files (upload/download/move/delete), interactive PTY over WebSocket, loopback HTTP port proxy, and SDKs for [Go](sdk/go/), [TypeScript](sdk/typescript/), and [Python](sdk/python/).
 - **Go SDK**: see [`sdk/go`](sdk/go/).
 
 ## Quick Start

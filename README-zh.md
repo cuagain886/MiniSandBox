@@ -16,6 +16,7 @@ MiniSandbox 是一个单机沙盒控制面:你告诉它"给我一个沙盒、在
 - **命令执行**:`argv` 或 `shell`,前台 SSE 流式输出,后台任务(状态/日志/取消);超时与取消按完整进程组终止。
 - **租约与可靠性**:TTL 到期自动回收、续期、幂等创建、配额限制。
 - **安全默认**:命令以非 root 身份执行;容器默认断网(`network=none`)、`CapDrop=ALL`、CPU/内存/进程数限额;出站网络只能通过显式开启的受管 egress sidecar。
+- **Agent 体验（Phase 4）**：workspace 文件（上传/下载/移动/删除）、WebSocket 交互终端、loopback HTTP 端口代理，以及 [Go](sdk/go/)、[TypeScript](sdk/typescript/)、[Python](sdk/python/) 三语言 SDK。
 - **Go SDK**:见 [`sdk/go`](sdk/go/)。
 
 ## 快速开始
